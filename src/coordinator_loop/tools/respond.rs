@@ -1,13 +1,17 @@
 //! Writing the run's answer, without ending the loop by mechanism.
 
-use agent_driver_rs::tool::{Tool, ToolContext, ToolDefinition, ToolInput, ToolResult};
 use agent_driver_rs::ToolError;
+use agent_driver_rs::tool::{Tool, ToolContext, ToolDefinition, ToolInput, ToolResult};
 use async_trait::async_trait;
 use serde::Deserialize;
 
 use super::super::error::CoordinatorLoopError;
 use super::super::terminal::{FinalResponse, TerminalSlot};
 use super::native_definition;
+
+/// What the tool says back once the answer is committed.
+const ANSWER_RECORDED: &str =
+    "Answer recorded. It is what the user will receive. Stop calling tools now.";
 
 /// The answer the model wrote, as it arrived.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -20,8 +24,8 @@ pub struct RespondArgs {
 impl TryFrom<RespondArgs> for FinalResponse {
     type Error = CoordinatorLoopError;
 
-    fn try_from(_args: RespondArgs) -> Result<Self, Self::Error> {
-        todo!("S71 Phase 2")
+    fn try_from(args: RespondArgs) -> Result<Self, Self::Error> {
+        Self::new(&args.response, args.response_summary.as_deref())
     }
 }
 
@@ -75,9 +79,26 @@ impl Tool for RespondTool {
 
     async fn execute(
         &self,
-        _input: &ToolInput,
+        input: &ToolInput,
         _ctx: &ToolContext,
     ) -> Result<ToolResult, ToolError> {
-        todo!("S71 Phase 2")
+        let args: RespondArgs = match input.parse() {
+            Ok(args) => args,
+            Err(error) => {
+                return Ok(ToolResult::error(format!(
+                    "respond arguments did not parse: {error}"
+                )));
+            }
+        };
+
+        let answer = match FinalResponse::try_from(args) {
+            Ok(answer) => answer,
+            Err(error) => return Ok(ToolResult::error(error.to_string())),
+        };
+
+        Ok(match self.answer.record(answer) {
+            Ok(()) => ToolResult::text(ANSWER_RECORDED),
+            Err(rejected) => ToolResult::error(rejected.to_string()),
+        })
     }
 }

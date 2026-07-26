@@ -197,7 +197,7 @@ impl EvidenceEntry {
     }
 
     /// The worker's claim carried by this evidence, if any.
-    pub(super) fn claim(&self) -> Option<&WorkerClaim> {
+    pub fn claim(&self) -> Option<&WorkerClaim> {
         match self {
             Self::InlineResult { claim, .. } => claim.as_ref(),
             Self::ArtifactPointer { stand_in, .. } => match stand_in {

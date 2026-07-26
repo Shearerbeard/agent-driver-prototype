@@ -1,0 +1,24 @@
+---
+source: tests/coordinator_loop.rs
+expression: pretty(&observation)
+---
+{
+  "status": "failed",
+  "failure_category": "provider_overloaded",
+  "message": "provider returned 503",
+  "outcome": {
+    "completed": 0,
+    "failed": 1,
+    "blocked": 0,
+    "soft_failed": 0
+  },
+  "tasks_observed": [
+    {
+      "task_id": 0,
+      "worker": "operations",
+      "status": "failed",
+      "failure_category": "agent_timeout",
+      "error": "upstream timed out"
+    }
+  ]
+}

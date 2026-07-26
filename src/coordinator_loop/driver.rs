@@ -3,49 +3,80 @@
 
 use std::sync::Arc;
 
-use agent_driver_rs::{ModelId, Provider, Session, SystemPrompt};
+use agent_driver_rs::agent::{AgentEvent, AgentLoop, AgentLoopConfig, AgentObserver};
+use agent_driver_rs::{DynTool, ModelId, Provider, Session, SessionBuilder, SystemPrompt};
+use async_trait::async_trait;
 
 use crate::bounding::ToolListLimit;
 use crate::config::{OrchestrationConfig, VectorStoreConfig};
 use crate::context::PinnedGoal;
+use crate::producers::{build_planning_wrapper, build_worker_prompt_sections};
 
 use super::budget::LoopBudget;
 use super::error::CoordinatorRunError;
 use super::executor::PlanExecutor;
 use super::outcome::CoordinatorOutcome;
+use super::roster::WorkerRoster;
 use super::run_store::RunStore;
 use super::terminal::{FinalResponse, TerminalSlot};
+use super::tools::{CreatePlanTool, ExecuteTool, InspectRunTool, RespondTool};
 
-/// The worker roster and assignment guidelines the planning message
-/// interpolates.
+/// The worker material one configuration produces for the loop.
 ///
-/// The two halves are produced together from one configuration and travel
-/// together, so a message cannot describe one roster while instructing the
-/// coordinator to assign from another.
+/// The roster text, the assignment guidelines and the worker-field fragment
+/// are produced together from one configuration and travel together, so the
+/// planning message cannot describe one roster while the planning schema
+/// offers another.
 #[derive(Debug, Clone, Default)]
 pub struct WorkerSections {
-    roster: String,
+    roster_section: String,
+    worker_field: String,
     guidelines: String,
+    roster: WorkerRoster,
 }
 
 impl WorkerSections {
-    /// Render both sections from an orchestration configuration.
+    /// Render every worker section from an orchestration configuration.
     pub fn from_config(
-        _config: &OrchestrationConfig,
-        _tool_list_limit: ToolListLimit,
-        _vector_stores: &[VectorStoreConfig],
+        config: &OrchestrationConfig,
+        tool_list_limit: ToolListLimit,
+        vector_stores: &[VectorStoreConfig],
     ) -> Self {
-        todo!("S71 Phase 2")
+        let (roster_section, worker_field, guidelines) =
+            build_worker_prompt_sections(config, tool_list_limit, vector_stores);
+        Self {
+            roster_section,
+            worker_field,
+            guidelines,
+            roster: WorkerRoster::from_config(config),
+        }
     }
 
-    /// The rendered roster section.
-    pub fn roster(&self) -> &str {
-        todo!("S71 Phase 2")
+    /// A run with no workers configured, which is what the producer returns
+    /// for a configuration that has none.
+    pub fn none() -> Self {
+        Self::default()
+    }
+
+    /// The rendered roster section of the planning message.
+    pub fn roster_section(&self) -> &str {
+        &self.roster_section
+    }
+
+    /// The ported worker-field fragment, which shows the model the exact
+    /// shape of an assigned task step.
+    pub fn worker_field(&self) -> &str {
+        &self.worker_field
     }
 
     /// The rendered worker-assignment guidelines.
     pub fn guidelines(&self) -> &str {
-        todo!("S71 Phase 2")
+        &self.guidelines
+    }
+
+    /// The names a plan may assign work to.
+    pub fn roster(&self) -> &WorkerRoster {
+        &self.roster
     }
 }
 
@@ -64,18 +95,33 @@ pub struct CoordinatorLoopConfig {
     pub worker_sections: WorkerSections,
 }
 
-/// One coordinator run; its session and answer slot never outlive it.
+/// Forwards loop events to a shared observer handle.
+///
+/// The substrate takes an owned observer, so a caller that wants to read the
+/// events after the run hands in a handle and keeps a clone.
+struct SharedObserver(Arc<dyn AgentObserver>);
+
+#[async_trait]
+impl AgentObserver for SharedObserver {
+    async fn on_event(&self, event: &AgentEvent) {
+        self.0.on_event(event).await;
+    }
+}
+
+/// One coordinator run: one session, one budget, one answer.
 ///
 /// Running consumes the loop. The answer slot and the run records belong to
 /// a single run, so a second run over the same loop would inherit an answer
 /// it did not write; making `run` take ownership removes that state rather
-/// than documenting it.
+/// than documenting it. Both are handles, so a caller clones what it wants
+/// to read before handing the loop over.
 pub struct CoordinatorLoop {
     session: Session,
     budget: LoopBudget,
     answer: TerminalSlot<FinalResponse>,
     runs: RunStore,
     worker_sections: WorkerSections,
+    observer: Option<Arc<dyn AgentObserver>>,
 }
 
 impl CoordinatorLoop {
@@ -90,8 +136,40 @@ impl CoordinatorLoop {
     ///
     /// Returns [`CoordinatorRunError::Session`] when the provider and model
     /// do not yield a session.
-    pub async fn new(_config: CoordinatorLoopConfig) -> Result<Self, CoordinatorRunError> {
-        todo!("S71 Phase 2")
+    pub async fn new(config: CoordinatorLoopConfig) -> Result<Self, CoordinatorRunError> {
+        let runs = RunStore::new();
+        let answer: TerminalSlot<FinalResponse> = TerminalSlot::new();
+
+        let create_plan: DynTool =
+            Arc::new(CreatePlanTool::new(runs.clone(), &config.worker_sections));
+        let execute: DynTool =
+            Arc::new(ExecuteTool::new(runs.clone(), Arc::clone(&config.executor)));
+        let inspect_run: DynTool = Arc::new(InspectRunTool::new(runs.clone()));
+        let respond: DynTool = Arc::new(RespondTool::new(answer.clone()));
+
+        let session = SessionBuilder::new()
+            .provider(config.provider)
+            .model(config.model)
+            .system_prompt(config.system_prompt)
+            .tools([create_plan, execute, inspect_run, respond])
+            .build()
+            .await?;
+
+        Ok(Self {
+            session,
+            budget: config.budget,
+            answer,
+            runs,
+            worker_sections: config.worker_sections,
+            observer: None,
+        })
+    }
+
+    /// Watch the loop's events as they happen.
+    #[must_use]
+    pub fn with_observer(mut self, observer: Arc<dyn AgentObserver>) -> Self {
+        self.observer = Some(observer);
+        self
     }
 
     /// The run's records, shareable before the run consumes the loop.
@@ -99,7 +177,17 @@ impl CoordinatorLoop {
     /// [`RunStore`] is a handle, so a caller that clones it here still sees
     /// what the loop wrote once the run is over.
     pub fn runs(&self) -> &RunStore {
-        todo!("S71 Phase 2")
+        &self.runs
+    }
+
+    /// The run's answer slot, shareable before the run consumes the loop.
+    ///
+    /// Symmetric with [`runs`](Self::runs), and the only way to recover a
+    /// committed answer from a run that ends in
+    /// [`CoordinatorRunError`](super::CoordinatorRunError) rather than an
+    /// outcome.
+    pub fn answer(&self) -> &TerminalSlot<FinalResponse> {
+        &self.answer
     }
 
     /// Run the loop over one user query.
@@ -113,9 +201,30 @@ impl CoordinatorLoop {
     /// # Errors
     ///
     /// Returns [`CoordinatorRunError::AgentLoop`] when the substrate loop
-    /// fails outright. A loop that stops for any reported reason — including
-    /// the turn budget — is an outcome, not an error.
-    pub async fn run(self, _query: &PinnedGoal) -> Result<CoordinatorOutcome, CoordinatorRunError> {
-        todo!("S71 Phase 2")
+    /// fails outright. A loop that stops for any reported reason, the turn
+    /// budget included, is an outcome rather than an error.
+    pub async fn run(self, query: &PinnedGoal) -> Result<CoordinatorOutcome, CoordinatorRunError> {
+        let message = build_planning_wrapper(
+            query.as_str(),
+            self.worker_sections.roster_section(),
+            self.worker_sections.guidelines(),
+        );
+
+        let config = AgentLoopConfig {
+            max_tool_depth: self.budget.into(),
+            ..AgentLoopConfig::default()
+        };
+
+        let mut agent = AgentLoop::new(&self.session).with_config(config);
+        if let Some(observer) = &self.observer {
+            agent = agent.with_observer(SharedObserver(Arc::clone(observer)));
+        }
+
+        let outcome = agent.run(message).await?;
+        Ok(CoordinatorOutcome::interpret(
+            outcome,
+            &self.answer,
+            &self.runs,
+        ))
     }
 }

@@ -251,6 +251,12 @@ impl ArtifactRef {
     pub fn filename(&self) -> &str {
         &self.filename
     }
+
+    /// The artifact size, for callers that must emit it as a number rather
+    /// than inside the rendered inventory line.
+    pub fn bytes(&self) -> u64 {
+        self.bytes
+    }
 }
 
 impl std::fmt::Display for ArtifactRef {

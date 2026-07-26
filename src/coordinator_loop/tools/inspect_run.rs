@@ -1,27 +1,27 @@
 //! Pull-on-demand reads of the run's own records.
 
-use agent_driver_rs::tool::{Tool, ToolContext, ToolDefinition, ToolInput, ToolResult};
 use agent_driver_rs::ToolError;
+use agent_driver_rs::tool::{Tool, ToolContext, ToolDefinition, ToolInput, ToolResult};
 use async_trait::async_trait;
 use serde::Deserialize;
 
 use super::super::plan_id::PlanId;
 use super::super::run_store::RunStore;
-use super::native_definition;
+use super::{native_definition, observation_result};
 
 /// Which record to read back.
 ///
-/// Both cases name a record the run actually holds. There is no free-form
-/// query: a selector that cannot be resolved to a stored record would be a
-/// request the loop can only answer with an apology.
+/// Each case names a record the run actually holds, and "the latest plan" is
+/// its own case rather than an absent handle: an optional field would encode
+/// a second selector inside the first, which is the shape `ExecuteArgs`
+/// rejects for the same reason.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(tag = "record", rename_all = "snake_case")]
 pub enum RunSelector {
-    /// A plan this run created; omit the handle for the most recent one.
-    Plan {
-        #[serde(default)]
-        plan_id: Option<PlanId>,
-    },
+    /// A specific plan this run created.
+    Plan { plan_id: PlanId },
+    /// The most recently created plan.
+    LatestPlan,
     /// The most recent execution observation.
     LatestExecution,
 }
@@ -48,9 +48,9 @@ impl InspectRunTool {
         Self {
             definition: native_definition(
                 "inspect_run",
-                "Read back one of this run's own records: a plan you created, or the most \
-                 recent execution. Use it when you need the task text or the full evidence \
-                 that an earlier observation summarised.",
+                "Read back one of this run's own records: a plan you created, the most recent \
+                 plan, or the most recent execution. Use it when you need the task text or the \
+                 full evidence that an earlier observation summarised.",
                 serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -64,16 +64,20 @@ impl InspectRunTool {
                                         "record": { "const": "plan" },
                                         "plan_id": {
                                             "type": "string",
-                                            "description": "Omit for the most recent plan."
+                                            "description": "The plan_id returned by \
+                                                            `create_plan`."
                                         }
                                     },
+                                    "required": ["record", "plan_id"]
+                                },
+                                {
+                                    "type": "object",
+                                    "properties": { "record": { "const": "latest_plan" } },
                                     "required": ["record"]
                                 },
                                 {
                                     "type": "object",
-                                    "properties": {
-                                        "record": { "const": "latest_execution" }
-                                    },
+                                    "properties": { "record": { "const": "latest_execution" } },
                                     "required": ["record"]
                                 }
                             ]
@@ -95,9 +99,33 @@ impl Tool for InspectRunTool {
 
     async fn execute(
         &self,
-        _input: &ToolInput,
+        input: &ToolInput,
         _ctx: &ToolContext,
     ) -> Result<ToolResult, ToolError> {
-        todo!("S71 Phase 2")
+        let args: InspectRunArgs = match input.parse() {
+            Ok(args) => args,
+            Err(error) => {
+                return Ok(ToolResult::error(format!(
+                    "inspect_run arguments did not parse: {error}"
+                )));
+            }
+        };
+
+        Ok(match args.selector {
+            RunSelector::Plan { plan_id } => match self.runs.plan(&plan_id) {
+                Some(plan) => observation_result(&plan),
+                None => {
+                    ToolResult::error(format!("no plan with id {plan_id} was created in this run"))
+                }
+            },
+            RunSelector::LatestPlan => match self.runs.latest_plan() {
+                Some((_, plan)) => observation_result(&plan),
+                None => ToolResult::error("this run has not created a plan yet".to_owned()),
+            },
+            RunSelector::LatestExecution => match self.runs.latest_execution() {
+                Some(execution) => observation_result(&execution),
+                None => ToolResult::error("this run has not executed a plan yet".to_owned()),
+            },
+        })
     }
 }

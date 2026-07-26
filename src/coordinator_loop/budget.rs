@@ -23,28 +23,32 @@ impl LoopBudget {
     /// # Errors
     ///
     /// Returns [`CoordinatorLoopError::ZeroTurnBudget`] when `turns` is zero.
-    pub fn new(_turns: u32) -> Result<Self, CoordinatorLoopError> {
-        todo!("S71 Phase 2")
+    pub fn new(turns: u32) -> Result<Self, CoordinatorLoopError> {
+        NonZeroU32::new(turns)
+            .map(Self)
+            .ok_or(CoordinatorLoopError::ZeroTurnBudget)
     }
 
     /// The number of tool-calling turns the budget allows.
     pub fn turns(&self) -> u32 {
-        todo!("S71 Phase 2")
+        self.0.get()
     }
 }
 
 impl std::fmt::Display for LoopBudget {
-    fn fmt(&self, _f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        todo!("S71 Phase 2")
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
     }
 }
 
 /// The budget is enforced by the substrate rather than by a host-side
 /// counter: it is the loop's tool-depth ceiling, which the driver reports as
-/// a graceful stop instead of an error. The conversion cannot fail, because
-/// the budget is non-zero by construction.
+/// a graceful stop instead of an error.
 impl From<LoopBudget> for MaxToolDepth {
-    fn from(_budget: LoopBudget) -> Self {
-        todo!("S71 Phase 2")
+    fn from(budget: LoopBudget) -> Self {
+        match MaxToolDepth::new(budget.turns()) {
+            Ok(depth) => depth,
+            Err(_) => unreachable!("a loop budget is non-zero by construction"),
+        }
     }
 }

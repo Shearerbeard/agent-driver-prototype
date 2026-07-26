@@ -8,7 +8,9 @@ use crate::context::ContextError;
 ///
 /// Variants name the rule that was violated; the caller still holds the
 /// offending input, so no variant repeats it except where the underlying
-/// producer supplies its own message.
+/// producer supplies its own message. Context failures are wrapped at the
+/// boundary that raised them rather than through one blanket conversion, so
+/// the message says which rule the value broke.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum CoordinatorLoopError {
     /// A zero-turn budget would stop the loop before the coordinator's first
@@ -21,24 +23,33 @@ pub enum CoordinatorLoopError {
     EmptyFinalResponse,
     /// Plan ids are derived from plan arguments, never authored, so a value
     /// outside the derived alphabet names no plan that could exist.
-    #[error("plan id is not a lowercase hex digest of the derived width")]
+    #[error("plan id is not a 16-character lowercase hex digest")]
     MalformedPlanId,
     /// The step tree the model sent does not flatten into a task list.
     #[error("plan steps are not executable: {0}")]
     UnexecutableSteps(String),
-    /// A worker submission carried no attested summary, result, or usable
-    /// evidence body.
+    /// A task named a worker the run has no roster entry for.
+    #[error("no worker named '{name}' is configured; available workers: {available}")]
+    UnknownWorker { name: String, available: String },
+    /// An execution reported completion with no task to show for it.
+    #[error("a completed execution must observe at least one task")]
+    EmptyTaskObservations,
+    /// A worker submission carried no attested summary or usable result
+    /// body.
     #[error("worker submission is not usable evidence: {0}")]
-    UnusableSubmission(#[from] ContextError),
+    UnusableSubmission(ContextError),
+    /// A task result could not be turned into a coordinator-visible
+    /// observation.
+    #[error("task result is not a usable observation: {0}")]
+    UnusableObservation(ContextError),
 }
 
 /// A coordinator run that ended before it could reach an outcome.
 ///
 /// Distinct from [`CoordinatorLoopError`]: these are failures of the run
 /// itself, not rejections of a value. Stop reasons the substrate reports
-/// gracefully (tool errors, cancellation, provider stream failure) are
-/// outcomes, not errors, and travel in
-/// [`CoordinatorOutcome`](super::CoordinatorOutcome) instead.
+/// gracefully travel in [`CoordinatorOutcome`](super::CoordinatorOutcome)
+/// instead.
 #[derive(Debug, thiserror::Error)]
 pub enum CoordinatorRunError {
     /// The coordinator session could not be built from the supplied
@@ -46,7 +57,8 @@ pub enum CoordinatorRunError {
     #[error(transparent)]
     Session(#[from] ConfigError),
     /// The substrate loop failed outright instead of returning a stop
-    /// reason.
+    /// reason. Provider stream failures and mid-stream cancellation arrive
+    /// here, not as an outcome.
     #[error(transparent)]
     AgentLoop(#[from] AgentLoopError),
 }

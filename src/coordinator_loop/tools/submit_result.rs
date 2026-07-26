@@ -1,15 +1,20 @@
 //! The worker side of the tool surface: a worker's attested result.
 
-use agent_driver_rs::tool::{Tool, ToolContext, ToolDefinition, ToolInput, ToolResult};
 use agent_driver_rs::ToolError;
+use agent_driver_rs::tool::{Tool, ToolContext, ToolDefinition, ToolInput, ToolResult};
 use async_trait::async_trait;
 use serde::Deserialize;
 
+use crate::context::{EvidenceText, WorkerClaim};
 use crate::tools::submit_result::Confidence;
 
 use super::super::error::CoordinatorLoopError;
 use super::super::terminal::{TerminalSlot, WorkerSubmission};
 use super::native_definition;
+
+/// What the tool says back once the submission is committed.
+const SUBMISSION_RECORDED: &str =
+    "Result recorded. It is what the coordinator will read. Stop calling tools now.";
 
 /// What a worker reported, as it arrived.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -22,8 +27,12 @@ pub struct SubmitResultArgs {
 impl TryFrom<SubmitResultArgs> for WorkerSubmission {
     type Error = CoordinatorLoopError;
 
-    fn try_from(_args: SubmitResultArgs) -> Result<Self, Self::Error> {
-        todo!("S71 Phase 2")
+    fn try_from(args: SubmitResultArgs) -> Result<Self, Self::Error> {
+        let claim = WorkerClaim::new(&args.summary, args.confidence)
+            .map_err(CoordinatorLoopError::UnusableSubmission)?;
+        let result =
+            EvidenceText::new(&args.result).map_err(CoordinatorLoopError::UnusableSubmission)?;
+        Ok(Self::new(claim, result))
     }
 }
 
@@ -81,9 +90,26 @@ impl Tool for SubmitResultTool {
 
     async fn execute(
         &self,
-        _input: &ToolInput,
+        input: &ToolInput,
         _ctx: &ToolContext,
     ) -> Result<ToolResult, ToolError> {
-        todo!("S71 Phase 2")
+        let args: SubmitResultArgs = match input.parse() {
+            Ok(args) => args,
+            Err(error) => {
+                return Ok(ToolResult::error(format!(
+                    "submit_result arguments did not parse: {error}"
+                )));
+            }
+        };
+
+        let submission = match WorkerSubmission::try_from(args) {
+            Ok(submission) => submission,
+            Err(error) => return Ok(ToolResult::error(error.to_string())),
+        };
+
+        Ok(match self.submission.record(submission) {
+            Ok(()) => ToolResult::text(SUBMISSION_RECORDED),
+            Err(rejected) => ToolResult::error(rejected.to_string()),
+        })
     }
 }

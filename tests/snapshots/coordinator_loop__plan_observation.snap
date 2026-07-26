@@ -1,0 +1,9 @@
+---
+source: tests/coordinator_loop.rs
+expression: pretty(&observation)
+---
+{
+  "plan_id": "2e2c6ccf8112e203",
+  "task_count": 2,
+  "shape": "2 tasks (operations, unassigned)"
+}

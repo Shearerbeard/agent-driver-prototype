@@ -20,4 +20,8 @@ thiserror = "1"
 tracing = "0.1"
 
 [dev-dependencies]
+# The mock provider lives behind `test-support`; integration tests are a
+# separate crate where the library's own `cfg(test)` does not apply.
+agent-driver-rs = { path = "../agent-driver-rs-pin", features = ["test-support"] }
 insta = { version = "1", features = ["json"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }

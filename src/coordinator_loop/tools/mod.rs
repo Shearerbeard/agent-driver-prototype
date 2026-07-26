@@ -6,6 +6,10 @@
 //! terminal-tool concept, so the run ends when the model stops calling tools
 //! or the turn budget fires, and the recorded answer is what the outcome is
 //! read from.
+//!
+//! Every rejection a tool can produce is a `ToolResult::error`, which the
+//! loop delivers as an observation the coordinator can revise against. None
+//! of them is a `ToolError`, which would risk ending the conversation.
 
 mod create_plan;
 mod execute;
@@ -19,8 +23,9 @@ pub use inspect_run::{InspectRunArgs, InspectRunTool, RunSelector};
 pub use respond::{RespondArgs, RespondTool};
 pub use submit_result::{SubmitResultArgs, SubmitResultTool};
 
-use agent_driver_rs::tool::{ToolDefinition, ToolSchema};
+use agent_driver_rs::tool::{ToolDefinition, ToolResult, ToolSchema};
 use agent_driver_rs::types::ToolName;
+use serde::Serialize;
 use serde_json::Value as JsonValue;
 
 /// Build a native tool definition from this module's literals.
@@ -37,4 +42,17 @@ fn native_definition(name: &str, description: &str, schema: JsonValue) -> ToolDe
         unreachable!("tool schemas in this module are JSON object literals")
     };
     ToolDefinition::new(name, description, schema)
+}
+
+/// Carry an observation back to the model as the tool result string.
+///
+/// A serialization failure would mean an observation type stopped being
+/// plain JSON data, which is a defect in this crate rather than something
+/// the coordinator can act on, so it is reported as a tool error the loop
+/// still survives.
+fn observation_result<T: Serialize>(observation: &T) -> ToolResult {
+    match serde_json::to_string(observation) {
+        Ok(json) => ToolResult::text(json),
+        Err(error) => ToolResult::error(format!("observation could not be serialized: {error}")),
+    }
 }

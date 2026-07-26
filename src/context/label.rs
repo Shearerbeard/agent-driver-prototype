@@ -24,6 +24,12 @@ impl TaskId {
     pub fn new(id: usize) -> Self {
         Self(id)
     }
+
+    /// The plan-assigned id, for callers that must emit it as a number
+    /// rather than as rendered text.
+    pub fn get(&self) -> usize {
+        self.0
+    }
 }
 
 impl std::fmt::Display for TaskId {

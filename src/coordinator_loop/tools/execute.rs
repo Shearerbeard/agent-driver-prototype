@@ -2,15 +2,15 @@
 
 use std::sync::Arc;
 
-use agent_driver_rs::tool::{Tool, ToolContext, ToolDefinition, ToolInput, ToolResult};
 use agent_driver_rs::ToolError;
+use agent_driver_rs::tool::{Tool, ToolContext, ToolDefinition, ToolInput, ToolResult};
 use async_trait::async_trait;
 use serde::Deserialize;
 
 use super::super::executor::PlanExecutor;
 use super::super::plan_id::PlanId;
 use super::super::run_store::RunStore;
-use super::native_definition;
+use super::{native_definition, observation_result};
 
 /// Which plan to run.
 ///
@@ -66,11 +66,25 @@ impl Tool for ExecuteTool {
         &self.definition
     }
 
-    async fn execute(
-        &self,
-        _input: &ToolInput,
-        _ctx: &ToolContext,
-    ) -> Result<ToolResult, ToolError> {
-        todo!("S71 Phase 2")
+    async fn execute(&self, input: &ToolInput, ctx: &ToolContext) -> Result<ToolResult, ToolError> {
+        let args: ExecuteArgs = match input.parse() {
+            Ok(args) => args,
+            Err(error) => {
+                return Ok(ToolResult::error(format!(
+                    "execute arguments did not parse: {error}"
+                )));
+            }
+        };
+
+        let Some(plan) = self.runs.plan(&args.plan_id) else {
+            return Ok(ToolResult::error(format!(
+                "no plan with id {} was created in this run; call create_plan first",
+                args.plan_id
+            )));
+        };
+
+        let observation = self.executor.execute(&plan, ctx).await;
+        self.runs.record_execution(observation.clone());
+        Ok(observation_result(&observation))
     }
 }

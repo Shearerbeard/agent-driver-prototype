@@ -1,0 +1,27 @@
+---
+source: tests/coordinator_loop.rs
+expression: pretty(&observation)
+---
+{
+  "status": "completed",
+  "outcome": {
+    "completed": 1,
+    "failed": 0,
+    "blocked": 1,
+    "soft_failed": 0
+  },
+  "tasks": [
+    {
+      "task_id": 0,
+      "worker": "operations",
+      "status": "complete",
+      "evidence": "Counted 530 errors across 4 services",
+      "summary": "Checkout dominates the spike",
+      "confidence": "high"
+    },
+    {
+      "task_id": 1,
+      "status": "pending"
+    }
+  ]
+}
