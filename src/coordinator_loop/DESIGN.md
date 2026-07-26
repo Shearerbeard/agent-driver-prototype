@@ -73,8 +73,13 @@ forbids.
 `crate::context`; `build_planning_wrapper` with `render_planning_prompt`, and
 `build_worker_prompt_sections`, from `crate::producers`. The host-authored
 fallback renders through the ported `CompletedEntry`, `FailedEntry` and
-`BlockedEntry` renderers, so the evidence a user sees on that path is
-formatted exactly like the evidence in a continuation frame.
+`BlockedEntry` renderers, so completed, hard-failed and blocked tasks on
+that path are formatted exactly like a continuation frame. One case falls
+short of frame fidelity (Gate A finding, accepted): the frame's soft-failure
+rendering carries the worker's claim, which `TaskObservation::Failed` cannot
+hold until the S72 real executor produces worker submissions, so until then
+a soft failure renders in the hard form under its true category label. S72
+extends the failed observation with the claim when real workers exist.
 
 `TaskObservation` is keyed by `CorrelationLabel` rather than by a separate
 `task_id` and `worker` pair: that pair is the ported correlation label, and

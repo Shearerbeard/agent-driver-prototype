@@ -109,6 +109,9 @@ fn render_task(task: &TaskObservation) -> String {
             }
             .render(),
         ),
+        // A soft failure renders in the hard form with its true category
+        // label: the frame's Soft rendering needs the worker's claim, which
+        // arrives only with the S72 real executor.
         TaskObservation::Failed {
             label,
             category,
