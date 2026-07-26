@@ -1,7 +1,7 @@
 ---
 id: S70
 title: Prototype crate skeleton and golden-frame port
-status: in-progress
+status: done
 depends: [S54]
 serialize-with: []
 lineage: none
@@ -79,15 +79,21 @@ suite green byte-for-byte and the corpus guardrail in place.
 
 ## Gate checklist
 
-- [ ] Gate S: golden suite 21/21, clippy clean, gate-probes +
-      rust-quality/rust-design loaded before writing, rust-review at
-      the gate boundary.
-- [ ] Gate A: fireworks glm-5p2 reviewer leg via the staged-dir CLI
-      recipe (author is kimi-family; the local `rust-reviewer` agent
-      pin drifted to baseten Kimi-K2.7-Code, so the pinned agent would
-      be a self-review - see S54 log 2026-07-26).
-- [ ] Gate U (code-review): user reviews the port diff before S71
-      pulls.
+- [x] Gate S: golden suite 21/21 byte-identity after the two
+      normalizations (proof: `reviews/s70/byte-proof.txt` in the spike
+      repo), clippy zero warnings, 165 tests green, vale clean on this
+      card; gate-probes loaded at the boundary.
+- [x] Gate A: fireworks glm-5p2 via the staged-dir CLI recipe (author
+      kimi-k3 executors + board-owner glue; the pinned `rust-reviewer`
+      agent would be same-family - see the 2026-07-26 S54 log).
+      Verdict FAIL on first pass; findings dispositioned below.
+- [x] Gate U (code-review): APPROVED 2026-07-26 - the user approved
+      the port after running the UA commands in
+      `reviews/s70/review-guide.html` (165 tests green, clippy clean,
+      21/21 byte-identical). S70 done. Index regen + `--check` +
+      orientation canary deferred: S56 (mainline) holds an uncommitted
+      invalid `in_progress` status, collision rule applies; regenerate
+      once mainline lands.
 
 ## Branch
 
@@ -106,3 +112,36 @@ Adapter repo: this card file only, direct.
   2026-07-16 record (`rust-reviewer` -> baseten Kimi-K2.7-Code,
   `rust-write` -> baseten GLM-5.2-Fast), so kimi-authored diffs route
   Gate A to the fireworks glm-5p2 CLI recipe, not the pinned agent.
+- 2026-07-26 Implementation landed in the spike repo
+  (`~/workspace/agent-driver-prototype`, commits `6656b17..f87a19f`).
+  Executors: rust-write (GLM-5.2-Fast) phases 1-3 (template core;
+  context + types; producers). Phase 4 (golden harness) executor died
+  at its tool-call limit mid-flight; the board owner applied the
+  executor-fallback rule and finished the compile fixes, snapshot
+  acceptance, and visibility/gating cleanup directly. Outcome: 165
+  tests green, clippy zero warnings, and the byte proof - all 21
+  generated snapshots identical to the canonical `7a0f0651`-era corpus
+  after the two normalizations (`reviews/s70/byte-proof.txt`).
+  Gate A (glm-5p2, fireworks, staged-dir CLI): VERDICT FAIL first pass
+  with an independently reproduced 21/21 byte gate; one BLOCKING
+  (corpus guardrail delivered dead and duplicated) and three MINOR
+  (duplicate RequestEnvelope mirror, unused pin dependency, stale
+  duplicate-guard doc reference), all accepted and fixed in `f87a19f`;
+  proof re-run clean. The card waits at U(code-review): the diff to
+  review is `6656b17..f87a19f` in the spike repo with the packet at
+  `reviews/s70/`. Repo map updated in the same turn (PROCESS.md):
+  `agent-driver-prototype` and the `agent-driver-rs-pin` worktree are
+  now listed. Board-hygiene note: `cards_index.py --check` is blocked
+  by a concurrent mainline session's mid-edit S56 status value - left
+  untouched per the collision rule; regenerate once mainline lands.
+- 2026-07-26 U(code-review) DECIDED by the user: approved. The user
+  ran the UA commands in `reviews/s70/review-guide.html`
+  (`INSTA_UPDATE=no cargo test` 165 green, `cargo clippy` clean, the
+  byte-proof loop 21/21 IDENTICAL) and approved the port; the board
+  owner re-ran the byte-proof loop directly (21/21 IDENTICAL) per
+  PROCESS.md before marking done. S70 done. Board-hygiene deferral:
+  `cards_index.py` regen + `--check` + the orientation canary remain
+  blocked by S56's uncommitted invalid `in_progress` status (mainline
+  collision, untouched per the rule); regenerate once mainline lands.
+  S71 remains in backlog per the user's directive; a future session
+  pulls it.
