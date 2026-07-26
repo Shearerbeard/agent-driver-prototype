@@ -6,6 +6,7 @@ pub mod bounding;
 pub mod config;
 pub mod config_builders;
 pub mod context;
+pub mod coordinator_loop;
 pub mod corpus_configuration;
 #[cfg(test)]
 pub mod fixture;
