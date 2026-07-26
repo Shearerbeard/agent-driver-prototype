@@ -160,3 +160,13 @@ direct.
   in the spike repo. The card waits at U(code-review): packet at
   `reviews/s71/` with `review-guide.html`, the full-range diff, and
   both ledgers.
+- 2026-07-26 Board-hygiene close before the U stop: views
+  regenerated and validated; Gate D drift audit CLEAN over nine
+  claims (fresh haiku agent); orientation canary run cross-harness
+  (codex). Three of four canary answers matched the precomputed key
+  exactly, and on the deferred-gates question the canary
+  out-oriented the key: it surfaced S49's U(baseline) "OPEN,
+  DEFERRED" entry, which the canonical `open: deferred` sweep
+  misses on casing. Fixed this session by a log-format
+  normalization line on S49 (sweep now finds it); no board
+  ambiguity, no deferred gates on S71.
