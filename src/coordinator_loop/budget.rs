@@ -18,6 +18,24 @@ use super::error::CoordinatorLoopError;
 pub struct LoopBudget(NonZeroU32);
 
 impl LoopBudget {
+    /// The provisional TerminalBench default, twelve turns.
+    ///
+    /// Derived from the depth the program has been testing rather than from
+    /// the substrate's own default of twenty-five. The canonical benchmark
+    /// config caps the bounded router at `max_planning_cycles = 4`
+    /// (`configs/sre-shell-orchestrated.toml:123` in the adapter repo). One
+    /// of those cycles maps to a `create_plan` and `execute` pair of loop
+    /// turns, so four cycles cost `4 * 2` turns. Writing the answer costs one
+    /// more, and three turns of `inspect_run` slack cover the pull-on-demand
+    /// reads the bounded router never had: `4 * 2 + 1 + 3 = 12`.
+    ///
+    /// This is the value for now. S74 and S75 consume it, and any caller
+    /// that wants a different depth builds one with [`new`](Self::new).
+    pub const CANONICAL: Self = Self(match NonZeroU32::new(12) {
+        Some(turns) => turns,
+        None => panic!("the canonical turn budget must be non-zero"),
+    });
+
     /// Parse a turn-depth budget.
     ///
     /// # Errors
@@ -50,5 +68,15 @@ impl From<LoopBudget> for MaxToolDepth {
             Ok(depth) => depth,
             Err(_) => unreachable!("a loop budget is non-zero by construction"),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn canonical_budget_matches_the_benchmark_derivation() {
+        assert_eq!(LoopBudget::CANONICAL.turns(), 12);
     }
 }

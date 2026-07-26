@@ -26,6 +26,11 @@ stops calling tools, or the turn budget (`LoopBudget`, mapped to the pin's
 `max_tool_depth`) fires. That matches the card's own framing that max-depth
 and the agent timeout are the only breakers a worker ever hits.
 
+`LoopBudget::CANONICAL` pins the provisional TerminalBench depth at twelve
+turns, derived from the canonical config's `max_planning_cycles = 4` where a
+cycle costs a `create_plan` and `execute` pair: `4 * 2 + 1 + 3 = 12`, adding
+one turn to write the answer and three of `inspect_run` slack.
+
 There is no host-owned outer loop and no control enum the model must emit
 to continue. Nothing is replayed into a prompt and there is no scratchpad:
 standard conversation history is the state.
