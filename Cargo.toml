@@ -7,6 +7,9 @@ license = "MIT OR Apache-2.0"
 publish = false
 
 [dependencies]
+# Pinned worktree of agent-driver-rs at 674a093. The S70 frame port does
+# not call it yet; the loop wiring lands in S71. Present now so the crate
+# always compiles against the pin the flow depends on.
 agent-driver-rs = { path = "../agent-driver-rs-pin" }
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 serde = { version = "1", features = ["derive"] }

@@ -33,31 +33,11 @@ use super::scenario::{FailedResultFixture, PlanDecision};
 use super::tool_definitions;
 
 /// The complete request envelope for one model call.
-#[derive(Debug, Clone, PartialEq)]
-pub(crate) struct RequestEnvelope {
-    pub(crate) system: String,
-    pub(crate) messages: Vec<Message>,
-    pub(crate) tools: Vec<ToolDefinition>,
-}
-
-impl RequestEnvelope {
-    pub(crate) fn tools_json(&self) -> serde_json::Value {
-        serde_json::to_value(&self.tools).expect("tool definitions serialize")
-    }
-}
-
-/// Panic (fail loud, never fall back) when `AURA_ESCAPE_HATCH` is set.
-fn assert_escape_hatch_unset() {
-    assert!(
-        std::env::var_os("AURA_ESCAPE_HATCH").is_none(),
-        "AURA_ESCAPE_HATCH is set: the S2 corpus pins the default preamble branch \
-         (MANIFEST.md section 7); unset it before running the golden-frame tests"
-    );
-}
+pub(crate) use crate::message::RequestEnvelope;
 
 /// Compose the coordinator system preamble for a [`PreambleFixture`].
 pub(crate) fn compose_coordinator_preamble(fixture: &PreambleFixture) -> String {
-    assert_escape_hatch_unset();
+    crate::corpus_configuration::assert_corpus_configuration();
     let mut preamble = build_coordinator_preamble(
         &fixture.playbook,
         fixture.tools.recon == ReconTools::Included,

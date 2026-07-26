@@ -394,7 +394,8 @@ pub enum FailureCategory {
     ContextOverflow,
     /// Worker exhausted its maximum tool call depth.
     DepthExhausted,
-    /// Duplicate call guard fired — worker stuck in a loop.
+    /// Worker stuck in a tool-call loop (verbatim category label; the
+    /// duplicate-call guard that raised it is dropped flow-wide per F1).
     LoopDetected,
     /// LLM temporarily unavailable (429/503).
     ProviderOverloaded,
