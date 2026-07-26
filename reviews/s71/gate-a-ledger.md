@@ -42,3 +42,17 @@ for every attempt below.
 Gate A closed 2026-07-26: PASS over the full range
 `ae3f2fb..7ddb7f6`, one MINOR finding accepted and repaired, the
 repair re-reviewed.
+
+## User-directed addition at the gate (range extension)
+
+The user directed a canonical turn-budget const at U(code-review):
+`LoopBudget::CANONICAL` = 12, derived from the tested config's
+`max_planning_cycles = 4`, commit `aaca6c0` with a pinning unit test.
+Focused Gate A (kimi-k2p7-code) over that commit: VERDICT: PASS with
+one MINOR (G2: the doc comment cited the adapter config by line
+number, which drifts across repos). Accepted; fix commit `c0f6fda`
+applies the reviewer's own remedy (path and knob name, no line
+number; the commit also carries review-guide packet edits swept in
+by staging). Micro re-review of the fix (kimi-k2p7-code):
+VERDICT: PASS. Range of record extends to `ae3f2fb..c0f6fda`; code
+commits are `3c13c8d`, `ab49e35`, `7ddb7f6`, `aaca6c0`, `c0f6fda`.

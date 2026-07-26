@@ -170,3 +170,17 @@ direct.
   misses on casing. Fixed this session by a log-format
   normalization line on S49 (sweep now finds it); no board
   ambiguity, no deferred gates on S71.
+- 2026-07-26 User-directed addition at the open U gate: encode the
+  tested TerminalBench depth as `LoopBudget::CANONICAL` = 12
+  (derived from the canonical config's max_planning_cycles = 4; a
+  cycle is a create_plan+execute pair, one turn writes the answer,
+  three cover inspect_run slack), replacing reliance on the
+  substrate's default of 25. Commits `aaca6c0` (const, pinning unit
+  test, DESIGN.md paragraph; Opus executor) and `c0f6fda` (drops a
+  drifting cross-repo line number from the citation, per the
+  focused Gate A's one MINOR, G2). Focused Gate A over `aaca6c0`
+  and the micro re-review over `c0f6fda`: both PASS
+  (kimi-k2p7-code). Board owner verified: 166 lib + 24 loop tests
+  green, clippy clean, vale clean. Range of record extends to
+  `ae3f2fb..c0f6fda`. The card re-opens at U(code-review) with the
+  refreshed packet.
