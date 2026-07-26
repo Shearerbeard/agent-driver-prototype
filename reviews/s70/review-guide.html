@@ -1,0 +1,137 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>S70 U(code-review) — review guide</title>
+<style>
+  :root { --ink:#1a1a1a; --mut:#666; --acc:#7a3ff2; --warn:#b23b3b; --ok:#2c7a4b; --bg:#fafafa; --card:#fff; --line:#e3e3e3; }
+  body { font-family: -apple-system, "SF Pro Text", Helvetica, Arial, sans-serif; color:var(--ink); background:var(--bg); max-width: 960px; margin: 2rem auto; padding: 0 1.25rem; line-height: 1.55; }
+  h1 { font-size: 1.5rem; } h2 { font-size: 1.15rem; margin-top: 2.2rem; border-bottom: 1px solid var(--line); padding-bottom: .3rem; }
+  h3 { font-size: 1rem; margin-bottom: .2rem; }
+  code, .mono { font-family: "SF Mono", Menlo, monospace; font-size: .88em; background:#f0eef5; padding: .08em .3em; border-radius: 4px; }
+  pre { background:#26232e; color:#e8e6f0; padding: .9rem 1rem; border-radius: 8px; overflow-x: auto; font-size: .82rem; }
+  pre code { background: none; color: inherit; padding: 0; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 1rem 1.2rem; margin: 1rem 0; }
+  .rank { display:inline-block; min-width:2.2rem; font-weight:700; color:var(--acc); }
+  .tag { font-size:.72rem; font-weight:600; padding:.15em .5em; border-radius: 999px; vertical-align: middle; margin-left:.4rem; }
+  .heavy { background:#efe6fd; color:#5b2db8; } .med { background:#e8f0fe; color:#2a56a5; } .light { background:#eee; color:#555; }
+  .ok { color: var(--ok); font-weight: 600; } .bad { color: var(--warn); font-weight: 600; }
+  table { border-collapse: collapse; width: 100%; font-size: .9rem; }
+  th, td { text-align: left; border-bottom: 1px solid var(--line); padding: .45rem .5rem; vertical-align: top; }
+  .decision { border-left: 4px solid var(--acc); }
+  .small { font-size: .85rem; color: var(--mut); }
+  ul { margin: .3rem 0 .6rem; }
+</style>
+</head>
+<body>
+
+<h1>S70 code review guide <span class="tag heavy">USER GATE</span></h1>
+
+<div class="card decision">
+<p><strong>The decision you are making:</strong> approve the S70 frame port, and S71 (core coordinator loop) pulls next. Nothing in aura, agent-driver-rs, or the adapter repo was touched except card files.</p>
+<p><strong>Where the code lives:</strong> <code>~/workspace/agent-driver-prototype</code> — commits <code>6656b17..f87a19f</code> (5 commits). Review packet: <code>reviews/s70/</code> in that repo.</p>
+<p><strong>What has already been machine-verified:</strong> 21/21 golden snapshots <em>byte-identical</em> to the aura <code>7a0f0651</code>-era corpus · 165 tests green · clippy zero warnings · Gate A (glm-5p2) independently reproduced the byte gate; its one blocking + three minor findings are fixed in <code>f87a19f</code>.</p>
+</div>
+
+<h2>The 80/20 review order</h2>
+<p class="small">Heaviest first. Each item says <em>what to open</em> and <em>what would make it wrong</em>. No code is duplicated here — open the files at the anchors.</p>
+
+<div class="card">
+<h3><span class="rank">1</span>The byte-identity claim <span class="tag heavy">heaviest</span></h3>
+<p>The entire card stands or falls here. Everything else is scaffolding.</p>
+<ul>
+<li>Open <code>reviews/s70/byte-proof.txt</code> — 21 lines, all <span class="ok">IDENTICAL</span>.</li>
+<li>Re-run the proof yourself (command in §3) — it takes seconds and does not trust my run.</li>
+<li>Eyeball ONE snapshot pair by hand, e.g. <code>snapshots/aura__...__coordinator_call1_recon.snap</code> vs <code>src/fixture/snapshots/agent_driver_prototype__...__coordinator_call1_recon.snap</code> (bodies, below the <code>---</code> header).</li>
+</ul>
+<p class="bad">Wrong looks like: any DIFF line in the proof; a snapshot whose body differs in whitespace, ordering, or tool JSON.</p>
+</div>
+
+<div class="card">
+<h3><span class="rank">2</span>The normalizer's honesty <span class="tag heavy">heaviest</span></h3>
+<p>Byte-identity is only meaningful if normalization is exactly the two sanctioned rewrite classes.</p>
+<ul>
+<li><code>src/fixture/normalize.rs</code> — confirm: timestamp scrub anchored at byte 0 of user messages, roster-span sort in the first user message only, and <code>audit_normalization_markers</code> <em>asserts</em> without rewriting. No third class.</li>
+</ul>
+<p class="bad">Wrong looks like: any rewrite beyond those two, or an audit that edits.</p>
+</div>
+
+<div class="card">
+<h3><span class="rank">3</span>The MCP-less substitution <span class="tag heavy">heaviest</span></h3>
+<p>The one place the port deliberately diverges from aura's code path.</p>
+<ul>
+<li><code>src/producers.rs</code> — <code>resolve_worker_tools</code> (~line 391) and <code>get_all_tool_descriptions</code> (~line 453). Claim: aura with <code>mcp_manager: None</code> returns exactly what we hardcode. Check the anchor comment matches aura's <code>orchestrator.rs:2048-2081</code> behavior (aura is at <code>~/workspace/orchestration-simplification</code>).</li>
+</ul>
+<p class="bad">Wrong looks like: the hardcoded path dropping config-driven tools (vector-store tools, mcp_filter matches) that aura's None-path would keep.</p>
+</div>
+
+<div class="card">
+<h3><span class="rank">4</span>Tool-definition transcription <span class="tag med">medium</span></h3>
+<p>The TOOLS sections come from hand-transcribed static data, not live tool structs.</p>
+<ul>
+<li><code>src/fixture/tool_definitions.rs</code> — spot-check two tools (suggest <code>create_plan</code> and <code>read_artifact</code>) against aura's <code>crates/aura/src/orchestration/tools/</code> <code>definition()</code> bodies: name, description, parameters schema.</li>
+<li>Registration order and scenario-conditional inclusion live in the same file — compare against the TOOLS section of any coordinator snapshot.</li>
+</ul>
+<p class="bad">Wrong looks like: paraphrased descriptions or reordered lists (the byte gate would catch both — this is a double-check of the gate, not the primary evidence).</p>
+</div>
+
+<div class="card">
+<h3><span class="rank">5</span>Sanctioned mirror types + guardrail <span class="tag med">medium</span></h3>
+<ul>
+<li><code>src/message.rs</code> — the local <code>Message</code>/<code>ToolDefinition</code>/<code>RequestEnvelope</code> mirrors. Confirm <code>ToolDefinition</code> field order is <code>name, description, parameters</code> (serde field order is part of the byte contract).</li>
+<li><code>src/corpus_configuration.rs</code> — post-Gate-A shape: one live entry point, structural pins documented with anchors.</li>
+<li><code>src/fixture/envelope.rs</code> — the fixture now re-exports <code>message::RequestEnvelope</code> and calls the shared guardrail (the B1/M1 fixes).</li>
+</ul>
+</div>
+
+<div class="card">
+<h3><span class="rank">6</span>Process disclosures <span class="tag light">light</span></h3>
+<ul>
+<li>Phase 4's executor died at its tool-call limit mid-flight; I finished the compile fixes, snapshot acceptance, and cleanup myself under the executor-fallback rule (logged on the card). The affected surface: <code>src/fixture/</code>, <code>src/golden_tests.rs</code>, visibility/gating edits.</li>
+<li>One verbatim-port deviation: <code>src/types.rs</code> <code>LoopDetected</code> doc comment no longer references the dropped duplicate-call guard.</li>
+<li>R3/R5/R8 live-comparison gates are skipped (no production Orchestrator exists here) — see the note at the top of <code>src/golden_tests.rs</code>. The byte-diff against the canonical corpus is the equivalent gate.</li>
+<li>Gate A ledger: <code>reviews/s70/</code> (card copy, full-range diff, byte proof); dispositions summarized in the S70 card log.</li>
+</ul>
+</div>
+
+<h2>Verify it yourself (UA commands)</h2>
+<pre><code>cd ~/workspace/agent-driver-prototype
+
+# 1. Full suite, strict snapshot mode (no auto-accept)
+INSTA_UPDATE=no cargo test
+
+# 2. Clippy — expect zero warnings
+cargo clippy
+
+# 3. The byte proof, independently
+for new in src/fixture/snapshots/*.snap; do
+  name=$(basename "$new" .snap)
+  short=${name#agent_driver_prototype__fixture__normalize__}
+  canon="snapshots/aura__orchestration__context_fixture__normalize__${short}.snap"
+  diff &lt;(awk '/^---$/{c++; next} c&gt;=2' "$new") \
+       &lt;(awk '/^---$/{c++; next} c&gt;=2' "$canon") &gt;/dev/null \
+    &amp;&amp; echo "IDENTICAL $short" || echo "DIFF $short"
+done</code></pre>
+<p class="small">Expected: <span class="ok">165 passed; 0 failed</span> · clippy silent · 21 × IDENTICAL. The escape-hatch guardrail is exercised by setting <code>AURA_ESCAPE_HATCH=1</code> and watching the golden tests panic loudly (optional).</p>
+
+<h2>Failure signatures</h2>
+<table>
+<tr><th>Observation</th><th>Meaning</th></tr>
+<tr><td>Any <span class="bad">DIFF</span> line in the proof loop</td><td>Port drift — do not approve; name the snapshot in your feedback.</td></tr>
+<tr><td>Golden tests fail with <code>INSTA_UPDATE=no</code></td><td>Committed snapshots don't match generated envelopes.</td></tr>
+<tr><td>Clippy warnings reappear</td><td>Acceptance regressions.</td></tr>
+<tr><td>A third normalization rewrite you can point to</td><td>The byte gate is gaming itself — blocking concern.</td></tr>
+</table>
+
+<h2>How to respond</h2>
+<div class="card">
+<p>Open a new session and say one of:</p>
+<ul>
+<li><strong>"S70 approved"</strong> — I mark the U gate, move S70 to done, and pull S71 (core loop).</li>
+<li><strong>"S70 changes:"</strong> + your findings — I disposition them on the card and re-run Gate A on the delta.</li>
+</ul>
+<p class="small">Resume anchors: the S70 card (<code>docs/redesign/cards/s70-crate-skeleton-golden-frames.md</code>) carries the full state and gate ledger; the session handoff is <code>reviews/s70/handoff.md</code> in the spike repo.</p>
+</div>
+
+</body>
+</html>
