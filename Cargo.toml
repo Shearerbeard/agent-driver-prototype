@@ -1,0 +1,16 @@
+[package]
+name = "agent-driver-prototype"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.91.1"
+license = "MIT OR Apache-2.0"
+publish = false
+
+[dependencies]
+agent-driver-rs = { path = "../agent-driver-rs-pin" }
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[dev-dependencies]
+insta = { version = "1", features = ["json"] }
