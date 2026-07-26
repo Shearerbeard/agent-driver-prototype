@@ -186,6 +186,14 @@ pub struct OrchestrationConfig {
 }
 
 impl OrchestrationConfig {
+    /// Whether orchestration mode has specialized workers configured.
+    ///
+    /// When true, tasks should be assigned to specific workers during planning.
+    /// When false, all tasks use the generic worker preamble.
+    pub fn has_workers(&self) -> bool {
+        !self.workers.is_empty()
+    }
+
     /// Get a worker configuration by name.
     ///
     /// Returns `None` if the worker doesn't exist.
@@ -233,4 +241,52 @@ pub struct VectorStoreConfig {
     pub name: String,
     /// Optional context string describing what the vector store contains (for better LLM guidance)
     pub context_prefix: Option<String>,
+}
+
+// ============================================================================
+// Glob Matching
+// ============================================================================
+
+/// Match a glob pattern against a string.
+///
+/// Supports:
+/// - `*` matches zero or more characters
+/// - `?` matches exactly one character
+///
+/// Examples:
+/// - `mezmo_*` matches `mezmo_logs`, `mezmo_pipelines`
+/// - `*Query*` matches `ListQuery`, `QueryKnowledgeBases`
+/// - `tool_?` matches `tool_a`, `tool_b`
+pub fn glob_match(pattern: &str, text: &str) -> bool {
+    let pattern: Vec<char> = pattern.chars().collect();
+    let text: Vec<char> = text.chars().collect();
+
+    fn match_recursive(pattern: &[char], text: &[char]) -> bool {
+        match (pattern.first(), text.first()) {
+            // Both exhausted - match!
+            (None, None) => true,
+            // Pattern exhausted but text remains - no match
+            (None, Some(_)) => false,
+            // Wildcard * - try matching zero or more characters
+            (Some('*'), _) => {
+                // Try matching zero characters (skip *)
+                if match_recursive(&pattern[1..], text) {
+                    return true;
+                }
+                // Try matching one character and continue with *
+                if !text.is_empty() && match_recursive(pattern, &text[1..]) {
+                    return true;
+                }
+                false
+            }
+            // Text exhausted but pattern has non-* remaining - check for trailing *s
+            (Some(p), None) => *p == '*' && match_recursive(&pattern[1..], text),
+            // Single character wildcard ?
+            (Some('?'), Some(_)) => match_recursive(&pattern[1..], &text[1..]),
+            // Literal character match
+            (Some(p), Some(t)) => *p == *t && match_recursive(&pattern[1..], &text[1..]),
+        }
+    }
+
+    match_recursive(&pattern, &text)
 }

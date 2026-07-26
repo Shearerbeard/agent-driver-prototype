@@ -147,3 +147,43 @@ impl ToolReasoningWidth {
         truncate_chars(text, self.0.get(), TruncateMarker::EllipsisChar)
     }
 }
+
+// ============================================================================
+// Tool List Limit
+// ============================================================================
+
+/// The coordinator planning prompt truncates long per-worker tool lists to a
+/// bounded count before appending `(+N more)`; `max_tools_per_worker = 0` is
+/// `HideAll`: Summary rendering shows `(+N more)` for a nonempty list, while
+/// Full rendering omits the tool section.
+///
+/// Business rule: the coordinator planning prompt truncates long per-worker
+/// tool lists to a bounded count.  `max_tools_per_worker = 0` is the raw
+/// display limit; the renderer decides whether that renders the degenerate
+/// `(+N more)` list or omits the tool section entirely.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ToolListLimit {
+    /// Render no tools; the display limit is zero.
+    ///
+    /// Summary rendering shows `(+N more)` for a nonempty list, while Full
+    /// rendering omits the tool section when the limit is zero.
+    HideAll,
+    /// Render at most this many tools before the suffix.
+    Limited(NonZeroUsize),
+}
+
+impl ToolListLimit {
+    pub fn new(count: usize) -> Self {
+        match NonZeroUsize::new(count) {
+            Some(n) => Self::Limited(n),
+            None => Self::HideAll,
+        }
+    }
+
+    pub fn get(&self) -> usize {
+        match self {
+            Self::HideAll => 0,
+            Self::Limited(n) => n.get(),
+        }
+    }
+}
