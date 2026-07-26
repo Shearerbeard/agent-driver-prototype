@@ -6,6 +6,115 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::types::{FailureCategory, TaskStatus};
+
+// ============================================================================
+// Routing mode
+// ============================================================================
+
+/// How the coordinator routed a query that produced a plan.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RoutingMode {
+    DirectAnswer,
+    Routed,
+    Orchestrated,
+}
+
+// ============================================================================
+// Run manifest types
+// ============================================================================
+
+/// Typed manifest written at the end of each orchestration run.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RunManifest {
+    pub run_id: String,
+    pub session_id: Option<String>,
+    pub timestamp: String,
+    pub goal: String,
+    pub status: RunStatus,
+    pub iterations: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub routing_mode: Option<RoutingMode>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub outcome: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub response_summary: Option<String>,
+    pub task_summaries: Vec<TaskSummary>,
+    pub artifact_paths: Vec<String>,
+}
+
+/// Summary of a single task for the run manifest.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TaskSummary {
+    pub task_id: usize,
+    pub description: String,
+    pub status: TaskStatus,
+    pub worker: Option<String>,
+    pub result_preview: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub confidence: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failure_category: Option<FailureCategory>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error_context: Option<ErrorContext>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tool_trace: Vec<ToolTraceEntry>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub artifacts: Vec<ArtifactEntry>,
+}
+
+/// Structured failure detail for a task in the manifest.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ErrorContext {
+    pub category: FailureCategory,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_tool_call: Option<String>,
+    pub attempt_count: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub partial_result: Option<String>,
+}
+
+/// An artifact file produced during a task's execution.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ArtifactEntry {
+    pub filename: String,
+    pub size_bytes: u64,
+    pub kind: ArtifactKind,
+}
+
+/// Distinguishes worker result artifacts from promoted tool output artifacts.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ArtifactKind {
+    Result,
+    ToolOutput { tool_name: String },
+}
+
+/// Overall outcome of an orchestration run.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RunStatus {
+    Success,
+    PartialSuccess,
+    Failed,
+}
+
+/// A single tool call made during task execution.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ToolCallRecord {
+    pub tool: String,
+    pub arguments: serde_json::Value,
+    pub reasoning: String,
+    pub output: Option<String>,
+    pub error: Option<String>,
+    pub duration_ms: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub artifact_filename: Option<String>,
+}
+
 // ============================================================================
 // Tool trace types
 // ============================================================================

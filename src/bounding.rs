@@ -41,7 +41,7 @@ impl CharWidth {
 // ============================================================================
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum TruncateMarker {
+pub enum TruncateMarker {
     None,
     EllipsisChar,
     Dots,

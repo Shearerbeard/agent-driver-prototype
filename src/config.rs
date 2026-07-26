@@ -130,13 +130,29 @@ pub struct SkillsConfig;
 /// result_artifact_threshold = 4000
 /// result_summary_length = 2000
 /// ```
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct ArtifactsConfig {
     /// Optional base directory for execution persistence and plan storage.
     ///
     /// Structure: `<memory_dir>/<run_id>/iteration-{n}/...`
     /// If not set, execution persistence is disabled.
     pub memory_dir: Option<String>,
+    /// Whether completed-task tool-chain lines render in the continuation
+    /// prompt. Defaults to `false` (the accepted baseline).
+    pub show_tool_reasoning_in_continuation: bool,
+    /// Character cap for the inline result preview in continuation prompts.
+    /// Defaults to 2000.
+    pub result_summary_length: usize,
+}
+
+impl Default for ArtifactsConfig {
+    fn default() -> Self {
+        Self {
+            memory_dir: None,
+            show_tool_reasoning_in_continuation: false,
+            result_summary_length: 2000,
+        }
+    }
 }
 
 // ============================================================================
@@ -147,7 +163,7 @@ pub struct ArtifactsConfig {
 ///
 /// In orchestration mode, a coordinator agent decomposes queries into tasks executed by worker agents.
 /// The coordinator's system prompt comes from `[agent].system_prompt`.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct OrchestrationConfig {
     // --- Mode ---
     /// Whether orchestration mode is enabled.
@@ -180,9 +196,30 @@ pub struct OrchestrationConfig {
     /// Controls how tool information is shown to the coordinator during planning.
     pub tools_in_planning: ToolVisibility,
 
+    /// Maximum number of tool names to list per worker in the planning prompt
+    /// before appending `(+N more)`.
+    pub max_tools_per_worker: usize,
+
     // --- Sub-configs ---
     /// Artifact and persistence settings.
     pub artifacts: ArtifactsConfig,
+}
+
+impl Default for OrchestrationConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            max_planning_cycles: 3,
+            worker_system_prompt: None,
+            workers: HashMap::new(),
+            coordinator_vector_stores: Vec::new(),
+            allow_direct_answers: true,
+            allow_clarification: true,
+            tools_in_planning: ToolVisibility::Summary,
+            max_tools_per_worker: 10,
+            artifacts: ArtifactsConfig::default(),
+        }
+    }
 }
 
 impl OrchestrationConfig {
@@ -227,6 +264,22 @@ impl OrchestrationConfig {
             .collect::<Vec<_>>()
             .join("\n")
     }
+
+    /// Whether completed-task tool-chain lines render in the continuation
+    /// prompt.
+    pub fn show_tool_reasoning_in_continuation(&self) -> bool {
+        self.artifacts.show_tool_reasoning_in_continuation
+    }
+
+    /// Character cap for the inline result preview in continuation prompts.
+    pub fn result_summary_length(&self) -> usize {
+        self.artifacts.result_summary_length
+    }
+
+    /// Whether persistence (memory_dir) is enabled.
+    pub fn memory_dir(&self) -> Option<&str> {
+        self.artifacts.memory_dir.as_deref()
+    }
 }
 
 // ============================================================================
@@ -241,6 +294,96 @@ pub struct VectorStoreConfig {
     pub name: String,
     /// Optional context string describing what the vector store contains (for better LLM guidance)
     pub context_prefix: Option<String>,
+}
+
+impl VectorStoreConfig {
+    /// Construct with default fields except name and context_prefix.
+    pub fn new(name: &str, context_prefix: Option<&str>) -> Self {
+        Self {
+            name: name.to_owned(),
+            context_prefix: context_prefix.map(str::to_owned),
+        }
+    }
+}
+
+// ============================================================================
+// Skill Configuration
+// ============================================================================
+
+/// A validated skill name (1-64 chars, lowercase alphanumerics and hyphens,
+/// no leading/trailing/consecutive hyphens).
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct SkillName(String);
+
+impl SkillName {
+    /// Parse a skill name, returning an error string on validation failure.
+    pub fn new(name: impl Into<String>) -> Result<Self, String> {
+        let name = name.into();
+        validate_skill_name(&name)?;
+        Ok(Self(name))
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Display for SkillName {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl serde::Serialize for SkillName {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_str(&self.0)
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for SkillName {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        let s = String::deserialize(d)?;
+        Self::new(s).map_err(serde::de::Error::custom)
+    }
+}
+
+fn validate_skill_name(name: &str) -> Result<(), String> {
+    if name.is_empty() || name.len() > 64 {
+        return Err(format!(
+            "Skill name must be 1-64 characters, got {} characters",
+            name.len()
+        ));
+    }
+    if !name
+        .chars()
+        .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+    {
+        return Err(format!(
+            "Skill name '{name}' contains invalid characters (only lowercase alphanumeric and hyphens allowed)"
+        ));
+    }
+    if name.starts_with('-') || name.ends_with('-') {
+        return Err(format!(
+            "Skill name '{name}' must not start or end with a hyphen"
+        ));
+    }
+    if name.contains("--") {
+        return Err(format!(
+            "Skill name '{name}' must not contain consecutive hyphens"
+        ));
+    }
+    Ok(())
+}
+
+/// Skill configuration for on-demand loading via the `load_skill` tool.
+#[derive(Debug, Clone)]
+pub struct SkillConfig {
+    /// Unique name for this skill (must match directory name).
+    pub name: SkillName,
+    /// Human-readable description.
+    pub description: String,
+    /// Absolute path to the skill directory.
+    pub path: std::path::PathBuf,
 }
 
 // ============================================================================

@@ -7,6 +7,7 @@ pub mod config;
 pub mod config_builders;
 pub mod context;
 pub mod corpus_configuration;
+#[cfg(test)]
 pub mod fixture;
 pub mod message;
 pub mod persistence;
@@ -15,3 +16,6 @@ pub mod prompt_constants;
 pub mod templates;
 pub mod tools;
 pub mod types;
+
+#[cfg(test)]
+mod golden_tests;

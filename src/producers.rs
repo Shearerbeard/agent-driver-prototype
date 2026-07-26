@@ -22,7 +22,7 @@ use crate::types::{Plan, PlanningResponse, TaskState};
 
 /// Build the iter-1 planning wrapper (fresh query, no prior iteration).
 /// Enumerates the three routing tools with neutral bullets.
-pub(crate) fn build_planning_wrapper(
+pub fn build_planning_wrapper(
     query: &str,
     worker_section: &str,
     worker_guidelines: &str,
@@ -45,7 +45,7 @@ pub(crate) fn build_planning_wrapper(
 /// deliberately does NOT re-enumerate the three routing tools — the
 /// coordinator already has them in its preamble, and re-listing them here
 /// would layer additional tool-choice bias into the user message.
-pub(crate) fn build_continuation_wrapper(
+pub fn build_continuation_wrapper(
     ctx: &crate::types::IterationContext,
     max_iterations: usize,
     show_tool_chain: bool,
@@ -78,7 +78,7 @@ pub(crate) fn build_continuation_wrapper(
 /// model-text tier records narration that can mention tasks, matching
 /// the old primary recording, so the at-most-once property still holds
 /// because the continuation adds no second copy.
-pub(crate) fn compact_decision_turn(decision: &PlanningResponse, model_text: &str) -> String {
+pub fn compact_decision_turn(decision: &PlanningResponse, model_text: &str) -> String {
     match CoordinatorTurn::try_from(decision) {
         Ok(turn) => String::from(turn.render()),
         Err(e) => {
@@ -107,7 +107,7 @@ pub(crate) fn compact_decision_turn(decision: &PlanningResponse, model_text: &st
 ///
 /// Returns `None` when the task has no completed ancestors, so the
 /// `%%CONTEXT%%` slot is left empty.
-pub(crate) fn build_task_context(plan: &Plan, task_id: usize) -> Option<String> {
+pub fn build_task_context(plan: &Plan, task_id: usize) -> Option<String> {
     let ancestors = completed_ancestors(plan, task_id);
     if ancestors.is_empty() {
         return None;
@@ -175,7 +175,7 @@ pub(crate) fn build_task_context(plan: &Plan, task_id: usize) -> Option<String> 
 /// Find all completed ancestors of `task_id` with their shortest edge
 /// distance. Distance 1 is a direct dependency; larger distances are
 /// transitive. Results are returned in plan order (ascending task id).
-pub(crate) fn completed_ancestors(plan: &Plan, task_id: usize) -> Vec<(usize, usize)> {
+pub fn completed_ancestors(plan: &Plan, task_id: usize) -> Vec<(usize, usize)> {
     use std::collections::{HashMap, VecDeque};
 
     let mut best_distance: HashMap<usize, usize> = HashMap::new();
@@ -228,7 +228,7 @@ pub(crate) fn completed_ancestors(plan: &Plan, task_id: usize) -> Vec<(usize, us
 /// - `None`: Just worker descriptions (original behavior)
 /// - `Summary`: Worker descriptions + tool names
 /// - `Full`: Worker descriptions + tool names + descriptions
-pub(crate) fn build_worker_prompt_sections(
+pub fn build_worker_prompt_sections(
     config: &OrchestrationConfig,
     tool_list_limit: ToolListLimit,
     vector_stores: &[VectorStoreConfig],
@@ -267,7 +267,7 @@ pub(crate) fn build_worker_prompt_sections(
 }
 
 /// Build worker section without tool information (ToolVisibility::None).
-pub(crate) fn build_workers_section_no_tools(config: &OrchestrationConfig) -> String {
+pub fn build_workers_section_no_tools(config: &OrchestrationConfig) -> String {
     let workers_list = config.format_workers_for_prompt();
     crate::templates::render_worker_roster(&crate::templates::WorkerRosterVars {
         header_note: "",
@@ -277,7 +277,7 @@ pub(crate) fn build_workers_section_no_tools(config: &OrchestrationConfig) -> St
 }
 
 /// Build worker section with tool names (ToolVisibility::Summary).
-pub(crate) fn build_workers_section_with_tools(
+pub fn build_workers_section_with_tools(
     config: &OrchestrationConfig,
     tool_list_limit: ToolListLimit,
 ) -> String {
@@ -309,7 +309,7 @@ pub(crate) fn build_workers_section_with_tools(
 }
 
 /// Build worker section with full tool info (ToolVisibility::Full).
-pub(crate) fn build_workers_section_with_full_tools(
+pub fn build_workers_section_with_full_tools(
     config: &OrchestrationConfig,
     tool_list_limit: ToolListLimit,
     vector_stores: &[VectorStoreConfig],
@@ -388,7 +388,7 @@ pub(crate) fn build_workers_section_with_full_tools(
 /// The corpus is MCP-less, so `all_tools` is always empty here. Only
 /// `vector_search_{store}` tools from `worker_config.vector_stores` are
 /// added. Source anchor: orchestrator.rs:2141-2171.
-pub(crate) fn resolve_worker_tools(
+pub fn resolve_worker_tools(
     config: &OrchestrationConfig,
 ) -> HashMap<String, Vec<String>> {
     let all_tools: Vec<String> = Vec::new();
@@ -425,7 +425,7 @@ pub(crate) fn resolve_worker_tools(
 /// Format a list of tool names with truncation.
 ///
 /// If the list exceeds `max`, truncates and appends "(+N more)".
-pub(crate) fn format_tool_list(tools: &[String], max: usize) -> String {
+pub fn format_tool_list(tools: &[String], max: usize) -> String {
     if tools.is_empty() {
         return String::new();
     }
@@ -450,7 +450,7 @@ pub(crate) fn format_tool_list(tools: &[String], max: usize) -> String {
 /// `Some` (orchestrator.rs:2177-2208). The corpus is MCP-less, so that block
 /// is omitted entirely. Only vector store descriptions from the config mirror
 /// are collected. Source anchor: orchestrator.rs:2177-2222.
-pub(crate) fn get_all_tool_descriptions(
+pub fn get_all_tool_descriptions(
     vector_stores: &[VectorStoreConfig],
 ) -> HashMap<String, String> {
     let mut descriptions = HashMap::new();
