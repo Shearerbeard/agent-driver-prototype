@@ -29,7 +29,7 @@
 
 <div class="card decision">
 <p><strong>The decision you are making:</strong> approve the core coordinator loop, and S72 (DAG executor + structured review packets) pulls next. This is the S38 northstar shape running for real: planning and execution as ordinary nonterminal tools inside one model-driven loop.</p>
-<p><strong>Where the code lives:</strong> <code>~/workspace/agent-driver-prototype</code> — commits <code>ae3f2fb..7ddb7f6</code> (3 commits: type skeleton <code>3c13c8d</code>, implementation <code>ab49e35</code>, Gate A disposition <code>7ddb7f6</code>). Packet: <code>reviews/s71/</code> in that repo.</p>
+<p><strong>Where the code lives:</strong> <code>~/workspace/agent-driver-prototype</code> — range <code>ae3f2fb..aaca6c0</code> (code commits: type skeleton <code>3c13c8d</code>, implementation <code>ab49e35</code>, Gate A disposition <code>7ddb7f6</code>, canonical budget <code>aaca6c0</code>; the packet-sync commit inside the range is docs-only). Packet: <code>reviews/s71/</code> in that repo.</p>
 <p><strong>What has already been machine-verified:</strong> both card acceptance tests green inside a 24-test MockProvider suite · S70 goldens untouched and green · 165 lib tests · clippy clean · type-design panel (Opus adversarial + codex logic) FAIL-then-repaired: 6 blocking, 10 accepted minors, ledger at <code>reviews/s71/panel-ledger.md</code> · Gate A (kimi-k2p7-code) <span class="ok">PASS</span> with 1 minor dispositioned (<code>reviews/s71/gate-a-ledger.md</code>; two failed glm-5p2 delegations on the record).</p>
 </div>
 
@@ -41,6 +41,7 @@
 <p>The pinned substrate has <em>no terminal-tool concept</em>: nothing a tool returns can end the loop. So <code>respond</code> records the answer into a first-write-wins slot and the loop ends the two ways the substrate ends it — the model stops calling tools, or <code>LoopBudget</code> (mapped to <code>max_tool_depth</code>) fires. A consequence the codex panel leg forced into the open: the substrate refuses the exhausting response's tool calls without executing them, so <strong>S39's post-exhaustion terminal opportunity is dropped</strong> — a budget-stopped run gets the host-authored fallback, never one last model-authored answer.</p>
 <p>Open: <code>src/coordinator_loop/outcome.rs</code> (the total stop-reason × slot join), <code>DESIGN.md</code> "What the loop is" and section 5.</p>
 <p><strong>Wrong if:</strong> you want the S39 exhaustion-turn semantics preserved in the spike, or you read the card's <code>LoopBudget</code> requirement as demanding a host-side counter rather than the substrate's own depth cap.</p>
+<p>Per your direction at this gate, the tested depth is now encoded: <code>LoopBudget::CANONICAL</code> = 12, derived from the canonical config's <code>max_planning_cycles = 4</code> (a cycle is a <code>create_plan</code>+<code>execute</code> pair, one turn writes the answer, three cover <code>inspect_run</code> slack), pinned by a unit test — instead of leaning on the substrate's default of 25.</p>
 </div>
 
 <div class="card">

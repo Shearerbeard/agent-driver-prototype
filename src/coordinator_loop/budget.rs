@@ -23,7 +23,7 @@ impl LoopBudget {
     /// Derived from the depth the program has been testing rather than from
     /// the substrate's own default of twenty-five. The canonical benchmark
     /// config caps the bounded router at `max_planning_cycles = 4`
-    /// (`configs/sre-shell-orchestrated.toml:123` in the adapter repo). One
+    /// (`configs/sre-shell-orchestrated.toml` in the adapter repo). One
     /// of those cycles maps to a `create_plan` and `execute` pair of loop
     /// turns, so four cycles cost `4 * 2` turns. Writing the answer costs one
     /// more, and three turns of `inspect_run` slack cover the pull-on-demand
