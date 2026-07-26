@@ -1,0 +1,95 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>S71 U(code-review) — review guide</title>
+<style>
+  :root { --ink:#1a1a1a; --mut:#666; --acc:#7a3ff2; --warn:#b23b3b; --ok:#2c7a4b; --bg:#fafafa; --card:#fff; --line:#e3e3e3; }
+  body { font-family: -apple-system, "SF Pro Text", Helvetica, Arial, sans-serif; color:var(--ink); background:var(--bg); max-width: 960px; margin: 2rem auto; padding: 0 1.25rem; line-height: 1.55; }
+  h1 { font-size: 1.5rem; } h2 { font-size: 1.15rem; margin-top: 2.2rem; border-bottom: 1px solid var(--line); padding-bottom: .3rem; }
+  h3 { font-size: 1rem; margin-bottom: .2rem; }
+  code, .mono { font-family: "SF Mono", Menlo, monospace; font-size: .88em; background:#f0eef5; padding: .08em .3em; border-radius: 4px; }
+  pre { background:#26232e; color:#e8e6f0; padding: .9rem 1rem; border-radius: 8px; overflow-x: auto; font-size: .82rem; }
+  pre code { background: none; color: inherit; padding: 0; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 1rem 1.2rem; margin: 1rem 0; }
+  .rank { display:inline-block; min-width:2.2rem; font-weight:700; color:var(--acc); }
+  .tag { font-size:.72rem; font-weight:600; padding:.15em .5em; border-radius: 999px; vertical-align: middle; margin-left:.4rem; }
+  .heavy { background:#efe6fd; color:#5b2db8; } .med { background:#e8f0fe; color:#2a56a5; } .light { background:#eee; color:#555; }
+  .ok { color: var(--ok); font-weight: 600; } .bad { color: var(--warn); font-weight: 600; }
+  table { border-collapse: collapse; width: 100%; font-size: .9rem; }
+  th, td { text-align: left; border-bottom: 1px solid var(--line); padding: .45rem .5rem; vertical-align: top; }
+  .decision { border-left: 4px solid var(--acc); }
+  .small { font-size: .85rem; color: var(--mut); }
+  ul { margin: .3rem 0 .6rem; }
+</style>
+</head>
+<body>
+
+<h1>S71 code review guide <span class="tag heavy">USER GATE</span></h1>
+
+<div class="card decision">
+<p><strong>The decision you are making:</strong> approve the core coordinator loop, and S72 (DAG executor + structured review packets) pulls next. This is the S38 northstar shape running for real: planning and execution as ordinary nonterminal tools inside one model-driven loop.</p>
+<p><strong>Where the code lives:</strong> <code>~/workspace/agent-driver-prototype</code> — commits <code>ae3f2fb..7ddb7f6</code> (3 commits: type skeleton <code>3c13c8d</code>, implementation <code>ab49e35</code>, Gate A disposition <code>7ddb7f6</code>). Packet: <code>reviews/s71/</code> in that repo.</p>
+<p><strong>What has already been machine-verified:</strong> both card acceptance tests green inside a 24-test MockProvider suite · S70 goldens untouched and green · 165 lib tests · clippy clean · type-design panel (Opus adversarial + codex logic) FAIL-then-repaired: 6 blocking, 10 accepted minors, ledger at <code>reviews/s71/panel-ledger.md</code> · Gate A (kimi-k2p7-code) <span class="ok">PASS</span> with 1 minor dispositioned (<code>reviews/s71/gate-a-ledger.md</code>; two failed glm-5p2 delegations on the record).</p>
+</div>
+
+<h2>The 80/20 review order</h2>
+<p class="small">Heaviest first. Each item says what to open and what would make it wrong.</p>
+
+<div class="card">
+<h3><span class="rank">1</span>The terminal mechanism <span class="tag heavy">heaviest</span></h3>
+<p>The pinned substrate has <em>no terminal-tool concept</em>: nothing a tool returns can end the loop. So <code>respond</code> records the answer into a first-write-wins slot and the loop ends the two ways the substrate ends it — the model stops calling tools, or <code>LoopBudget</code> (mapped to <code>max_tool_depth</code>) fires. A consequence the codex panel leg forced into the open: the substrate refuses the exhausting response's tool calls without executing them, so <strong>S39's post-exhaustion terminal opportunity is dropped</strong> — a budget-stopped run gets the host-authored fallback, never one last model-authored answer.</p>
+<p>Open: <code>src/coordinator_loop/outcome.rs</code> (the total stop-reason × slot join), <code>DESIGN.md</code> "What the loop is" and section 5.</p>
+<p><strong>Wrong if:</strong> you want the S39 exhaustion-turn semantics preserved in the spike, or you read the card's <code>LoopBudget</code> requirement as demanding a host-side counter rather than the substrate's own depth cap.</p>
+</div>
+
+<div class="card">
+<h3><span class="rank">2</span>Acceptance test 1: no stream break <span class="tag heavy">heavy</span></h3>
+<p><code>tests/coordinator_loop.rs::create_plan_then_execute_continues_without_a_stream_break</code> — three tool rounds (<code>create_plan</code>, <code>execute</code>, <code>respond</code>) inside <em>one</em> <code>AgentLoop::run</code>, tool order asserted by observer, plan in the store under a precomputed deterministic id, stub execution recorded, answer committed. The mock panics on queue exhaustion, so the call arithmetic (4 queued responses, 4 provider calls) is proven by the test passing at all. This is the behavior aura's bounded router cannot produce: its stream breaks the moment a routing tool writes.</p>
+<p><strong>Wrong if:</strong> the assertions don't convince you the loop truly continued through planning and execution in one conversation.</p>
+</div>
+
+<div class="card">
+<h3><span class="rank">3</span>Acceptance test 2: budget-forced termination <span class="tag med">medium</span></h3>
+<p><code>turn_budget_stops_the_loop_and_the_host_writes_the_answer</code> — budget 2, third response's tool call refused before dispatch (observer proves exactly two <code>ToolCallStart</code>s), outcome is <code>BudgetExhausted</code> with the host fallback rendered from the stub execution's evidence through the ported frame renderers. A sibling test proves the no-execution fallback template lists the unexecuted plan.</p>
+</div>
+
+<div class="card">
+<h3><span class="rank">4</span>The planning-template confound <span class="tag med">medium</span></h3>
+<p>The card requires the opening message to render through the S70-ported <code>planning_prompt.md</code> — and it does, byte-faithful. But that template tells the model to call one of the bounded router's three tools EXACTLY ONCE, while this loop registers four different tools. Recorded as DESIGN.md R1: <strong>S72 must port a loop-shaped planning template before any benchmark read is meaningful</strong>. MockProvider tests are unaffected (the mock never reads prompts).</p>
+<p><strong>Wrong if:</strong> you consider the mismatch disqualifying now rather than an S72 duty.</p>
+</div>
+
+<div class="card">
+<h3><span class="rank">5</span>Roster validation and plan identity <span class="tag med">medium</span></h3>
+<p>Panel finding A3: <code>create_plan</code> was roster-blind. Now the worker enum rides in the tool schema and <code>to_plan</code> validates every assignment against <code>WorkerRoster</code>; an unknown worker is a rejection observation the loop survives (test: <code>an_unknown_worker_is_a_rejection_the_loop_survives</code>). <code>PlanId</code> digests goal + steps only (rationale excluded), formats <code>{:016x}</code>, and round-trips through <code>parse</code> (64-value sweep test).</p>
+</div>
+
+<div class="card">
+<h3><span class="rank">6</span>Evidence-model reuse and the one known fidelity limit <span class="tag light">lighter</span></h3>
+<p>Panel finding A1 forced <code>TaskObservation::Completed</code> onto the ported <code>EvidenceEntry</code>, so confidence-without-summary stays unrepresentable. Gate A's one finding (G1): the host fallback renders a soft failure in the hard form under its true category label, because the frame's Soft rendering needs a worker claim that only exists once S72's real executor produces submissions. Declared in DESIGN.md; fix commit <code>7ddb7f6</code>.</p>
+</div>
+
+<div class="card">
+<h3><span class="rank">7</span>The ledgers <span class="tag light">audit trail</span></h3>
+<p><code>reviews/s71/panel-ledger.md</code> — 17 numbered findings, every disposition recorded, one rejection with reason. <code>reviews/s71/gate-a-ledger.md</code> — the delegation record including both failed glm-5p2 runs.</p>
+</div>
+
+<h2>Verify it yourself</h2>
+<pre><code>cd ~/workspace/agent-driver-prototype
+git log --oneline ae3f2fb..HEAD          # the three S71 commits
+INSTA_UPDATE=no cargo test               # 165 lib + 24 loop tests green
+cargo clippy                             # clean
+INSTA_UPDATE=no cargo test golden        # S70 byte-identity suite still green
+</code></pre>
+
+<h2>What S71 deliberately does not do</h2>
+<ul>
+<li>No real workers, no DAG: <code>execute</code> runs a <code>StubExecutor</code> behind the <code>PlanExecutor</code> seam; S72 replaces it.</li>
+<li>No persistence, no loop journal, no capability gating, no clarification terminal, no cancellation path — every drop declared with reasons in DESIGN.md section 5.</li>
+<li>No system-prompt opinion: the ported preamble builders describe the router's tool surface, so the caller supplies the prompt (DESIGN.md R3).</li>
+<li>Flow-wide drops per the plan and F1: DuplicateCallGuard, retry semantics, scratchpad, session history, skills, cross-run artifacts.</li>
+</ul>
+
+</body>
+</html>

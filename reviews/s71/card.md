@@ -58,8 +58,10 @@ The coordinator loop crate module with MockProvider tests.
 
 - [x] Gate S: the two MockProvider tests green, clippy clean, S70
       goldens green.
-- [ ] Gate A: fireworks glm-5p2 reviewer leg (staged-dir CLI recipe;
-      author kimi-family).
+- [x] Gate A: fireworks kimi-k2p7-code via the staged-dir CLI recipe
+      (author Claude-family; glm-5p2 failed twice as a delegation and
+      the tool-switch rule applied - see the 2026-07-26 Gate A log
+      entry).
 - [ ] Gate U (code-review): user reviews the loop diff before S72
       pulls.
 
@@ -142,3 +144,19 @@ direct.
   second element, to_plan replaces TryFrom to carry the roster, and
   a correct note that loop-top cancellation is a graceful Ok the
   Interrupted(Unclassified) arm carries totally.
+- 2026-07-26 Gate A PASSED. Reviewer: fireworks kimi-k2p7-code via
+  the staged-dir CLI recipe over the full range `ae3f2fb..ab49e35`
+  (author Claude-family, invariant holds). Two prior glm-5p2
+  attempts failed as delegations (one died mid-diff with no verdict,
+  one killed with empty output) and were recorded, never absorbed;
+  the REVIEW-TOOLING stall rule routed the leg to the standard
+  pair's other member. Verdict PASS with one MINOR (G1: the host
+  fallback renders a soft failure in the hard form; the frame's
+  Soft rendering needs a worker claim S71 cannot produce), accepted
+  with a scoped doc repair in fix commit `7ddb7f6`; the fix commit
+  was re-reviewed fresh (kimi) and PASSED, extending the range of
+  record to `ae3f2fb..7ddb7f6`. Ledgers:
+  `reviews/s71/panel-ledger.md` and `reviews/s71/gate-a-ledger.md`
+  in the spike repo. The card waits at U(code-review): packet at
+  `reviews/s71/` with `review-guide.html`, the full-range diff, and
+  both ledgers.
