@@ -9,9 +9,12 @@
 //! `event: endpoint` carrying the relative messages URL; JSON-RPC requests
 //! are `POST`ed to that URL and return `202 Accepted`; responses arrive as
 //! `event: message` frames on the stream, interleaved with `: ping` comment
-//! lines. No rmcp type is used — the JSON-RPC envelope is built and parsed
-//! with `serde_json` so the rmcp 0.12-vs-1.7 version gap never crosses this
-//! seam.
+//! lines. The MCP handshake requires a `notifications/initialized`
+//! notification (no id, no response) after the `initialize` result before
+//! any further request; [`SidecarClient::initialize`] sends it automatically
+//! so callers cannot forget it. No rmcp type is used — the JSON-RPC envelope
+//! is built and parsed with `serde_json` so the rmcp 0.12-vs-1.7 version gap
+//! never crosses this seam.
 
 use std::collections::VecDeque;
 use std::fmt;
@@ -363,6 +366,21 @@ fn format_sse_item(item: &SseItem) -> String {
     }
 }
 
+/// Build a JSON-RPC notification envelope: `jsonrpc: "2.0"` plus `method`,
+/// with no `id` and no `params`.
+///
+/// Per JSON-RPC 2.0 a notification carries no `id` and elicits no response.
+/// The MCP 2024-11-05 handshake requires the client to send a
+/// `notifications/initialized` notification after the `initialize` result
+/// before any further request; the sidecar accepts it with HTTP 202 and
+/// emits no SSE frame.
+fn notification_envelope(method: &str) -> JsonValue {
+    serde_json::json!({
+        "jsonrpc": "2.0",
+        "method": method,
+    })
+}
+
 // ===========================================================================
 // Shared connection state
 // ===========================================================================
@@ -516,11 +534,20 @@ impl SidecarClient {
             .collect()
     }
 
-    /// Send `initialize` and read the server info.
+    /// Send `initialize`, read the server info, and complete the MCP
+    /// handshake by sending the `notifications/initialized` notification.
+    ///
+    /// The 2024-11-05 spec requires the client to send the notification
+    /// after the `initialize` result and before any further request; a
+    /// sidecar that receives `tools/list` first kills the session with
+    /// `Received request before initialization was complete`. Sending it
+    /// here means callers cannot forget it — the client is usable the
+    /// moment this returns.
     ///
     /// # Errors
     ///
-    /// Returns [`SidecarError::Protocol`] when the response is malformed.
+    /// Returns [`SidecarError::Protocol`] when the response is malformed or
+    /// the notification POST fails.
     pub async fn initialize(&self) -> Result<SidecarServerInfo, SidecarError> {
         let params = serde_json::json!({
             "protocolVersion": "2024-11-05",
@@ -551,6 +578,10 @@ impl SidecarClient {
             .and_then(|v| v.as_str())
             .ok_or_else(|| SidecarError::Protocol("serverInfo missing version".to_owned()))?
             .to_owned();
+        // MCP handshake: the notification goes after the initialize result
+        // and before the client is usable. The sidecar accepts it with 202
+        // and emits no SSE response frame, so do not wait on the stream.
+        self.notify("notifications/initialized").await?;
         Ok(SidecarServerInfo {
             protocol_version,
             server_name,
@@ -689,6 +720,33 @@ impl SidecarClient {
         value.get("result").cloned().ok_or_else(|| {
             SidecarError::Protocol(format!("JSON-RPC response to {method} missing result"))
         })
+    }
+
+    /// Send a JSON-RPC notification (no id, no response) to the message
+    /// endpoint.
+    ///
+    /// Per JSON-RPC 2.0 a notification carries no `id` and elicits no
+    /// response; the sidecar accepts it with HTTP 202 and emits no SSE
+    /// frame, so this does not wait on the stream. It does not touch
+    /// `last_request`, which tracks id-bearing requests for transcript
+    /// capture — a notification is not a request.
+    async fn notify(&self, method: &str) -> Result<(), SidecarError> {
+        let envelope = notification_envelope(method);
+        let body = serde_json::to_string(&envelope)
+            .map_err(|e| SidecarError::Protocol(format!("notification serialize failed: {e}")))?;
+        let post = self
+            .shared
+            .http
+            .post(self.shared.message_endpoint.as_str())
+            .header(CONTENT_TYPE, "application/json")
+            .body(body)
+            .send()
+            .await
+            .map_err(|e| SidecarError::Protocol(format!("POST notification {method} failed: {e}")))?;
+        post.error_for_status().map_err(|e| {
+            SidecarError::Protocol(format!("POST notification {method} bad status: {e}"))
+        })?;
+        Ok(())
     }
 
     /// Read frames from the SSE stream until the response with `id` arrives.
@@ -1071,5 +1129,33 @@ data: {"jsonrpc":"2.0","id":4,"result":{"content":[{"type":"text","text":"111e30
             waited.is_err(),
             "endpoint wait must be bounded by the caller's timeout, not hang silently"
         );
+    }
+
+    // --- MCP handshake notification --------------------------------------
+    //
+    // The 2024-11-05 spec requires a `notifications/initialized`
+    // notification after the initialize result before any further request.
+    // A JSON-RPC notification has no `id` and elicits no response; the
+    // sidecar kills the session (`Received request before initialization
+    // was complete`) if `tools/list` arrives first. This test pins the
+    // envelope shape so a regression that adds an id or params is caught.
+
+    #[test]
+    fn initialized_notification_envelope_has_no_id_and_no_params() {
+        let env = notification_envelope("notifications/initialized");
+        assert_eq!(env["jsonrpc"].as_str(), Some("2.0"));
+        assert_eq!(env["method"].as_str(), Some("notifications/initialized"));
+        // A notification carries no id and elicits no response.
+        assert!(
+            env.get("id").is_none(),
+            "notification must not carry an id"
+        );
+        assert!(
+            env.get("params").is_none(),
+            "initialized notification carries no params"
+        );
+        // Exactly the two required fields.
+        let obj = env.as_object().unwrap();
+        assert_eq!(obj.len(), 2, "envelope must be exactly jsonrpc + method");
     }
 }
