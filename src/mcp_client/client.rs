@@ -35,6 +35,17 @@ use super::wire::{SidecarContent, SidecarServerInfo, SidecarTool, SidecarToolArg
 /// only the wait for the next response frame after a POST.
 const RESPONSE_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// Bound on how long `connect` may wait for the sidecar's opening
+/// `event: endpoint` frame.
+///
+/// The SSE GET response is already open by the time this runs; the bound
+/// guards only the wait for the first dispatchable frame. A wire-shape
+/// regression that the parser cannot split (a terminator it does not
+/// recognize) would otherwise leave the read pending forever on an
+/// open-but-silent stream — this timeout makes it fail loudly as a
+/// [`SidecarError::Connect`] instead of hanging.
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
+
 /// The SSE endpoint of a TerminalBench sidecar.
 ///
 /// Forbidden invalid state: an empty or non-HTTP URL reaching the connect
@@ -181,6 +192,53 @@ fn parse_sse_block(block: &str) -> Option<SseItem> {
     }
 }
 
+/// Length of the SSE line break starting at `bytes[i]`, or `None` when
+/// `bytes[i]` is not a line break.
+///
+/// Per the WHATWG SSE spec a line break is `\r\n`, `\n`, or a lone `\r`;
+/// `\r\n` is checked first so it counts as one break, not two.
+fn line_break_len(bytes: &[u8], i: usize) -> Option<usize> {
+    match bytes[i] {
+        b'\n' => Some(1),
+        b'\r' => Some(if i + 1 < bytes.len() && bytes[i + 1] == b'\n' { 2 } else { 1 }),
+        _ => None,
+    }
+}
+
+/// Find the next SSE blank-line terminator in `buf` and return
+/// `(start, len)`: `start` is the byte index where the terminator begins
+/// (the line break ending the last field line) and `len` is the full
+/// terminator length (both consecutive line breaks).
+///
+/// Returns `None` when no complete blank line is present yet, including
+/// the partial case where the buffer ends immediately after a single line
+/// break — the second break may arrive in a later chunk, so the partial
+/// block must stay buffered. Real sidecars send LF (`\n\n`) or CRLF
+/// (`\r\n\r\n`); mixed endings (`\r\n\n`, `\n\r\n`) and CR-only are
+/// accepted too.
+fn find_frame_terminator(buf: &str) -> Option<(usize, usize)> {
+    let bytes = buf.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        let Some(lb1) = line_break_len(bytes, i) else {
+            i += 1;
+            continue;
+        };
+        let after_first = i + lb1;
+        if after_first >= bytes.len() {
+            // Buffer ends right after the first break: a second break could
+            // still arrive in a later chunk, so do not emit a frame yet.
+            return None;
+        }
+        if let Some(lb2) = line_break_len(bytes, after_first) {
+            return Some((i, lb1 + lb2));
+        }
+        // Ordinary line ending inside a frame; resume scanning after it.
+        i = after_first;
+    }
+    None
+}
+
 /// Incremental SSE frame parser: feed raw UTF-8 chunks, drain complete frames.
 ///
 /// Incomplete frames (no trailing blank line yet) stay buffered until the next
@@ -202,12 +260,19 @@ impl SseParser {
 
     /// Take all complete frames currently in the buffer, leaving any
     /// partial trailing block buffered for the next call.
+    ///
+    /// Frame terminators are detected line-ending-agnostically per the
+    /// WHATWG SSE spec: a blank line is two consecutive line breaks, each
+    /// of which may be `\n`, `\r\n`, or `\r`. The live TerminalBench
+    /// sidecar sends CRLF (`\r\n\r\n`); accepting LF, CRLF, and mixed
+    /// endings keeps a CRLF-only stream from starving the parser and
+    /// hanging `connect` on an endpoint frame it can never split.
     fn take_frames(&mut self) -> Vec<SseItem> {
         let mut out = Vec::new();
-        while let Some(end) = self.buf.find("\n\n") {
-            // `end` is the index of the first byte of the `\n\n` terminator;
-            // include both newlines so the consumed slice is a whole block.
-            let block: String = self.buf.drain(..end + 2).collect();
+        while let Some((term_start, term_len)) = find_frame_terminator(&self.buf) {
+            // Drain the block content plus its trailing blank-line
+            // terminator so the next iteration starts at a block boundary.
+            let block: String = self.buf.drain(..term_start + term_len).collect();
             if let Some(item) = parse_sse_block(&block) {
                 out.push(item);
             }
@@ -259,9 +324,34 @@ impl SseReader {
     }
 }
 
+/// Read SSE items until the first `event: endpoint` frame and return its
+/// data: the relative messages URL the sidecar advertises.
+///
+/// Comments and non-endpoint frames are skipped; a closed stream yields
+/// [`SidecarError::MissingEndpointEvent`]. This helper has no internal
+/// bound by design — [`SidecarClient::connect`] wraps it in
+/// `timeout(CONNECT_TIMEOUT, …)` so a stream that stays open without ever
+/// delivering the endpoint frame fails loudly instead of hanging.
+async fn read_endpoint_event(reader: &mut SseReader) -> Result<String, SidecarError> {
+    loop {
+        match reader.next_item().await? {
+            None => return Err(SidecarError::MissingEndpointEvent),
+            Some(SseItem::Comment(_)) => continue,
+            Some(SseItem::Frame { event, data }) if event.as_deref() == Some("endpoint") => {
+                return Ok(data);
+            }
+            Some(_) => continue,
+        }
+    }
+}
+
 /// Render an item back into the on-the-wire SSE block shape (including the
-/// trailing blank line) so the probe can print a transcript byte-identical to
-/// what the sidecar emitted.
+/// trailing blank line) for the probe transcript.
+///
+/// Line endings normalize to LF: `parse_sse_block` already stripped any CR
+/// via `str::lines`, so the original wire endings (LF or CRLF) are not
+/// recoverable here. The transcript is the normalized frame shape, which is
+/// what the F3 fixture and its round-trip tests pin.
 fn format_sse_item(item: &SseItem) -> String {
     match item {
         SseItem::Comment(c) => format!(": {c}\n\n"),
@@ -366,15 +456,13 @@ impl SidecarClient {
             pending_items: VecDeque::new(),
         };
 
-        let endpoint_data = loop {
-            match reader.next_item().await? {
-                None => return Err(SidecarError::MissingEndpointEvent),
-                Some(SseItem::Comment(_)) => continue,
-                Some(SseItem::Frame {
-                    event,
-                    data,
-                }) if event.as_deref() == Some("endpoint") => break data,
-                Some(_) => continue,
+        let endpoint_data = match timeout(CONNECT_TIMEOUT, read_endpoint_event(&mut reader)).await {
+            Ok(Ok(data)) => data,
+            Ok(Err(e)) => return Err(e),
+            Err(_) => {
+                return Err(SidecarError::Connect(format!(
+                    "timed out after {CONNECT_TIMEOUT:?} waiting for the endpoint event"
+                )));
             }
         };
 
@@ -868,5 +956,120 @@ data: {"jsonrpc":"2.0","id":4,"result":{"content":[{"type":"text","text":"111e30
     fn format_sse_item_round_trips_comment_block() {
         let item = SseItem::Comment("ping - x".to_owned());
         assert_eq!(format_sse_item(&item), ": ping - x\n\n");
+    }
+
+    // --- CRLF wire endings (the live TerminalBench sidecar shape) ---------
+    //
+    // The F3 transcript file carries CRLF line terminators. A terminator
+    // scan that only looks for `\n\n` never sees a frame boundary in a
+    // `\r\n\r\n` stream, so `take_frames` returns nothing forever and
+    // `connect` hangs on the endpoint event. These tests pin the
+    // line-ending-agnostic splitter so that regression cannot return.
+
+    #[test]
+    fn parser_handles_crlf_framed_stream_like_f3_transcript() {
+        // The first three F3 items — endpoint frame, message frame,
+        // `: ping` comment — framed with CRLF, exactly the wire shape the
+        // live sidecar emits.
+        let crlf = concat!(
+            "event: endpoint\r\n",
+            "data: /messages/?session_id=cde45def1da348018c0e2dcb74d3f8ca\r\n",
+            "\r\n",
+            "event: message\r\n",
+            "data: {\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":\"2024-11-05\",\"serverInfo\":{\"name\":\"t-bench\",\"version\":\"1.6.0\"}}}\r\n",
+            "\r\n",
+            ": ping - 2026-07-26 03:10:14.816383+00:00\r\n",
+            "\r\n",
+        );
+
+        let mut parser = SseParser::new();
+        parser.feed(crlf);
+        let items = parser.take_frames();
+        assert_eq!(items.len(), 3, "endpoint frame + message frame + ping comment");
+
+        assert!(matches!(&items[0], SseItem::Frame { event, data }
+            if event.as_deref() == Some("endpoint")
+            && data == "/messages/?session_id=cde45def1da348018c0e2dcb74d3f8ca"));
+
+        match &items[1] {
+            SseItem::Frame { event, data } => {
+                assert_eq!(event.as_deref(), Some("message"));
+                let v: JsonValue = serde_json::from_str(data).unwrap();
+                assert_eq!(v["id"].as_u64(), Some(1));
+                assert_eq!(v["result"]["protocolVersion"].as_str(), Some("2024-11-05"));
+                assert_eq!(v["result"]["serverInfo"]["name"].as_str(), Some("t-bench"));
+            }
+            SseItem::Comment(_) => panic!("expected message frame, got comment"),
+        }
+
+        assert_eq!(
+            items[2],
+            SseItem::Comment("ping - 2026-07-26 03:10:14.816383+00:00".to_owned())
+        );
+
+        // No partial frame should remain buffered.
+        assert!(parser.take_frames().is_empty());
+    }
+
+    #[test]
+    fn parser_handles_crlf_framed_stream_across_chunk_boundary() {
+        // A CRLF terminator split across two feeds (the `\r\n\r\n` broken
+        // between the field line's `\r\n` and the blank line's `\r\n`) must
+        // reassemble into whole frames, not lose or duplicate them.
+        let crlf = concat!(
+            "event: endpoint\r\n",
+            "data: /messages/?session_id=abc\r\n",
+            "\r\n",
+            "event: message\r\n",
+            "data: {\"jsonrpc\":\"2.0\",\"id\":1}\r\n",
+            "\r\n",
+        );
+        // Split inside the first frame's terminator: after the field line's
+        // `\r\n`, before the blank line's `\r\n`. ASCII-only, so any byte
+        // split is a UTF-8 boundary.
+        let split = crlf.find("\r\n\r\n").map(|p| p + 2).unwrap();
+
+        let mut parser = SseParser::new();
+        parser.feed(&crlf[..split]);
+        let first = parser.take_frames();
+        parser.feed(&crlf[split..]);
+        let second = parser.take_frames();
+        let items: Vec<SseItem> = first.into_iter().chain(second).collect();
+
+        assert_eq!(
+            items.len(),
+            2,
+            "splitting the CRLF feed must not lose or duplicate frames"
+        );
+        assert!(matches!(&items[0], SseItem::Frame { event, .. } if event.as_deref() == Some("endpoint")));
+        assert!(matches!(&items[1], SseItem::Frame { event, .. } if event.as_deref() == Some("message")));
+        assert!(parser.take_frames().is_empty());
+    }
+
+    #[tokio::test]
+    async fn read_endpoint_event_hangs_without_caller_timeout() {
+        // Reproduce the CRLF-hang symptom at the reader level: the GET
+        // succeeded and the stream is open, but the sidecar emitted only a
+        // keep-alive comment and then went quiet — no endpoint frame ever
+        // arrives. `read_endpoint_event` has no internal bound by design
+        // (the connect path supplies `CONNECT_TIMEOUT`); unbounded it would
+        // hang forever. A short caller timeout must fire so the regression
+        // fails loud instead of hanging.
+        let mock = futures::stream::iter(vec![
+            Ok::<Bytes, reqwest::Error>(Bytes::from_static(b": ping\r\n\r\n")),
+        ])
+        .chain(futures::stream::pending::<Result<Bytes, reqwest::Error>>());
+
+        let mut reader = SseReader {
+            stream: Box::pin(mock),
+            parser: SseParser::new(),
+            pending_items: VecDeque::new(),
+        };
+
+        let waited = timeout(Duration::from_millis(200), read_endpoint_event(&mut reader)).await;
+        assert!(
+            waited.is_err(),
+            "endpoint wait must be bounded by the caller's timeout, not hang silently"
+        );
     }
 }
