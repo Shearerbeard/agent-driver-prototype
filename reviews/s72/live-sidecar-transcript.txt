@@ -1,0 +1,55 @@
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.08s
+     Running `target/debug/sidecar_probe 'http://localhost:8000/sse'`
+event: endpoint
+data: /messages/?session_id=c32369bdb238473b945b77f2d6b6fa3d
+
+# message endpoint: http://localhost:8000/messages/?session_id=c32369bdb238473b945b77f2d6b6fa3d
+>>> initialize
+{"id":1,"jsonrpc":"2.0","method":"initialize","params":{"capabilities":{},"clientInfo":{"name":"agent-driver-prototype","version":"0.1.0"},"protocolVersion":"2024-11-05"}}
+event: message
+data: {"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2024-11-05","capabilities":{"experimental":{},"tools":{"listChanged":false}},"serverInfo":{"name":"t-bench","version":"1.6.0"}}}
+
+# serverInfo: t-bench 1.6.0
+>>> tools/list
+{"id":2,"jsonrpc":"2.0","method":"tools/list"}
+event: message
+data: {"jsonrpc":"2.0","id":2,"result":{"tools":[{"name":"keystrokes","description":"Send keystrokes to a tmux session.","inputSchema":{"properties":{"keystrokes":{"description":"Keystrokes to execute in the terminal. Use tmux-style escape sequences for special characters (e.g. C-c for ctrl-c).","title":"Keystrokes","type":"string"},"wait_time_sec":{"default":0.0,"description":"The number of expected seconds to wait for the command to complete.","title":"Wait Time Sec","type":"number"},"append_enter":{"default":false,"description":"Whether to append a newline character to the end of the keystrokes. (This is necessary to execute bash commands.)","title":"Append Enter","type":"boolean"}},"required":["keystrokes"],"title":"Command","type":"object"}},{"name":"capture-pane","description":"Capture the pane of a tmux session.","inputSchema":{"properties":{"wait_before_capture_sec":{"default":0.0,"description":"The number of seconds to wait before capturing the pane. This is useful if you just executed a command and want to wait a bit to capture the output.","title":"Wait Before Capture Sec","type":"number"}},"title":"CapturePaneSchema","type":"object"}}]}}
+
+# advertised tools: ["keystrokes", "capture-pane"]
+>>> tools/call keystrokes
+{"id":3,"jsonrpc":"2.0","method":"tools/call","params":{"arguments":{"append_enter":true,"keystrokes":"echo S72_PROBE_OK_$((50+22))"},"name":"keystrokes"}}
+event: message
+data: {"jsonrpc":"2.0","id":3,"result":{"content":[{"type":"text","text":"root@f69f3c86ca30:/# echo S72_PROBE_OK_$((50+22))\nS72_PROBE_OK_72\nroot@f69f3c86ca30:/#\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n"}],"isError":false}}
+
+# keystrokes result contains token: true
+>>> tools/call capture-pane
+{"id":4,"jsonrpc":"2.0","method":"tools/call","params":{"arguments":{},"name":"capture-pane"}}
+event: message
+data: {"jsonrpc":"2.0","id":4,"result":{"content":[{"type":"text","text":"root@f69f3c86ca30:/# echo S72_PROBE_OK_$((50+22))\nS72_PROBE_OK_72\nroot@f69f3c86ca30:/#\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n"}],"isError":false}}
+
+# capture-pane:
+root@f69f3c86ca30:/# echo S72_PROBE_OK_$((50+22))
+S72_PROBE_OK_72
+root@f69f3c86ca30:/#
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
