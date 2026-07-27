@@ -197,8 +197,8 @@ wrong template to be paired with the wrong vars at the call site.
 
 ## 6. Phase 2a repairs
 
-The type-design panel returned fifteen findings (A-leg: A1–A8, C-leg:
-C1–C9, with A2 and C5 convergent). Phase 2a applies all fifteen as
+The type-design panel returned fifteen findings (A-leg: A1-A8, C-leg:
+C1-C9, with A2 and C5 convergent). Phase 2a applies all fifteen as
 type-level repairs: signatures, types, and docs. Bodies remain `todo!()`
 except where a signature change forced a body edit the existing tests
 exercise.
