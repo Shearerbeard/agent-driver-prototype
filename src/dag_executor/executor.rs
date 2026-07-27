@@ -135,6 +135,15 @@ impl PlanExecutor for DagExecutor {
         let mut observations: Vec<Option<TaskObservation>> =
             vec![None; work_plan.tasks.len()];
 
+        // Task ids are not assumed to be contiguous or ordered; build a
+        // lookup once so the dispatch loop is O(n) overall, not O(n^2).
+        let task_index: std::collections::HashMap<usize, usize> = work_plan
+            .tasks
+            .iter()
+            .enumerate()
+            .map(|(index, task)| (task.id, index))
+            .collect();
+
         while !work_plan.is_finished() {
             let ready = ready_tasks(&work_plan);
             if ready.is_empty() {
@@ -142,11 +151,7 @@ impl PlanExecutor for DagExecutor {
             }
 
             for task_id in ready {
-                let index = work_plan
-                    .tasks
-                    .iter()
-                    .position(|t| t.id == task_id)
-                    .expect("ready task id exists in plan");
+                let index = *task_index.get(&task_id).expect("ready task id exists in plan");
                 work_plan.tasks[index].start();
 
                 let config = WorkerLoopConfig {

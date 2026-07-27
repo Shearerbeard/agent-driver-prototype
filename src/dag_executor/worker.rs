@@ -3,7 +3,8 @@
 use std::sync::Arc;
 
 use agent_driver_rs::agent::{AgentLoop, AgentLoopConfig, LoopStopReason};
-use agent_driver_rs::{ModelId, Provider, SessionBuilder, SystemPrompt};
+use agent_driver_rs::error::ProviderError;
+use agent_driver_rs::{ConfigError, ModelId, Provider, SessionBuilder, SystemPrompt};
 
 use crate::artifacts::ArtifactStore;
 use crate::coordinator_loop::{InterruptionReason, LoopBudget, SubmitResultTool, TerminalSlot};
@@ -77,11 +78,8 @@ pub enum WorkerOutcome {
 /// type-enforced but is detected at runtime, and the executor's per-task
 /// construction prevents production from sharing a slot.
 pub struct WorkerLoop {
-    #[allow(dead_code)]
     config: WorkerLoopConfig,
-    #[allow(dead_code)]
     sidecar: SidecarClient,
-    #[allow(dead_code)]
     artifacts: ArtifactStore,
 }
 
@@ -133,7 +131,7 @@ impl WorkerLoop {
             .await
         {
             Ok(session) => session,
-            Err(_) => return WorkerOutcome::Failed(FailureCategory::AgentError),
+            Err(error) => return session_build_error_to_outcome(&error),
         };
 
         let config = self.agent_loop_config();
@@ -143,7 +141,7 @@ impl WorkerLoop {
             .await
         {
             Ok(outcome) => outcome,
-            Err(_) => return WorkerOutcome::Failed(FailureCategory::AgentError),
+            Err(error) => return agent_loop_error_to_outcome(&error),
         };
 
         if let Some(submission) = submission_slot.recorded() {
@@ -160,6 +158,39 @@ impl WorkerLoop {
             ..AgentLoopConfig::default()
         }
     }
+}
+
+/// Map a `ConfigError` from session construction to a [`WorkerOutcome`].
+///
+/// `ConfigError` is a startup-time failure: a missing provider, an invalid
+/// model id, or an unknown provider kind. No provider-level distinction
+/// (auth, timeout, rate-limit) is available because no provider call has
+/// happened yet. `AgentError` is the honest category for every variant.
+fn session_build_error_to_outcome(error: &ConfigError) -> WorkerOutcome {
+    tracing::warn!("worker session build failed: {error}");
+    WorkerOutcome::Failed(FailureCategory::AgentError)
+}
+
+/// Map an `AgentLoopError` from the worker's loop run to a [`WorkerOutcome`].
+///
+/// The substrate's `AgentLoopError` wraps `SessionError`, which wraps
+/// `ProviderError`. Where `ProviderError` carries a distinction the
+/// `FailureCategory` enum can name, the mapping preserves it. Everything
+/// else collapses to `AgentError`: cancellation is an external signal
+/// rather than a worker failure, invalid config is a startup defect, and
+/// the remaining `ProviderError` variants (stream errors, HTTP errors,
+/// invalid requests) have no dedicated `FailureCategory`.
+fn agent_loop_error_to_outcome(error: &agent_driver_rs::AgentLoopError) -> WorkerOutcome {
+    let category = match error.as_provider_error() {
+        Some(ProviderError::Auth { .. }) => FailureCategory::ProviderAuthError,
+        Some(ProviderError::Timeout(_)) => FailureCategory::AgentTimeout,
+        Some(ProviderError::ContextWindowExceeded { .. }) => FailureCategory::ContextOverflow,
+        Some(ProviderError::ModelNotFound { .. }) => FailureCategory::ProviderNotFound,
+        Some(ProviderError::RateLimited { .. }) => FailureCategory::ProviderOverloaded,
+        _ => FailureCategory::AgentError,
+    };
+    tracing::warn!("worker agent loop failed: {error}");
+    WorkerOutcome::Failed(category)
 }
 
 /// Map the substrate's stop reason to a [`WorkerOutcome`] when the worker

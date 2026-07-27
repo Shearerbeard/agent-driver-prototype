@@ -59,6 +59,12 @@ fn test_sections() -> WorkerSections {
     ))
 }
 
+/// The plan arguments for a two-task sequential workflow.
+///
+/// `flatten_steps` (`src/types.rs`) wires a sequential list of `LeafTask`
+/// steps so that each step depends on the previous frontier: task 0 has
+/// no dependencies, task 1 gets `dependencies = [0]`. The two tasks are
+/// not independent — task 1 cannot run until task 0 completes.
 fn two_task_args() -> CreatePlanArgs {
     CreatePlanArgs {
         goal: "Complete the two-task workflow".to_owned(),
@@ -105,6 +111,10 @@ async fn two_task_dag_with_dependency_runs_to_completion() {
     let args = two_task_args();
     let plan = args.to_plan(&test_sections().roster().clone()).expect("valid plan");
     let plan_id = runs.record_plan(&args, plan.clone());
+
+    // flatten_steps wires sequential dependencies: task 1 depends on task 0.
+    assert_eq!(plan.tasks[0].dependencies, Vec::<usize>::new());
+    assert_eq!(plan.tasks[1].dependencies, vec![0]);
 
     // 4 queued responses, 4 provider calls. Task 0: submit_result + end-turn.
     // Task 1: submit_result + end-turn. A fifth call would panic the mock.
@@ -181,6 +191,9 @@ async fn spilled_full_body_is_retrievable_via_artifact_handle() {
     let args = two_task_args();
     let plan = args.to_plan(&test_sections().roster().clone()).expect("valid plan");
     let _plan_id = runs.record_plan(&args, plan.clone());
+
+    // flatten_steps wires sequential dependencies: task 1 depends on task 0.
+    assert_eq!(plan.tasks[1].dependencies, vec![0]);
 
     let long_result = "X".repeat(50);
     let responses = vec![
@@ -265,6 +278,9 @@ async fn dependency_failure_blocks_descendant_without_failure_category() {
 
     // 1 response: task 0's worker stops without submitting (text only, no
     // tool call). Task 1 never runs — it is blocked by task 0's failure.
+    // The single-response queue is load-bearing: if task 1 were
+    // independent (no dependency on task 0), the executor would dispatch
+    // it next, consume a second worker response, and panic the mock.
     let responses = vec![
         mock_text_response("I cannot complete this task."),
     ];
