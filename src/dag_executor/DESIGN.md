@@ -267,7 +267,7 @@ produces a bounded `TaskObservation::Failed` with `FailureCategory::AgentError`
 and an `ErrorPreview` naming the spill failure: `"result body exceeded the
 inline bound and the artifact write failed: <err>"`. The task state is marked
 `Failed`. The full unbounded result body is never inlined into the
-observation — the packet stays bounded and the failure is loud, matching the
+observation - the packet stays bounded and the failure is loud, matching the
 card's spill-fail-open prohibition. `AgentError` is the most honest category:
 the worker succeeded but the executor's spill infrastructure failed, and none
 of the other `FailureCategory` variants (timeout, depth, provider, dependency,
