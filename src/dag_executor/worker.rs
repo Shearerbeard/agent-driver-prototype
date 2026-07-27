@@ -2,22 +2,23 @@
 
 use std::sync::Arc;
 
-use agent_driver_rs::agent::AgentLoopConfig;
-use agent_driver_rs::{ModelId, Provider, SystemPrompt};
+use agent_driver_rs::agent::{AgentLoop, AgentLoopConfig, LoopStopReason};
+use agent_driver_rs::{ModelId, Provider, SessionBuilder, SystemPrompt};
 
 use crate::artifacts::ArtifactStore;
-use crate::coordinator_loop::InterruptionReason;
-use crate::coordinator_loop::LoopBudget;
-use crate::coordinator_loop::TerminalSlot;
+use crate::coordinator_loop::{InterruptionReason, LoopBudget, SubmitResultTool, TerminalSlot};
 use crate::coordinator_loop::WorkerSubmission;
 use crate::mcp_client::SidecarClient;
-use crate::types::{FailureCategory, Plan};
+use crate::types::{FailureCategory, Task};
+
+use super::tools::{CapturePaneTool, KeystrokesTool, ReadArtifactTool};
 
 /// Everything a worker inner loop needs before its first provider call.
 ///
 /// Forbidden invalid state: a worker loop that discovers a missing
 /// provider, model, or budget mid-run. The constructor takes all three
 /// before the loop starts.
+#[derive(Clone)]
 pub struct WorkerLoopConfig {
     pub provider: Arc<dyn Provider>,
     pub model: ModelId,
@@ -111,23 +112,77 @@ impl WorkerLoop {
     /// the information the executor needs to classify the task's failure.
     pub async fn run_task(
         &self,
-        task: &Plan,
+        task: &Task,
         submission_slot: TerminalSlot<WorkerSubmission>,
     ) -> WorkerOutcome {
-        let _ = (task, submission_slot);
-        todo!(
-            "Phase 2: build session with four Arc<dyn Tool>-mounted tools, \
-             run AgentLoop, read the submission slot, map the stop reason \
-             to a WorkerOutcome"
-        )
+        let keystrokes: agent_driver_rs::DynTool =
+            Arc::new(KeystrokesTool::new(self.sidecar.clone()));
+        let capture_pane: agent_driver_rs::DynTool =
+            Arc::new(CapturePaneTool::new(self.sidecar.clone()));
+        let read_artifact: agent_driver_rs::DynTool =
+            Arc::new(ReadArtifactTool::new(self.artifacts.clone()));
+        let submit_result: agent_driver_rs::DynTool =
+            Arc::new(SubmitResultTool::new(submission_slot.clone()));
+
+        let session = match SessionBuilder::new()
+            .provider(Arc::clone(&self.config.provider))
+            .model(self.config.model.clone())
+            .system_prompt(self.config.system_prompt.clone())
+            .tools([keystrokes, capture_pane, read_artifact, submit_result])
+            .build()
+            .await
+        {
+            Ok(session) => session,
+            Err(_) => return WorkerOutcome::Failed(FailureCategory::AgentError),
+        };
+
+        let config = self.agent_loop_config();
+        let outcome = match AgentLoop::new(&session)
+            .with_config(config)
+            .run(&task.description)
+            .await
+        {
+            Ok(outcome) => outcome,
+            Err(_) => return WorkerOutcome::Failed(FailureCategory::AgentError),
+        };
+
+        if let Some(submission) = submission_slot.recorded() {
+            return WorkerOutcome::Submitted(submission);
+        }
+
+        stop_reason_to_outcome(outcome.stop_reason)
     }
 
     /// The `AgentLoopConfig` derived from the worker budget.
-    #[allow(dead_code)]
     fn agent_loop_config(&self) -> AgentLoopConfig {
         AgentLoopConfig {
             max_tool_depth: self.config.budget.into(),
             ..AgentLoopConfig::default()
         }
+    }
+}
+
+/// Map the substrate's stop reason to a [`WorkerOutcome`] when the worker
+/// did not submit a result.
+fn stop_reason_to_outcome(reason: LoopStopReason) -> WorkerOutcome {
+    match reason {
+        LoopStopReason::EndTurn => WorkerOutcome::StoppedWithoutSubmission,
+        LoopStopReason::MaxToolDepthReached => WorkerOutcome::BudgetExhausted,
+        LoopStopReason::MaxTokens => {
+            WorkerOutcome::Interrupted(InterruptionReason::TokenLimit)
+        }
+        LoopStopReason::StopSequence => {
+            WorkerOutcome::Interrupted(InterruptionReason::StopSequence)
+        }
+        LoopStopReason::ContentFilter => {
+            WorkerOutcome::Interrupted(InterruptionReason::ContentFilter)
+        }
+        LoopStopReason::Cancelled => WorkerOutcome::Interrupted(
+            InterruptionReason::Unclassified("cancelled".to_owned()),
+        ),
+        LoopStopReason::ToolError { .. } | LoopStopReason::LoopFailed { .. } => {
+            WorkerOutcome::Failed(FailureCategory::AgentError)
+        }
+        _ => WorkerOutcome::Failed(FailureCategory::AgentError),
     }
 }

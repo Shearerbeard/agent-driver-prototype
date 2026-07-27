@@ -50,6 +50,7 @@ pub struct WorkerSpec {
     role: WorkerRole,
     description: String,
     tools: Vec<WorkerTool>,
+    preamble: String,
 }
 
 impl WorkerSpec {
@@ -66,6 +67,13 @@ impl WorkerSpec {
     /// The tools this worker can access, with descriptions when available.
     pub fn tools(&self) -> &[WorkerTool] {
         &self.tools
+    }
+
+    /// The worker's system-prompt preamble, carried from `WorkerConfig` so
+    /// the executor can read a worker's system prompt from the typed roster
+    /// (R4).
+    pub fn preamble(&self) -> &str {
+        &self.preamble
     }
 }
 
@@ -138,6 +146,7 @@ impl WorkerRoster {
                         role,
                         description: wc.description.clone(),
                         tools,
+                        preamble: wc.preamble.clone(),
                     }
                 })
             })

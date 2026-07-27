@@ -35,7 +35,7 @@ thiserror = "1"
 # `tokio::sync::Mutex` to hold the SSE stream across `.await`, and
 # `tokio::time::timeout` for bounded response reads. Also a dev-dep so the
 # integration-test crate can name `tokio` directly; features unify.
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "fs"] }
 tracing = "0.1"
 # RFC 3986 resolution of the relative `endpoint` event URL against the SSE
 # base URL in `SidecarClient::connect`, matching aura's `url::Url::join`.
@@ -47,4 +47,6 @@ url = "2"
 # separate crate where the library's own `cfg(test)` does not apply.
 agent-driver-rs = { path = "../agent-driver-rs-pin", features = ["test-support"] }
 insta = { version = "1", features = ["json"] }
+tempfile = "3"
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+tokio-util = "0.7"

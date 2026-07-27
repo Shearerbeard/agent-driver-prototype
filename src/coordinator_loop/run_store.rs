@@ -19,6 +19,7 @@ use super::tools::CreatePlanArgs;
 struct RunRecords {
     plans: Vec<(PlanId, Plan)>,
     executions: Vec<ExecutionObservation>,
+    task_records: Vec<TaskRecord>,
 }
 
 /// A shared, ordered view of the run that every loop tool reads and writes.
@@ -120,18 +121,35 @@ impl RunStore {
     /// Record a per-task execution observation, keyed by plan, task id, and
     /// attempt.
     ///
-    /// The S72 run journal backs this with persisted task records; the
-    /// skeleton declares the seam so `inspect_run` can address it.
+    /// The key is the triple `(plan_id, task_id, attempt)` because a revised
+    /// plan restarts task ids at zero. A repeat filing for the same key keeps
+    /// the first record: the attempt already ran and its observation stands.
     pub fn record_task(&self, record: TaskRecord) {
-        let _ = record;
-        todo!("Phase 2: file the task record under (plan_id, task_id, attempt)")
+        let mut records = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        let already = records.task_records.iter().any(|existing| {
+            existing.plan_id() == record.plan_id()
+                && existing.task_id() == record.task_id()
+                && existing.attempt() == record.attempt()
+        });
+        if !already {
+            records.task_records.push(record);
+        }
     }
 
     /// The task record for `(plan_id, task_id, attempt)`, if this run
     /// produced one.
     pub fn task(&self, plan_id: &PlanId, task_id: usize, attempt: Attempt) -> Option<TaskRecord> {
-        let _ = (plan_id, task_id, attempt);
-        todo!("Phase 2: look up the task record by (plan_id, task_id, attempt)")
+        self.0
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .task_records
+            .iter()
+            .find(|record| {
+                record.plan_id() == plan_id
+                    && record.task_id() == task_id
+                    && record.attempt() == attempt
+            })
+            .cloned()
     }
 }
 

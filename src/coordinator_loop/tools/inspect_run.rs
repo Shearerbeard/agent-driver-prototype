@@ -160,11 +160,12 @@ impl Tool for InspectRunTool {
                 None => ToolResult::error("this run has not executed a plan yet".to_owned()),
             },
             RunSelector::Task { plan_id, task_id, attempt } => {
-                let _ = (plan_id, task_id, attempt);
-                todo!(
-                    "Phase 2: read the task record keyed by (plan_id, task_id, attempt) \
-                     from the run store"
-                )
+                match self.runs.task(&plan_id, task_id, attempt) {
+                    Some(record) => observation_result(record.observation()),
+                    None => ToolResult::error(format!(
+                        "no task record for plan {plan_id}, task {task_id}, attempt {attempt}"
+                    )),
+                }
             }
         })
     }

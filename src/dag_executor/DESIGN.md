@@ -7,9 +7,12 @@ loop, against the `agent-driver-rs` pin at `674a093`. Scope: `src/mcp_client/`,
 
 Phase 1 landed the type skeleton with `todo!()` bodies. Phase 2a applied the
 type-design panel's fifteen dispositions as type-level repairs (signatures,
-types, docs); bodies remain `todo!()` except where a signature change forced
-a body edit the existing tests exercise. The implementation bodies follow in
-Phase 2.
+types, docs); bodies remained `todo!()` except where a signature change
+forced a body edit the existing tests exercise. Phase 2c implemented the
+artifact store bodies, the DAG executor body, the worker inner loop, the
+worker tool bodies, and the `RunStore` task-record filing. The planning-
+template switchover, `StubExecutor` deletion, and re-golden remain for
+Phase 2d.
 
 ## What the executor is
 
@@ -53,11 +56,11 @@ forbids.
 | `ArtifactError` | An artifact failure names the rule that was broken | A blanket I/O message that hides the validation failure |
 | `InlineThreshold` | Results below this size stay inline; at or above it, they spill | A zero threshold, which would spill every result including an empty one |
 | `SpilledBody` | A spill pointer carries the filename and the full body's character count | A spill pointer with an empty filename; the constructor delegates to `ArtifactFilename` |
-| `DagExecutor` | Execution runs the DAG to completion with real workers behind four tools, filing per-task records into the `RunStore` | An executor without a sidecar client, artifact store, or run store, leaving worker tools with no terminal, no spill channel, and no task-record destination |
-| `WorkerLoopConfig` | Everything a worker inner loop needs is supplied before its first provider call | A worker loop that discovers a missing provider, model, or budget mid-run |
+| `DagExecutor` | Execution runs the DAG to completion with real workers behind four tools, filing per-task records into the `RunStore`; the `InlineThreshold` controls spill | An executor without a sidecar client, artifact store, run store, or inline threshold, leaving worker tools with no terminal, no spill channel, no task-record destination, and no spill bound |
+| `WorkerLoopConfig` | Everything a worker inner loop needs is supplied before its first provider call; `Clone` so the executor can override the system prompt per task | A worker loop that discovers a missing provider, model, or budget mid-run |
 | `WorkerLoop` | One loop drives one task, over a submission slot that belongs to it alone, with the sidecar and artifact handles it needs to build its four-tool set | A second write to the same submission slot; detected at runtime via `AlreadyRecorded`, and the `DagExecutor` mints one fresh slot per task so production cannot share |
 | `WorkerOutcome` | A worker run's outcome is the join of the stop reason with the submission slot | A non-submission outcome collapsed into `None`, hiding the failure class the executor needs |
-| `WorkerSpec` | One worker's renderable specification: role, description, and resolved tools | A worker spec without a valid role; the constructor delegates to `WorkerRole` |
+| `WorkerSpec` | One worker's renderable specification: role, description, resolved tools, and preamble | A worker spec without a valid role; the constructor delegates to `WorkerRole` |
 | `WorkerTool` | A tool a worker can access, with its description when the Full visibility mode provides it | Nothing beyond the wrapper; the tool name is a raw string |
 | `KeystrokesArgs` | The `keystrokes` tool takes a non-optional, non-empty keystrokes string | A keystrokes call with no `keystrokes` field or an empty string; the schema marks it required with `minLength: 1` |
 | `KeystrokesTool` | The keystrokes tool forwards through the sidecar client | A keystrokes call that bypasses the sidecar and reaches the terminal directly |
@@ -98,7 +101,7 @@ concrete-impl reality.
 | Item | Visibility | Who replaces it |
 |---|---|---|
 | `StubExecutor` | `pub` in `coordinator_loop` | `DagExecutor` implements `PlanExecutor`; `StubExecutor` is deleted in Phase 2 when the DAG body lands. The skeleton does not delete it because the S71 acceptance tests still drive it |
-| `DagExecutor` | `pub` in `dag_executor` | Stays. The one executor type the loop ships with after Phase 2; constructed per dispatch by `ExecuteTool` from the `RunStore` it owns |
+| `DagExecutor` | `pub` in `dag_executor` | Stays. The one executor type the loop ships with after Phase 2; constructed per dispatch by `ExecuteTool` from the `RunStore` it owns. `new` takes six args: sidecar, artifacts, worker config, worker sections, run store, and inline threshold |
 | `SidecarClient` | `pub` in `mcp_client` | Stays. The JSON-boundary seam over the classic-SSE transport; rmcp types never cross it |
 | `ArtifactStore` | `pub` in `artifacts` | Stays. Filename-addressed storage behind `read_artifact` and the spill path |
 | `KeystrokesTool`, `CapturePaneTool`, `ReadArtifactTool` | `pub` in `dag_executor` | Stays. The three new worker tools; `SubmitResultTool` is reused from `coordinator_loop` |
@@ -108,7 +111,7 @@ concrete-impl reality.
 | `RunSelector::Task` | `pub` variant in `coordinator_loop` | Stays. The inspection case for per-task records; keyed by plan, task id, and `Attempt` |
 | `Attempt` | `pub` in `coordinator_loop` (via `run_store`) | Stays. The 1-indexed attempt newtype |
 | `RunId` | `pub` in `artifacts` | Stays. The safe-path-component newtype for cross-run reads |
-| `WorkerSpec`, `WorkerTool` | `pub` in `coordinator_loop` (via `roster`) | Stay. The renderable per-worker spec and its tool entries, carried by the widened `WorkerRoster` |
+| `WorkerSpec`, `WorkerTool` | `pub` in `coordinator_loop` (via `roster`) | Stay. The renderable per-worker spec (now with `preamble`) and its tool entries, carried by the widened `WorkerRoster` |
 | `PlanningLoopVars` | `pub` in `templates` | Stays. The loop-shaped planning template type; `PlanningVars` retires when the bounded router goes |
 | `WorkerSections::from_roster` | `pub` in `coordinator_loop` | Stays. The single-derivation constructor; `from_config` is deleted in Phase 2 after the goldens are re-goldened |
 | `InlineThreshold`, `SpilledBody` | `pub` in `artifacts` | Stay. The spill decision and pointer types |
@@ -121,7 +124,7 @@ concrete-impl reality.
 |---|---|
 | `StubExecutor` → S72: the real DAG core implements `PlanExecutor` | `DagExecutor` implements `PlanExecutor`; the `execute` body is `todo!()` |
 | `PlanExecutor` → Stays | Unchanged; the trait is not touched |
-| `RunStore` → S72 backs with run journal | `TaskRecord` type and `record_task`/`task` methods declared with `todo!()` bodies; `TaskRecord` keyed by `(PlanId, task_id, attempt)` with private fields and a `new` constructor; `DagExecutor` holds a `RunStore` handle |
+| `RunStore` → S72 backs with run journal | `TaskRecord` type and `record_task`/`task` methods implemented; `TaskRecord` keyed by `(PlanId, task_id, attempt)` with private fields and a `new` constructor; `DagExecutor` holds a `RunStore` handle and files per-task records during `execute` |
 | `RunSelector` → S72 widens with task records | `Task { plan_id, task_id, attempt }` variant added with `Attempt` newtype; match arm and schema entry added with `minimum: 1` on attempt and `minimum: 0` on task_id |
 | System prompt → S72 ports a loop-shaped preamble template | `PlanningLoopVars` type and `planning_loop_prompt.md` template declared; the template mentions the task selector; the old `PlanningVars` and `planning_prompt.md` stay compiling alongside |
 | `WorkerSections` → S71 U(code-review) follow-up: single-derive from `WorkerRoster` | `WorkerSections::from_roster` declared with `todo!()` body; `WorkerRoster` widened to carry `WorkerSpec` (role + description + tools) and tool-visibility inputs so `from_roster` is implementable from the roster alone; the old `from_config` stays compiling; switchover plan in the `from_roster` doc comment |
@@ -134,10 +137,10 @@ The skeleton checks for a non-empty string starting with `http://` or
 `url` crate dependency. A malformed but prefix-matching URL would reach the
 connect step and fail at the HTTP layer, which is loud rather than silent.
 
-**R2 - The `ArtifactStore` does not create directories.**
-The skeleton holds the base path but does not `create_dir_all`. Phase 2's
-write methods will create the directory tree on first use, matching the
-aura source. A read before any write returns `Io`, not `Disabled`.
+**R2 - Resolved: the `ArtifactStore` creates directories on first use.**
+`write_artifact` calls `tokio::fs::create_dir_all` on the `artifacts/`
+subdirectory before writing. A read before any write returns `Io`, not
+`Disabled`, matching the aura source.
 
 **R3 - `InlineThreshold::new` returns `ArtifactError::Disabled` for zero.**
 The `Disabled` variant is semantically about the store being disabled, not
@@ -145,20 +148,17 @@ about a zero threshold. A dedicated `ZeroThreshold` variant would be more
 precise, but the skeleton avoids adding a variant that only one constructor
 produces. Phase 2 may widen the error if the panel asks.
 
-**R4 - The per-worker preamble (system prompt) is not yet in the `WorkerRoster`.**
-The A2/C5 widening resolved the names-only limitation: `WorkerRoster` now
-carries `WorkerSpec` (role, description, resolved tools) and the
-tool-visibility inputs. The per-worker preamble (system prompt) is still
-not in the roster - it lives in `WorkerConfig.preamble`, which `from_config`
-does not capture. Phase 2 will add a `WorkerPreamble` type or a lookup
-method on `WorkerRoster` so the executor can read a worker's system prompt
-from the typed roster.
+**R4 - Resolved: the per-worker preamble is in the `WorkerRoster`.**
+`WorkerSpec` now carries a `preamble: String` field, captured from
+`WorkerConfig.preamble` by `WorkerRoster::from_config`. The executor's
+`resolve_preamble` looks up the assigned worker's preamble from the typed
+roster and falls back to `WorkerLoopConfig::system_prompt` when the worker
+is unassigned or the preamble is empty.
 
-**R5 - The `WorkerLoop::run_task` takes `&Plan` but should take `&Task`.**
-The skeleton passes the whole plan to `run_task` because `Task` is not
-separately addressable in the current `Plan` type. Phase 2 will either
-extract a `Task` reference or pass the task description and context
-directly.
+**R5 - Resolved: `WorkerLoop::run_task` takes `&Task`.**
+The signature changed from `&Plan` to `&Task`. The executor passes the
+single task being dispatched, not the whole plan, so the worker's opening
+message is the task description alone.
 
 **R6 - The planning loop template is not yet golden-tested.**
 The template file `planning_loop_prompt.md` exists and its placeholders are
@@ -219,3 +219,85 @@ exercise.
 | C4 | `DagExecutor::new` takes a `RunStore` handle; doc note that `ExecuteTool` constructs the executor per dispatch and the executor allocates 1-indexed attempts per task |
 | C6 | `WorkerClaim::new` enforces `MAX_SUMMARY_CHARS = 2000` at the `submit_result` parse boundary; `ContextError::SummaryExceedsBound` for loud rejection; `maxLength` added to the submit_result schema; the bound recorded in this DESIGN.md |
 | C9 | DESIGN.md states the four tools mount as `Arc<dyn Tool>` (concrete impls); the card's FnTool phrasing recorded as superseded |
+
+## 7. Phase 2c implementation notes
+
+### Concurrency choice: sequential dispatch
+
+The executor dispatches ready tasks sequentially within each ready set,
+not in parallel. Rationale:
+
+1. **Test determinism**: `MockProvider` serializes calls through a single
+   queue (`pop_front`), so concurrent calls from parallel workers would
+   race on the queue and produce non-deterministic ordering. Sequential
+   dispatch makes the provider-call arithmetic exact.
+2. **Single shared provider**: `WorkerLoopConfig` carries one
+   `Arc<dyn Provider>`. Level-parallel dispatch would need per-worker
+   providers to avoid queue contention, which the current config does not
+   support.
+3. **Correctness first**: the card names correctness and test determinism
+   as the priority. The aura source uses `FuturesUnordered` for parallel
+   dispatch, but that is a production optimization, not a correctness
+   requirement.
+
+The sequential choice is visible in the `execute` loop: `ready_tasks`
+returns a `Vec<usize>`, and the `for task_id in ready` loop dispatches
+each worker before selecting the next.
+
+### Spill wire shape
+
+When a worker submits a result whose character count is at or above
+`InlineThreshold`, the executor spills:
+
+1. Generates a filename `task-{id}-{worker}-result.txt`.
+2. Parses it through `ArtifactFilename::new` (safe path component).
+3. Writes the full result to `ArtifactStore::write_artifact`.
+4. Builds a `SpilledBody` from the filename and the full char count.
+5. Constructs the spilled text `{summary}\n\n{spilled_body}`, where
+   `spilled_body` renders as `[Full result (N chars) saved to artifact:
+   FILE]`.
+6. Passes the spilled text through `EvidenceEntry::from_completed_result`,
+   which parses the trailing footer and produces `ArtifactPointer` with
+   the claim as the stand-in and the `SpilledArtifact` as the pointer.
+7. The `TaskObservation::Completed` carries the `ArtifactPointer` evidence
+   and one `ArtifactRef` in the `artifacts` field.
+
+On spill failure (filename construction or artifact write), the executor
+produces a bounded `TaskObservation::Failed` with `FailureCategory::AgentError`
+and an `ErrorPreview` naming the spill failure: `"result body exceeded the
+inline bound and the artifact write failed: <err>"`. The task state is marked
+`Failed`. The full unbounded result body is never inlined into the
+observation — the packet stays bounded and the failure is loud, matching the
+card's spill-fail-open prohibition. `AgentError` is the most honest category:
+the worker succeeded but the executor's spill infrastructure failed, and none
+of the other `FailureCategory` variants (timeout, depth, provider, dependency,
+soft) describe that state.
+
+### RunStore filing path
+
+The executor files one `TaskRecord` per task, keyed by `(PlanId, task_id,
+attempt)`. The `PlanId` is resolved from `RunStore::latest_plan()` at the
+start of `execute`. The attempt is `Attempt::new(1)` for all tasks in this
+phase (retry logic is out of scope). The `TaskRecord::new` constructor
+derives `task_id` from the observation's correlation label.
+
+Blocked tasks (descendant failure) also get a `TaskRecord` with a
+`TaskObservation::Blocked`, filed after the DAG loop completes.
+
+The `RunStore::record_task` and `RunStore::task` methods are backed by a
+`Vec<TaskRecord>` in `RunRecords`. A repeat filing for the same
+`(plan_id, task_id, attempt)` key is a no-op: the first record stands.
+
+### `SidecarClient::disconnected`
+
+A public `disconnected()` constructor was added to `SidecarClient` for
+test construction. It creates a non-functional client with a dummy URL
+and an empty SSE stream. Any tool that forwards through it will fail.
+This is used in integration tests where `MockProvider`-backed workers
+only call `submit_result` and never invoke the sidecar tools.
+
+### `WorkerLoopConfig` is `Clone`
+
+`WorkerLoopConfig` derives `Clone` (not `Debug`, since `Arc<dyn Provider>`
+does not implement `Debug`). The executor clones the config per task,
+overriding the `system_prompt` with the resolved preamble.

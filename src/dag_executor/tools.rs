@@ -13,8 +13,8 @@ use async_trait::async_trait;
 use serde::Deserialize;
 use serde_json::Value as JsonValue;
 
-use crate::artifacts::{ArtifactFilename, ArtifactStore};
-use crate::mcp_client::SidecarClient;
+use crate::artifacts::{ArtifactFilename, ArtifactStore, RunId};
+use crate::mcp_client::{SidecarClient, SidecarToolArgs, SidecarToolName};
 
 use agent_driver_rs::tool::ToolSchema;
 
@@ -104,7 +104,7 @@ impl Tool for KeystrokesTool {
         input: &ToolInput,
         _ctx: &ToolContext,
     ) -> Result<ToolResult, ToolError> {
-        let _args: KeystrokesArgs = match input.parse() {
+        let args: KeystrokesArgs = match input.parse() {
             Ok(args) => args,
             Err(error) => {
                 return Ok(ToolResult::error(format!(
@@ -112,8 +112,15 @@ impl Tool for KeystrokesTool {
                 )));
             }
         };
-        let _ = &self.sidecar;
-        todo!("Phase 2: forward to SidecarClient::call_tool")
+        if args.keystrokes.trim().is_empty() {
+            return Ok(ToolResult::error("keystrokes must not be empty"));
+        }
+        let name = SidecarToolName::new("keystrokes").expect("non-empty tool name");
+        let sidecar_args = SidecarToolArgs::from_map(input.inner().clone());
+        match self.sidecar.call_tool(&name, &sidecar_args).await {
+            Ok(content) => Ok(ToolResult::text(content.as_str().to_owned())),
+            Err(error) => Ok(ToolResult::error(error.to_string())),
+        }
     }
 }
 
@@ -177,8 +184,12 @@ impl Tool for CapturePaneTool {
                 )));
             }
         };
-        let _ = &self.sidecar;
-        todo!("Phase 2: forward to SidecarClient::call_tool")
+        let name = SidecarToolName::new("capture-pane").expect("non-empty tool name");
+        let sidecar_args = SidecarToolArgs::from_map(input.inner().clone());
+        match self.sidecar.call_tool(&name, &sidecar_args).await {
+            Ok(content) => Ok(ToolResult::text(content.as_str().to_owned())),
+            Err(error) => Ok(ToolResult::error(error.to_string())),
+        }
     }
 }
 
@@ -261,14 +272,23 @@ impl Tool for ReadArtifactTool {
                 )));
             }
         };
-        let _filename = match ArtifactFilename::new(&args.filename) {
+        let filename = match ArtifactFilename::new(&args.filename) {
             Ok(f) => f,
             Err(error) => {
                 return Ok(ToolResult::error(error.to_string()));
             }
         };
-        let _ = &self.store;
-        todo!("Phase 2: read from ArtifactStore, optionally cross-run")
+        let result = match &args.run_id {
+            Some(raw_run_id) => match RunId::new(raw_run_id) {
+                Ok(run_id) => self.store.read_artifact_cross_run(&filename, &run_id).await,
+                Err(error) => return Ok(ToolResult::error(error.to_string())),
+            },
+            None => self.store.read_artifact(&filename).await,
+        };
+        match result {
+            Ok(content) => Ok(ToolResult::text(content)),
+            Err(error) => Ok(ToolResult::error(error.to_string())),
+        }
     }
 }
 

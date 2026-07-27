@@ -506,6 +506,38 @@ impl SidecarClient {
         Ok(Self { url, shared })
     }
 
+    /// A non-functional client for test construction.
+    ///
+    /// The client carries a dummy URL and an empty SSE stream. Any tool
+    /// that forwards through it will fail. Use this only when the sidecar
+    /// tools (`keystrokes`, `capture-pane`) are not exercised, e.g. in
+    /// tests with `MockProvider`-backed workers that only call
+    /// `submit_result`.
+    pub fn disconnected() -> Self {
+        let url = SidecarUrl::new("http://localhost:0/sse").expect("valid dummy URL");
+        let http = reqwest::Client::builder()
+            .build()
+            .expect("HTTP client builds without a network");
+        let message_endpoint =
+            url::Url::parse("http://localhost:0/messages").expect("valid dummy URL");
+        let shared = Arc::new(Shared {
+            http,
+            message_endpoint,
+            next_id: AtomicU64::new(1),
+            stream: TokioMutex::new(SseState {
+                reader: SseReader {
+                    stream: Box::pin(futures::stream::empty()),
+                    parser: SseParser::new(),
+                    pending_items: VecDeque::new(),
+                },
+                pending: Vec::new(),
+            }),
+            last_request: StdMutex::new(None),
+            frames: StdMutex::new(Vec::new()),
+        });
+        Self { url, shared }
+    }
+
     /// The endpoint this client was constructed for.
     pub fn url(&self) -> &SidecarUrl {
         &self.url
