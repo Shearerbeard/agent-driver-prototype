@@ -60,10 +60,9 @@ forbids.
 | `InspectRunArgs` | One inspection call reads one record | Nothing beyond the wrapper; the invariant lives in `RunSelector` |
 | `RunStore` | The run's plans and executions are ordered sequences shared by every tool, and the store derives the handle it files a plan under | Iteration order that depends on hashing rather than on the run; a plan filed under an id that does not describe it |
 | `PlanExecutor` | Execution reports rather than raises, and carries the tool context a real executor needs for cancellation | A failed execution that breaks the conversation instead of returning evidence the coordinator can replan against |
-| `StubExecutor` | S71 ships a placeholder so loop control flow is exercisable before the DAG core lands | See the seam table; this is the state the next card removes |
 | `InterruptionReason` | Truncation reasons the loop models are named; anything else is carried verbatim | A foreign stop reason folded into a named case that misdescribes it |
 | `CoordinatorOutcome` | The stop reason alone does not say what the user gets; the outcome is the join of stop reason and answer slot | "Budget exhausted" reported for a run that did write an answer (slot-wins); a variant describing a state the pin never delivers as an outcome |
-| `WorkerSections` | The roster text, the guidelines and the worker-field fragment come from one configuration and travel together | A planning message that lists one roster while the planning schema offers another |
+| `WorkerSections` | The roster text, the guidelines and the worker-field fragment are rendered from one typed `WorkerRoster` and travel together | A planning message that lists one roster while the planning schema offers another |
 | `CoordinatorLoopConfig` | Everything the loop needs is supplied before the first provider call | A loop that discovers a missing provider, model or budget mid-run |
 | `CoordinatorLoop` | One loop drives a single run, over a session and a budget and an answer slot that belong to it alone | A second run inheriting the answer and records of the first (`run` takes `self`) |
 | `CoordinatorLoopError` | A rejected value names the rule it broke, and a context failure is attributed to the boundary that raised it | A blanket conversion that reports every context failure under one message |
@@ -75,16 +74,22 @@ forbids.
 `crate::types`; `Confidence` from `crate::tools::submit_result`;
 `ArtifactRef`, `CorrelationLabel`, `ErrorPreview`, `EvidenceEntry`,
 `EvidenceText`, `PinnedGoal`, `PlanShape`, `WorkerClaim`, `WorkerRole` from
-`crate::context`; `build_planning_wrapper` with `render_planning_prompt`, and
-`build_worker_prompt_sections`, from `crate::producers`. The host-authored
+`crate::context`; `render_planning_loop_prompt` with `PlanningLoopVars`,
+from `crate::templates`. The `build_worker_prompt_sections` and
+`build_planning_wrapper` producers stay as the bounded-router oracle (pinned
+by the S70 goldens and the byte-parity test); the loop's opening message
+renders through the loop template instead. The host-authored
 fallback renders through the ported `CompletedEntry`, `FailedEntry` and
 `BlockedEntry` renderers, so completed, hard-failed and blocked tasks on
 that path are formatted exactly like a continuation frame. One case falls
 short of frame fidelity (Gate A finding, accepted): the frame's soft-failure
 rendering carries the worker's claim, which `TaskObservation::Failed` cannot
-hold until the S72 real executor produces worker submissions, so until then
-a soft failure renders in the hard form under its true category label. S72
-extends the failed observation with the claim when real workers exist.
+hold. The `DagExecutor` produces hard failures only (a worker either submits
+a `Completed` observation or fails with a category), so the soft-failure
+rendering remains unreachable and a `SoftFailure` category renders in the
+hard form under its true label. A future card that models soft failures
+(worker submits but reports it could not produce a result) extends the
+failed observation with the claim.
 
 `TaskObservation` is keyed by `CorrelationLabel` rather than by a separate
 `task_id` and `worker` pair: that pair is the ported correlation label, and
@@ -104,7 +109,7 @@ which the rendered forms do not expose.
 
 | Item | Visibility | Who replaces it |
 |---|---|---|
-| `StubExecutor` | `pub` | S72: the real DAG core implements `PlanExecutor` and this type is deleted. Public rather than `cfg(test)` because it is the executor the loop ships with today; gating it behind `cfg(test)` would leave `CoordinatorLoop` unconstructable in a normal build |
+| `StubExecutor` | deleted in Phase 2d | `DagExecutor` implements `PlanExecutor` and is the executor the loop ships with. `StubExecutor` was deleted once the acceptance tests migrated to `DagExecutor` with `MockProvider`-backed workers |
 | `PlanExecutor` | `pub` trait | Stays. It is the one seam between the loop and task execution, and it already carries the `ToolContext` a cancelling executor needs |
 | `SubmitResultTool` | `pub`, **not registered** on the coordinator session | S72 mounts it on worker sessions. Defined now because the loop's native tool surface is one surface; the session that mounts a tool is what makes it a worker tool. Mounting it on the coordinator would offer the coordinator a way to report evidence it never gathered |
 | `RunStore` | `pub`, in-memory | S72 backs it with the run journal and persisted plan records. The accessor shape is what a persisted store must also satisfy |
@@ -113,20 +118,19 @@ which the rendered forms do not expose.
 | `CoordinatorLoop::with_observer` | `pub` | Stays. The substrate takes an owned observer, so the loop forwards to a shared handle the caller keeps |
 | `RunRecords` | private | Internal representation of `RunStore`; never crosses the module boundary |
 | `native_definition`, `observation_result` | private to `tools` | Internal helpers that turn this module's literals into tool definitions and its observations into tool result strings |
-| System prompt | supplied by the caller as `SystemPrompt` | S72 ports a loop-shaped preamble template. See R3 |
+| System prompt | supplied by the caller as `SystemPrompt` | The loop's opening message renders through the loop-shaped planning template (`render_planning_loop_prompt`/`PlanningLoopVars`), which names the four tools this loop registers. See R1 |
 
 ## 3. Residual risks
 
-**R1 - The planning template describes tools this loop does not register.**
-The card requires the opening message to render through the S70-ported
-`build_planning_wrapper` and `planning_prompt.md`, and that template
-enumerates the bounded router's three tools (`respond_directly`,
-`create_plan`, `request_clarification`) and instructs "Call EXACTLY ONE". The
-S71 loop registers `create_plan`, `execute`, `inspect_run` and `respond`. The
-template is a byte-fidelity port covered by the S70 goldens, so S71 does not
-edit it. The mismatch is real and will bias the model toward a single call.
-S72 must port a loop-shaped planning template and re-golden it before a
-benchmark reading of this loop means anything.
+**R1 - Resolved: the opening message renders through the loop-shaped planning template.**
+The loop's `run` method renders the opening message through
+`render_planning_loop_prompt`/`PlanningLoopVars`, which names the four
+tools the loop registers (`create_plan`, `execute`, `inspect_run`,
+`respond`) instead of the bounded router's three. The loop template's
+rendered output is pinned by the `planning_loop_message` insta snapshot.
+The old bounded-router template (`render_planning_prompt`/`PlanningVars`)
+and `build_planning_wrapper` stay, pinned by the S70 goldens; they retire
+with `CoordinatorTurn`.
 
 **R2 - Two types named `FinalResponse` in one crate.**
 `crate::context::FinalResponse` is the bounded router's non-empty response
@@ -325,12 +329,25 @@ refuses the tool calls on the response after that. A budget test must still
 queue that response, and it must contain a tool call or the loop stops on
 end-of-turn instead.
 
+The `coordinator()` helper builds a `DagExecutor` backed by a separate
+worker `MockProvider` and a `RunStore` shared with the coordinator loop via
+`CoordinatorLoopConfig.runs`. The sidecar is disconnected and the artifact
+store disabled, because the `MockProvider`-backed workers only call
+`submit_result` and a submission whose body fits the inline threshold never
+touches the store. The worker queue is consumed inside the `execute` round,
+which runs the full DAG before returning; the coordinator queue is
+consumed by the coordinator's own loop. Two queues, two mocks, exact
+arithmetic on each.
+
 ### Card acceptance test 1
 
 `create_plan_then_execute_continues_without_a_stream_break`. Budget 8, the
-stub executor, and a `PlanId` precomputed with `PlanId::derive` from the same
-arguments the script sends. Queue: four entries, four provider calls, three
-tool rounds - `create_plan`, `execute`, `respond`, then a text response.
+`DagExecutor`, and a `PlanId` precomputed with `PlanId::derive` from the same
+arguments the script sends. Coordinator queue: four entries, four
+coordinator provider calls, three tool rounds - `create_plan`, `execute`,
+`respond`, then a text response. Worker queue: four entries, four worker
+provider calls - the plan has two ready leaf tasks, and each task costs two
+worker calls (a `submit_result` round plus an end-of-turn text response).
 
 It asserts a `Responded` outcome with `turns == 3`, three tool rounds inside
 one `AgentLoop::run`, which is the "no stream break" claim: a
@@ -340,13 +357,19 @@ recording observer pins the tool order as `create_plan`, `execute`,
 holds exactly the precomputed plan id, which is what proves `create_plan`
 returned a success observation, and the recorded execution reports two
 completed tasks and no failures. Reaching the assertions at all proves the
-loop made exactly four provider calls, since a fifth would panic the mock.
+coordinator made exactly four provider calls (a fifth would panic the
+coordinator mock) and the executor dispatched exactly two workers (a fifth
+worker call would panic the worker mock).
 
 ### Card acceptance test 2
 
-`turn_budget_stops_the_loop_and_the_host_writes_the_answer`. Budget 2, three
-queued entries, three provider calls, two tool rounds. The third response
-carries an `inspect_run` call that is refused before dispatch.
+`turn_budget_stops_the_loop_and_the_host_writes_the_answer`. Budget 2,
+three coordinator queued entries, three coordinator provider calls, two
+coordinator tool rounds. The third coordinator response carries an
+`inspect_run` call that is refused before dispatch. Worker queue: four
+entries, four worker provider calls - the `execute` round runs the full
+two-task DAG against the worker mock before the third coordinator round is
+reached.
 
 It asserts a `BudgetExhausted` outcome with `turns == 2`, which is itself the
 proof that the answer slot was empty, since a recorded answer outranks
@@ -355,8 +378,8 @@ exactly two `ToolCallStart` events, `create_plan` and `execute`, with none
 for the refused `inspect_run`. The store cannot prove it, because
 `inspect_run` is read-only and would leave the store unchanged whether or not
 it ran, and the refused response does leave a history trace. The fallback is
-checked to carry the stub execution's evidence rather than the no-execution
-template.
+checked to carry the workers' submitted evidence (the string `"412"` from a
+worker result body) rather than the no-execution template.
 
 ### Remaining tests
 
@@ -367,7 +390,16 @@ was executed" template listing the created plan handle.
 worker, then a valid plan, and asserts only the valid plan reached the store
 while the loop continued past the rejection.
 `a_second_answer_is_refused_and_the_first_stands` covers the first-write-wins
-rule end to end.
+rule end to end. The three tests that do not call `execute` pass an empty
+worker queue; the worker mock is never popped.
+
+Phase 2d added three tests: `from_roster_matches_the_producer_oracle_byte_for_byte`
+asserts the three `from_roster` strings match the `build_worker_prompt_sections`
+oracle for all three visibility modes (None, Summary, Full) with a two-worker
+config and a vector store; `from_roster_with_no_workers_renders_empty_sections`
+covers the empty-roster path; `planning_loop_message_through_from_roster` pins
+the rendered loop-shaped planning message through the `from_roster` sections
+with an insta snapshot.
 
 Focused tests cover the repaired seams:
 
@@ -384,4 +416,5 @@ Focused tests cover the repaired seams:
 - the outcome tally with soft failures counted inside the failures
 - the empty completed-execution rejection
 - worker submission parsing, accepted and rejected
-- three insta snapshots pinning the observation JSON
+- four insta snapshots pinning the observation JSON and the loop-shaped
+  planning message

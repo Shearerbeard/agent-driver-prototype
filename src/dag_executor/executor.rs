@@ -1,4 +1,4 @@
-//! The `PlanExecutor` implementation that replaces `StubExecutor`.
+//! The `PlanExecutor` implementation the coordinator loop ships with.
 
 use std::collections::VecDeque;
 use std::sync::Arc;

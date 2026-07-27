@@ -26,7 +26,7 @@ mod tools;
 pub use budget::LoopBudget;
 pub use driver::{CoordinatorLoop, CoordinatorLoopConfig, WorkerSections};
 pub use error::{AlreadyRecorded, CoordinatorLoopError, CoordinatorRunError};
-pub use executor::{PlanExecutor, StubExecutor};
+pub use executor::PlanExecutor;
 pub use observation::{
     ExecutionObservation, OutcomeCounts, PlanObservation, TaskObservation, TaskObservations,
 };

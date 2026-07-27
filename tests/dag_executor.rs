@@ -18,7 +18,7 @@ use agent_driver_prototype::config::{OrchestrationConfig, WorkerConfig};
 use agent_driver_prototype::context::{EvidenceEntry, ErrorPreview};
 use agent_driver_prototype::coordinator_loop::{
     Attempt, CreatePlanArgs, ExecutionObservation, LoopBudget, PlanExecutor, RunStore,
-    TaskObservation, WorkerSections,
+    TaskObservation, WorkerRoster, WorkerSections,
 };
 use agent_driver_prototype::dag_executor::{DagExecutor, WorkerLoopConfig};
 use agent_driver_prototype::mcp_client::SidecarClient;
@@ -52,7 +52,11 @@ fn test_sections() -> WorkerSections {
         workers,
         ..Default::default()
     };
-    WorkerSections::from_config(&config, ToolListLimit::new(10), &[])
+    WorkerSections::from_roster(WorkerRoster::from_config(
+        &config,
+        ToolListLimit::new(10),
+        &[],
+    ))
 }
 
 fn two_task_args() -> CreatePlanArgs {

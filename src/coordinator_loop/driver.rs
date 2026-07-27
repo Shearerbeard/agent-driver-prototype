@@ -7,10 +7,9 @@ use agent_driver_rs::agent::{AgentEvent, AgentLoop, AgentLoopConfig, AgentObserv
 use agent_driver_rs::{DynTool, ModelId, Provider, Session, SessionBuilder, SystemPrompt};
 use async_trait::async_trait;
 
-use crate::bounding::ToolListLimit;
-use crate::config::{OrchestrationConfig, VectorStoreConfig};
+use crate::config::ToolVisibility;
 use crate::context::PinnedGoal;
-use crate::producers::{build_planning_wrapper, build_worker_prompt_sections};
+use crate::templates::{PlanningLoopVars, render_planning_loop_prompt};
 
 use super::budget::LoopBudget;
 use super::error::CoordinatorRunError;
@@ -21,10 +20,10 @@ use super::run_store::RunStore;
 use super::terminal::{FinalResponse, TerminalSlot};
 use super::tools::{CreatePlanTool, ExecuteTool, InspectRunTool, RespondTool};
 
-/// The worker material one configuration produces for the loop.
+/// The worker material one typed [`WorkerRoster`] produces for the loop.
 ///
 /// The roster text, the assignment guidelines and the worker-field fragment
-/// are produced together from one configuration and travel together, so the
+/// are rendered together from one typed roster and travel together, so the
 /// planning message cannot describe one roster while the planning schema
 /// offers another.
 #[derive(Debug, Clone, Default)]
@@ -36,52 +35,46 @@ pub struct WorkerSections {
 }
 
 impl WorkerSections {
-    /// Render every worker section from an orchestration configuration.
-    ///
-    /// This is the parallel-derivation path: the roster text and the typed
-    /// roster are produced independently from the same config, so a prose
-    /// mismatch is representable. It stays until the single-derivation
-    /// [`from_roster`](Self::from_roster) path is wired in and the S70
-    /// goldens are re-goldened against it.
-    pub fn from_config(
-        config: &OrchestrationConfig,
-        tool_list_limit: ToolListLimit,
-        vector_stores: &[VectorStoreConfig],
-    ) -> Self {
-        let (roster_section, worker_field, guidelines) =
-            build_worker_prompt_sections(config, tool_list_limit, vector_stores);
-        Self {
-            roster_section,
-            worker_field,
-            guidelines,
-            roster: WorkerRoster::from_config(config, tool_list_limit, vector_stores),
-        }
-    }
-
     /// Render every worker section from a typed [`WorkerRoster`].
     ///
     /// This is the single-derivation path: the roster text, the worker-field
     /// fragment, and the guidelines are all rendered from the typed roster,
-    /// so a prose/schema roster mismatch is unrepresentable. The skeleton
-    /// declares the signature; the render body lands in Phase 2, at which
-    /// point `from_config` is retired and the goldens are re-goldened
-    /// against this path.
-    ///
-    /// # Switchover plan
-    ///
-    /// 1. Phase 2 implements the render body, reading worker descriptions
-    ///    and tool lists from the roster's typed entries.
-    /// 2. The call site in `CoordinatorLoop::run` switches from
-    ///    `from_config` to `from_roster`.
-    /// 3. The S70 goldens are re-goldened against the single-derivation
-    ///    output.
-    /// 4. `from_config` and `build_worker_prompt_sections` are deleted.
+    /// so a prose/schema roster mismatch is unrepresentable. The widened
+    /// roster carries each worker's role, description, resolved tool list
+    /// (with descriptions for the Full visibility path), and the
+    /// tool-visibility inputs, so the render reads the roster alone.
     pub fn from_roster(roster: WorkerRoster) -> Self {
-        let _ = roster;
-        todo!(
-            "Phase 2: render roster_section, worker_field, and guidelines \
-             from the typed WorkerRoster so the parallel derivation is removed"
-        )
+        if roster.is_empty() {
+            return Self {
+                roster_section: String::new(),
+                worker_field: String::new(),
+                guidelines: String::new(),
+                roster,
+            };
+        }
+
+        let worker_field = r#",
+      "worker": "worker_name""#.to_string();
+
+        let names_json: Vec<String> = roster
+            .names()
+            .iter()
+            .map(|name| format!("\"{name}\""))
+            .collect();
+        let guidelines = crate::templates::render_worker_guidelines(
+            &crate::templates::WorkerGuidelinesVars {
+                valid_worker_names: &names_json.join(", "),
+            },
+        );
+
+        let roster_section = render_roster_section(&roster);
+
+        Self {
+            roster_section,
+            worker_field,
+            guidelines,
+            roster,
+        }
     }
 
     /// A run with no workers configured, which is what the producer returns
@@ -112,12 +105,120 @@ impl WorkerSections {
     }
 }
 
+/// Render the roster section from the typed roster, dispatching on the
+/// visibility mode the roster carries. Each branch mirrors the
+/// `build_workers_section_*` oracle in `producers` but reads the typed
+/// [`WorkerRoster`] instead of the raw config, so the parallel derivation
+/// is removed.
+fn render_roster_section(roster: &WorkerRoster) -> String {
+    match roster.tool_visibility() {
+        ToolVisibility::None => render_roster_no_tools(roster),
+        ToolVisibility::Summary => render_roster_summary_tools(roster),
+        ToolVisibility::Full => render_roster_full_tools(roster),
+    }
+}
+
+fn render_roster_no_tools(roster: &WorkerRoster) -> String {
+    let roster_content = roster
+        .workers()
+        .iter()
+        .map(|spec| format!("- {}: {}", spec.role().as_str(), spec.description()))
+        .collect::<Vec<_>>()
+        .join("\n");
+    crate::templates::render_worker_roster(&crate::templates::WorkerRosterVars {
+        header_note: "",
+        roster_content: &roster_content,
+        closing_line: "Each worker has specialized capabilities. Assign tasks to the most appropriate worker.",
+    })
+}
+
+fn render_roster_summary_tools(roster: &WorkerRoster) -> String {
+    let max_tools = roster.tool_list_limit().get();
+    let sections: Vec<String> = roster
+        .workers()
+        .iter()
+        .map(|spec| {
+            let tools: Vec<String> = spec.tools().iter().map(|t| t.name().to_owned()).collect();
+            let tool_list = crate::producers::format_tool_list(&tools, max_tools);
+            if tool_list.is_empty() {
+                format!(
+                    "## {}\n{}\nTools: (none configured — this worker cannot query external systems)",
+                    spec.role().as_str(),
+                    spec.description()
+                )
+            } else {
+                format!(
+                    "## {}\n{}\nTools: {}",
+                    spec.role().as_str(),
+                    spec.description(),
+                    tool_list
+                )
+            }
+        })
+        .collect();
+    crate::templates::render_worker_roster(&crate::templates::WorkerRosterVars {
+        header_note: "NOTE: Worker names below are role assignments, not callable tool names. Only the tools listed under each worker are MCP tools that workers can execute.\n\n",
+        roster_content: &sections.join("\n\n"),
+        closing_line: "Assign tasks to the worker whose tools best match the required operations.",
+    })
+}
+
+fn render_roster_full_tools(roster: &WorkerRoster) -> String {
+    let max_tools = roster.tool_list_limit().get();
+    let sections: Vec<String> = roster
+        .workers()
+        .iter()
+        .map(|spec| {
+            let tool_details: Vec<String> = spec
+                .tools()
+                .iter()
+                .take(max_tools)
+                .map(|t| match t.description() {
+                    Some(desc) => format!("  - {}: {}", t.name(), desc),
+                    None => format!("  - {}", t.name()),
+                })
+                .collect();
+            let remaining = spec.tools().len().saturating_sub(max_tools);
+            let tool_section = if tool_details.is_empty() {
+                String::new()
+            } else if remaining > 0 {
+                format!("{}\n  (+{} more)", tool_details.join("\n"), remaining)
+            } else {
+                tool_details.join("\n")
+            };
+            if tool_section.is_empty() {
+                format!("## {}\n{}", spec.role().as_str(), spec.description())
+            } else {
+                format!(
+                    "## {}\n{}\nTools:\n{}",
+                    spec.role().as_str(),
+                    spec.description(),
+                    tool_section
+                )
+            }
+        })
+        .collect();
+    crate::templates::render_worker_roster(&crate::templates::WorkerRosterVars {
+        header_note: "NOTE: Worker names below are role assignments, not callable tool names. Only the tools listed under each worker are MCP tools that workers can execute.\n\n",
+        roster_content: &sections.join("\n\n"),
+        closing_line: "Assign tasks to the worker whose tools best match the required operations.",
+    })
+}
+
 /// Everything the loop needs before its first provider call.
 ///
 /// The system prompt is supplied rather than composed here: the ported
 /// preamble builder describes the bounded router's tool surface, which is
 /// not the surface this loop registers, so composing it in would ship a
 /// system prompt that contradicts the tools.
+///
+/// The run store is supplied rather than created internally so a real
+/// executor (the [`DagExecutor`](crate::dag_executor::DagExecutor)) can
+/// share the same store the coordinator's tools read and write: the
+/// executor reads `latest_plan()` to resolve the plan id and files
+/// per-task records that `inspect_run` reads back. A caller creates one
+/// [`RunStore`], hands it to both the executor and this config, and the
+/// loop's `Arc`-shared handle keeps them joined.
 pub struct CoordinatorLoopConfig {
     pub provider: Arc<dyn Provider>,
     pub model: ModelId,
@@ -125,6 +226,7 @@ pub struct CoordinatorLoopConfig {
     pub budget: LoopBudget,
     pub executor: Arc<dyn PlanExecutor>,
     pub worker_sections: WorkerSections,
+    pub runs: RunStore,
 }
 
 /// Forwards loop events to a shared observer handle.
@@ -169,7 +271,7 @@ impl CoordinatorLoop {
     /// Returns [`CoordinatorRunError::Session`] when the provider and model
     /// do not yield a session.
     pub async fn new(config: CoordinatorLoopConfig) -> Result<Self, CoordinatorRunError> {
-        let runs = RunStore::new();
+        let runs = config.runs.clone();
         let answer: TerminalSlot<FinalResponse> = TerminalSlot::new();
 
         let create_plan: DynTool =
@@ -224,11 +326,12 @@ impl CoordinatorLoop {
 
     /// Run the loop over one user query.
     ///
-    /// The opening message is the rendered planning wrapper, so the loop
-    /// starts from the same template the frame corpus pins rather than from
-    /// a message assembled at the call site. Everything after it is ordinary
-    /// conversation history: tool calls and their observations, with no
-    /// state replayed into a prompt.
+    /// The opening message is the rendered loop-shaped planning wrapper,
+    /// which names the four tools this loop registers (`create_plan`,
+    /// `execute`, `inspect_run`, `respond`) rather than the bounded
+    /// router's three. Everything after it is ordinary conversation
+    /// history: tool calls and their observations, with no state replayed
+    /// into a prompt.
     ///
     /// # Errors
     ///
@@ -236,11 +339,14 @@ impl CoordinatorLoop {
     /// fails outright. A loop that stops for any reported reason, the turn
     /// budget included, is an outcome rather than an error.
     pub async fn run(self, query: &PinnedGoal) -> Result<CoordinatorOutcome, CoordinatorRunError> {
-        let message = build_planning_wrapper(
-            query.as_str(),
-            self.worker_sections.roster_section(),
-            self.worker_sections.guidelines(),
-        );
+        let timestamp =
+            chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+        let message = render_planning_loop_prompt(&PlanningLoopVars {
+            timestamp: &timestamp,
+            query: query.as_str(),
+            worker_section: self.worker_sections.roster_section(),
+            worker_guidelines: self.worker_sections.guidelines(),
+        });
 
         let config = AgentLoopConfig {
             max_tool_depth: self.budget.into(),

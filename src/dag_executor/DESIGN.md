@@ -10,15 +10,17 @@ type-design panel's fifteen dispositions as type-level repairs (signatures,
 types, docs); bodies remained `todo!()` except where a signature change
 forced a body edit the existing tests exercise. Phase 2c implemented the
 artifact store bodies, the DAG executor body, the worker inner loop, the
-worker tool bodies, and the `RunStore` task-record filing. The planning-
-template switchover, `StubExecutor` deletion, and re-golden remain for
-Phase 2d.
+worker tool bodies, and the `RunStore` task-record filing. Phase 2d
+completed the single-derivation `WorkerSections::from_roster` switchover,
+adopted the loop-shaped planning template as the coordinator's opening
+message, deleted `StubExecutor`, and re-goldened the new planning path
+(R6).
 
 ## What the executor is
 
-The `DagExecutor` replaces `StubExecutor` as the `PlanExecutor` the
-coordinator loop ships with. For each plan the coordinator asks it to run,
-the executor selects ready tasks from the plan's DAG, dispatches each to a
+The `DagExecutor` is the `PlanExecutor` the coordinator loop ships with.
+For each plan the coordinator asks it to run, the executor selects ready
+tasks from the plan's DAG, dispatches each to a
 worker inner `AgentLoop` on four tools (`keystrokes`, `capture-pane`,
 `submit_result`, `read_artifact`), and propagates dependency failure to
 descendants. The `execute` result is a structured review packet: per-task
@@ -100,8 +102,8 @@ concrete-impl reality.
 
 | Item | Visibility | Who replaces it |
 |---|---|---|
-| `StubExecutor` | `pub` in `coordinator_loop` | `DagExecutor` implements `PlanExecutor`; `StubExecutor` is deleted in Phase 2 when the DAG body lands. The skeleton does not delete it because the S71 acceptance tests still drive it |
-| `DagExecutor` | `pub` in `dag_executor` | Stays. The one executor type the loop ships with after Phase 2; constructed per dispatch by `ExecuteTool` from the `RunStore` it owns. `new` takes six args: sidecar, artifacts, worker config, worker sections, run store, and inline threshold |
+| `StubExecutor` | deleted from `coordinator_loop` | `DagExecutor` implements `PlanExecutor`; `StubExecutor` was deleted in Phase 2d once the S71 acceptance tests migrated to `DagExecutor` with `MockProvider`-backed workers |
+| `DagExecutor` | `pub` in `dag_executor` | Stays. The one executor type the loop ships with after Phase 2; constructed by the caller from the `RunStore` it shares with `CoordinatorLoopConfig` so `execute` can read `latest_plan()` and file per-task records that `inspect_run` reads back. `new` takes six args: sidecar, artifacts, worker config, worker sections, run store, and inline threshold |
 | `SidecarClient` | `pub` in `mcp_client` | Stays. The JSON-boundary seam over the classic-SSE transport; rmcp types never cross it |
 | `ArtifactStore` | `pub` in `artifacts` | Stays. Filename-addressed storage behind `read_artifact` and the spill path |
 | `KeystrokesTool`, `CapturePaneTool`, `ReadArtifactTool` | `pub` in `dag_executor` | Stays. The three new worker tools; `SubmitResultTool` is reused from `coordinator_loop` |
@@ -113,7 +115,7 @@ concrete-impl reality.
 | `RunId` | `pub` in `artifacts` | Stays. The safe-path-component newtype for cross-run reads |
 | `WorkerSpec`, `WorkerTool` | `pub` in `coordinator_loop` (via `roster`) | Stay. The renderable per-worker spec (now with `preamble`) and its tool entries, carried by the widened `WorkerRoster` |
 | `PlanningLoopVars` | `pub` in `templates` | Stays. The loop-shaped planning template type; `PlanningVars` retires when the bounded router goes |
-| `WorkerSections::from_roster` | `pub` in `coordinator_loop` | Stays. The single-derivation constructor; `from_config` is deleted in Phase 2 after the goldens are re-goldened |
+| `WorkerSections::from_roster` | `pub` in `coordinator_loop` | Stays. The single-derivation constructor; `from_config` was deleted in Phase 2d after the byte-parity test proved the roster renders the same three strings as the producer oracle |
 | `InlineThreshold`, `SpilledBody` | `pub` in `artifacts` | Stay. The spill decision and pointer types |
 | `SidecarUrl`, `SidecarToolName`, `SidecarToolArgs`, `SidecarContent`, `SidecarTool`, `SidecarServerInfo` | `pub` in `mcp_client` | Stay. The wire-shape types that model the F3 transcript |
 | `ArtifactFilename` | `pub` in `artifacts` | Stays. The safe-path-component newtype |
@@ -122,12 +124,12 @@ concrete-impl reality.
 
 | S71 seam-table item | How this skeleton honors it |
 |---|---|
-| `StubExecutor` → S72: the real DAG core implements `PlanExecutor` | `DagExecutor` implements `PlanExecutor`; the `execute` body is `todo!()` |
+| `StubExecutor` → S72: the real DAG core implements `PlanExecutor` | `DagExecutor` implements `PlanExecutor`; `StubExecutor` deleted in Phase 2d; the S71 acceptance tests migrated to `DagExecutor` with `MockProvider`-backed workers |
 | `PlanExecutor` → Stays | Unchanged; the trait is not touched |
 | `RunStore` → S72 backs with run journal | `TaskRecord` type and `record_task`/`task` methods implemented; `TaskRecord` keyed by `(PlanId, task_id, attempt)` with private fields and a `new` constructor; `DagExecutor` holds a `RunStore` handle and files per-task records during `execute` |
 | `RunSelector` → S72 widens with task records | `Task { plan_id, task_id, attempt }` variant added with `Attempt` newtype; match arm and schema entry added with `minimum: 1` on attempt and `minimum: 0` on task_id |
 | System prompt → S72 ports a loop-shaped preamble template | `PlanningLoopVars` type and `planning_loop_prompt.md` template declared; the template mentions the task selector; the old `PlanningVars` and `planning_prompt.md` stay compiling alongside |
-| `WorkerSections` → S71 U(code-review) follow-up: single-derive from `WorkerRoster` | `WorkerSections::from_roster` declared with `todo!()` body; `WorkerRoster` widened to carry `WorkerSpec` (role + description + tools) and tool-visibility inputs so `from_roster` is implementable from the roster alone; the old `from_config` stays compiling; switchover plan in the `from_roster` doc comment |
+| `WorkerSections` → S71 U(code-review) follow-up: single-derive from `WorkerRoster` | `WorkerSections::from_roster` renders the roster section, worker field, and guidelines from the typed `WorkerRoster` alone; `WorkerRoster` widened to carry `WorkerSpec` (role + description + tools) and tool-visibility inputs so `from_roster` is implementable from the roster alone; `WorkerSections::from_config` deleted in Phase 2d after the byte-parity test proved the roster renders the same three strings as the producer oracle |
 
 ## 4. Residual risks
 
@@ -160,11 +162,14 @@ The signature changed from `&Plan` to `&Task`. The executor passes the
 single task being dispatched, not the whole plan, so the worker's opening
 message is the task description alone.
 
-**R6 - The planning loop template is not yet golden-tested.**
-The template file `planning_loop_prompt.md` exists and its placeholders are
-validated by `test_planning_loop_template_matches_context`, but no golden
-snapshot pins its rendered output. Phase 2 re-goldens the planning wrapper
-against the loop template after the `from_roster` switchover.
+**R6 - Resolved: the planning loop template is golden-tested.**
+The rendered loop-shaped planning message is pinned by the
+`planning_loop_message` insta snapshot in `tests/coordinator_loop.rs`,
+rendered through `from_roster` sections with a fixed timestamp so the
+snapshot is deterministic. The snapshot names the four loop tools
+(`create_plan`, `execute`, `inspect_run`, `respond`) and the `from_roster`-
+rendered worker section, proving the single-derivation output and the loop
+template travel together.
 
 ## 5. Deviations from the brief
 

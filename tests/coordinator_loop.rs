@@ -15,7 +15,7 @@ use agent_driver_rs::types::{ContentBlock, ModelId, SystemPrompt};
 use async_trait::async_trait;
 
 use agent_driver_prototype::bounding::{ErrorPreviewWidth, ToolListLimit};
-use agent_driver_prototype::config::{OrchestrationConfig, WorkerConfig};
+use agent_driver_prototype::config::{OrchestrationConfig, ToolVisibility, VectorStoreConfig, WorkerConfig};
 use agent_driver_prototype::context::{
     CorrelationLabel, ErrorPreview, EvidenceEntry, EvidenceText, PinnedGoal, TaskId, WorkerClaim,
     WorkerRole,
@@ -23,9 +23,14 @@ use agent_driver_prototype::context::{
 use agent_driver_prototype::coordinator_loop::{
     CoordinatorLoop, CoordinatorLoopConfig, CoordinatorLoopError, CoordinatorOutcome,
     CreatePlanArgs, ExecutionObservation, FinalResponse, InterruptionReason, LoopBudget,
-    OutcomeCounts, PlanId, PlanObservation, RunStore, StubExecutor, TaskObservation, TerminalSlot,
+    OutcomeCounts, PlanExecutor, PlanId, PlanObservation, RunStore, TaskObservation, TerminalSlot,
     WorkerRoster, WorkerSections,
 };
+use agent_driver_prototype::dag_executor::{DagExecutor, WorkerLoopConfig};
+use agent_driver_prototype::artifacts::{ArtifactStore, InlineThreshold};
+use agent_driver_prototype::mcp_client::SidecarClient;
+use agent_driver_prototype::producers::build_worker_prompt_sections;
+use agent_driver_prototype::templates::{PlanningLoopVars, render_planning_loop_prompt};
 use agent_driver_prototype::tools::submit_result::Confidence;
 use agent_driver_prototype::types::{FailureCategory, StepInput};
 
@@ -80,7 +85,11 @@ fn test_sections() -> WorkerSections {
         workers,
         ..Default::default()
     };
-    WorkerSections::from_config(&config, ToolListLimit::new(10), &[])
+    WorkerSections::from_roster(WorkerRoster::from_config(
+        &config,
+        ToolListLimit::new(10),
+        &[],
+    ))
 }
 
 fn goal() -> PinnedGoal {
@@ -91,18 +100,65 @@ fn model() -> ModelId {
     ModelId::new("mock-model").expect("valid model id")
 }
 
-/// Build a loop over a scripted provider.
+/// The worker-queue entries for a two-task plan where both workers submit.
+/// Each task costs two worker provider calls: one `submit_result` tool round
+/// plus one end-of-turn text response. The executor dispatches ready tasks
+/// in ascending task-id order, so the queue order is task 0 then task 1.
+fn two_task_worker_responses() -> Vec<Vec<agent_driver_rs::StreamEvent>> {
+    vec![
+        mock_tool_call_response(
+            "w0",
+            "submit_result",
+            r#"{"summary":"Collected 530 errors across 4 services","result":"service-a: 412, service-b: 80, service-c: 30, service-d: 8","confidence":"high"}"#,
+        ),
+        mock_text_response(""),
+        mock_tool_call_response(
+            "w1",
+            "submit_result",
+            r#"{"summary":"checkout is the top contributor","result":"checkout: 412 of 530 errors","confidence":"high"}"#,
+        ),
+        mock_text_response(""),
+    ]
+}
+
+/// Build a loop over a scripted coordinator provider, with a
+/// [`DagExecutor`] backed by a separate worker `MockProvider`.
+///
+/// The executor shares the run store with the coordinator loop: the test
+/// creates one [`RunStore`], hands it to both, and the loop's `Arc`-shared
+/// handle keeps them joined so `execute` can read `latest_plan()` and file
+/// per-task records that `inspect_run` reads back. The sidecar is
+/// disconnected and the artifact store disabled because the
+/// `MockProvider`-backed workers only call `submit_result`; a submission
+/// whose body fits the inline threshold never touches the store.
 async fn coordinator(
     responses: Vec<Vec<agent_driver_rs::StreamEvent>>,
+    worker_responses: Vec<Vec<agent_driver_rs::StreamEvent>>,
     turns: u32,
 ) -> CoordinatorLoop {
+    let runs = RunStore::new();
+    let worker_config = WorkerLoopConfig {
+        provider: Arc::new(MockProvider::new(worker_responses)),
+        model: model(),
+        budget: LoopBudget::new(8).expect("non-zero worker budget"),
+        system_prompt: SystemPrompt::new("You are a worker. Submit your result."),
+    };
+    let executor: Arc<dyn PlanExecutor> = Arc::new(DagExecutor::new(
+        SidecarClient::disconnected(),
+        ArtifactStore::disabled(),
+        worker_config,
+        test_sections(),
+        runs.clone(),
+        InlineThreshold::DEFAULT,
+    ));
     CoordinatorLoop::new(CoordinatorLoopConfig {
         provider: Arc::new(MockProvider::new(responses)),
         model: model(),
         system_prompt: SystemPrompt::new("You coordinate one continuous loop."),
         budget: LoopBudget::new(turns).expect("non-zero budget"),
-        executor: Arc::new(StubExecutor),
+        executor,
         worker_sections: test_sections(),
+        runs,
     })
     .await
     .expect("session builds")
@@ -143,9 +199,14 @@ fn recorder() -> (Arc<ToolCallRecorder>, Arc<Mutex<Vec<String>>>) {
 async fn create_plan_then_execute_continues_without_a_stream_break() {
     let expected_id = PlanId::derive(&plan_args());
 
-    // Four queued responses, four provider calls, three tool rounds. A fifth
-    // provider call would panic the mock, so reaching the assertions is
-    // itself proof the loop made exactly four.
+    // Four coordinator responses, four coordinator provider calls, three
+    // tool rounds. A fifth coordinator provider call would panic the mock,
+    // so reaching the assertions is itself proof the loop made exactly
+    // four. The worker queue is separate: two tasks, two provider calls
+    // each (a submit_result round plus an end-of-turn), four worker calls
+    // consumed inside the execute round. A fifth worker call would panic
+    // the worker mock, so the counts assertion also proves the executor
+    // dispatched exactly two workers.
     let responses = vec![
         mock_tool_call_response("c1", "create_plan", &plan_args_json()),
         mock_tool_call_response(
@@ -161,7 +222,8 @@ async fn create_plan_then_execute_continues_without_a_stream_break() {
         mock_text_response(""),
     ];
 
-    let coordinator = coordinator(responses, 8).await;
+    let coordinator = coordinator(responses, two_task_worker_responses(), 8)
+        .await;
     let runs = coordinator.runs().clone();
     let (observer, calls) = recorder();
     let outcome = coordinator
@@ -202,9 +264,12 @@ async fn create_plan_then_execute_continues_without_a_stream_break() {
 async fn turn_budget_stops_the_loop_and_the_host_writes_the_answer() {
     let expected_id = PlanId::derive(&plan_args());
 
-    // Budget 2 permits two tool rounds. The third response still has to be
-    // queued because the depth check runs at the top of the round that reads
-    // it, and its tool call is refused rather than executed.
+    // Budget 2 permits two coordinator tool rounds. The third coordinator
+    // response still has to be queued because the depth check runs at the
+    // top of the round that reads it, and its tool call is refused rather
+    // than executed. The execute round runs the full two-task DAG against
+    // the worker mock (four worker calls) before the third coordinator
+    // round is reached.
     let responses = vec![
         mock_tool_call_response("c1", "create_plan", &plan_args_json()),
         mock_tool_call_response(
@@ -219,7 +284,8 @@ async fn turn_budget_stops_the_loop_and_the_host_writes_the_answer() {
         ),
     ];
 
-    let coordinator = coordinator(responses, 2).await;
+    let coordinator = coordinator(responses, two_task_worker_responses(), 2)
+        .await;
     let runs = coordinator.runs().clone();
     let (observer, calls) = recorder();
     let outcome = coordinator
@@ -241,9 +307,10 @@ async fn turn_budget_stops_the_loop_and_the_host_writes_the_answer() {
     );
 
     // The fallback rendered from the execution that did run, not from the
-    // no-execution template.
+    // no-execution template. The worker's submitted evidence (not the stub)
+    // is what the host writes: "412" appears in the worker's result body.
     assert!(fallback.response().contains("Task 0"));
-    assert!(fallback.response().contains("Stub executor"));
+    assert!(fallback.response().contains("412"));
     assert!(
         !fallback
             .response()
@@ -269,7 +336,7 @@ async fn budget_exhausted_before_execution_lists_the_unexecuted_plan() {
         ),
     ];
 
-    let coordinator = coordinator(responses, 1).await;
+    let coordinator = coordinator(responses, Vec::new(), 1).await;
     let outcome = coordinator.run(&goal()).await.expect("the loop runs");
 
     let CoordinatorOutcome::BudgetExhausted { fallback, turns } = outcome else {
@@ -306,7 +373,7 @@ async fn an_unknown_worker_is_a_rejection_the_loop_survives() {
         mock_text_response("Recovered."),
     ];
 
-    let coordinator = coordinator(responses, 8).await;
+    let coordinator = coordinator(responses, Vec::new(), 8).await;
     let runs = coordinator.runs().clone();
     let outcome = coordinator.run(&goal()).await.expect("the loop runs");
 
@@ -328,7 +395,7 @@ async fn a_second_answer_is_refused_and_the_first_stands() {
         mock_text_response(""),
     ];
 
-    let coordinator = coordinator(responses, 8).await;
+    let coordinator = coordinator(responses, Vec::new(), 8).await;
     let outcome = coordinator.run(&goal()).await.expect("the loop runs");
 
     let CoordinatorOutcome::Responded { action, turns } = outcome else {
@@ -717,4 +784,136 @@ fn a_blank_worker_summary_is_not_a_submission() {
     let submission = WorkerSubmission::try_from(good).expect("usable submission");
     assert_eq!(submission.claim().confidence(), Confidence::High);
     assert_eq!(submission.result().as_str(), "checkout: 412");
+}
+
+// ---------------------------------------------------------------------------
+// Single-derivation byte parity: from_roster vs the producer oracle
+// ---------------------------------------------------------------------------
+
+/// A representative two-worker config with a vector store, so the Full
+/// visibility path exercises tool descriptions. Both workers have valid
+/// role names so the roster's `filter_map` drops nothing.
+fn parity_config(visibility: ToolVisibility) -> OrchestrationConfig {
+    let mut workers = HashMap::new();
+    workers.insert(
+        "operations".to_owned(),
+        WorkerConfig {
+            description: "Logs, pipelines and metrics".to_owned(),
+            preamble: String::new(),
+            mcp_filter: vec!["mezmo_*".to_owned()],
+            vector_stores: vec!["runbooks".to_owned()],
+            turn_depth: None,
+            llm: None,
+            scratchpad: None,
+            skills: None,
+        },
+    );
+    workers.insert(
+        "analyst".to_owned(),
+        WorkerConfig {
+            description: "Log and metric analysis".to_owned(),
+            preamble: String::new(),
+            mcp_filter: Vec::new(),
+            vector_stores: Vec::new(),
+            turn_depth: None,
+            llm: None,
+            scratchpad: None,
+            skills: None,
+        },
+    );
+    OrchestrationConfig {
+        enabled: true,
+        workers,
+        tools_in_planning: visibility,
+        max_tools_per_worker: 2,
+        ..Default::default()
+    }
+}
+
+fn parity_vector_stores() -> Vec<VectorStoreConfig> {
+    vec![VectorStoreConfig::new(
+        "runbooks",
+        Some("Operational runbooks for the payments platform"),
+    )]
+}
+
+/// For a representative config, `from_roster(WorkerRoster::from_config(...))`
+/// produces the same three strings as the old `build_worker_prompt_sections`
+/// oracle. Both paths read the same `config.workers` HashMap within one
+/// process, so the iteration order is identical and the comparison is exact.
+/// All three visibility modes are exercised.
+#[test]
+fn from_roster_matches_the_producer_oracle_byte_for_byte() {
+    let limit = ToolListLimit::new(10);
+    let stores = parity_vector_stores();
+
+    for visibility in [
+        ToolVisibility::None,
+        ToolVisibility::Summary,
+        ToolVisibility::Full,
+    ] {
+        let config = parity_config(visibility);
+
+        let (oracle_section, oracle_field, oracle_guidelines) =
+            build_worker_prompt_sections(&config, limit, &stores);
+
+        let sections = WorkerSections::from_roster(WorkerRoster::from_config(
+            &config,
+            limit,
+            &stores,
+        ));
+
+        assert_eq!(
+            sections.roster_section(), oracle_section,
+            "roster_section diverges for {visibility:?}"
+        );
+        assert_eq!(
+            sections.worker_field(), oracle_field,
+            "worker_field diverges for {visibility:?}"
+        );
+        assert_eq!(
+            sections.guidelines(), oracle_guidelines,
+            "guidelines diverge for {visibility:?}"
+        );
+    }
+}
+
+/// An empty roster renders three empty strings, matching the oracle's
+/// no-workers path.
+#[test]
+fn from_roster_with_no_workers_renders_empty_sections() {
+    let config = OrchestrationConfig::default();
+    let limit = ToolListLimit::new(10);
+    let (oracle_section, oracle_field, oracle_guidelines) =
+        build_worker_prompt_sections(&config, limit, &[]);
+    let sections = WorkerSections::from_roster(WorkerRoster::from_config(
+        &config,
+        limit,
+        &[],
+    ));
+    assert_eq!(sections.roster_section(), oracle_section);
+    assert_eq!(sections.worker_field(), oracle_field);
+    assert_eq!(sections.guidelines(), oracle_guidelines);
+    assert!(sections.roster_section().is_empty());
+}
+
+// ---------------------------------------------------------------------------
+// R6: golden pinning the loop-shaped planning message through from_roster
+// ---------------------------------------------------------------------------
+
+/// The rendered loop-shaped planning message through the `from_roster`
+/// sections, pinned by an insta snapshot. A single-worker config keeps the
+/// roster deterministic across process runs (HashMap iteration order is
+/// trivial with one entry). The timestamp is fixed so the snapshot does not
+/// depend on wall-clock time.
+#[test]
+fn planning_loop_message_through_from_roster() {
+    let sections = test_sections();
+    let message = render_planning_loop_prompt(&PlanningLoopVars {
+        timestamp: "2026-07-27T12:00:00Z",
+        query: "Summarise yesterday's error spike",
+        worker_section: sections.roster_section(),
+        worker_guidelines: sections.guidelines(),
+    });
+    insta::assert_snapshot!("planning_loop_message", message);
 }
