@@ -12,12 +12,35 @@ publish = false
 # always compiles against the pin the flow depends on.
 agent-driver-rs = { path = "../agent-driver-rs-pin" }
 async-trait = "0.1"
+# `Bytes` is the chunk type of the reqwest SSE response stream and is named in
+# the `dyn Stream<Item = Result<Bytes, reqwest::Error>>` field of `SseReader`.
+# Already a transitive dep of reqwest; declared directly so the type is not
+# borrowed through a transitive crate.
+bytes = "1"
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
+# `StreamExt::next` pulls chunks from the long-lived SSE GET response, as the
+# aura `mcp_sse.rs` source does. No SSE-frame crate is pulled: the frame
+# parser is a pure function over a UTF-8 buffer (unit-tested against F3).
+futures = "0.3"
+# HTTP client for the SSE GET and the JSON-RPC POSTs. Pinned to 0.12 to match
+# the agent-driver-rs pin (a 0.13 copy exists transitively via async-openai;
+# declaring 0.12 avoids a second direct major version). The `stream` feature
+# gates `Response::bytes_stream` for the open SSE stream.
+reqwest = { version = "0.12", features = ["stream"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 strum = { version = "0.26", features = ["derive"] }
 thiserror = "1"
+# Runtime + async primitives: `#[tokio::main]` for the probe binary,
+# `tokio::sync::Mutex` to hold the SSE stream across `.await`, and
+# `tokio::time::timeout` for bounded response reads. Also a dev-dep so the
+# integration-test crate can name `tokio` directly; features unify.
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
 tracing = "0.1"
+# RFC 3986 resolution of the relative `endpoint` event URL against the SSE
+# base URL in `SidecarClient::connect`, matching aura's `url::Url::join`.
+# `SidecarUrl::new` keeps its prefix check; full parse happens in `connect`.
+url = "2"
 
 [dev-dependencies]
 # The mock provider lives behind `test-support`; integration tests are a

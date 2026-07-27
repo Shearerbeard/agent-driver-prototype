@@ -157,3 +157,132 @@ pub struct SidecarServerInfo {
     pub server_name: String,
     pub server_version: String,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    // --- SidecarToolName --------------------------------------------------
+
+    #[test]
+    fn tool_name_accepts_non_empty_and_round_trips() {
+        let name = SidecarToolName::new("keystrokes").unwrap();
+        assert_eq!(name.as_str(), "keystrokes");
+        assert_eq!(name.to_string(), "keystrokes");
+    }
+
+    #[test]
+    fn tool_name_rejects_empty_or_whitespace() {
+        assert_eq!(SidecarToolName::new("").unwrap_err(), SidecarError::EmptyToolName);
+        assert_eq!(SidecarToolName::new("   ").unwrap_err(), SidecarError::EmptyToolName);
+        assert_eq!(SidecarToolName::new("\t\n").unwrap_err(), SidecarError::EmptyToolName);
+    }
+
+    #[test]
+    fn tool_name_is_hashable_for_roster_keys() {
+        let a = SidecarToolName::new("capture-pane").unwrap();
+        let b = SidecarToolName::new("capture-pane").unwrap();
+        let mut set = std::collections::HashSet::new();
+        set.insert(a);
+        assert!(set.contains(&b));
+    }
+
+    // --- SidecarToolArgs --------------------------------------------------
+
+    #[test]
+    fn tool_args_from_value_accepts_object() {
+        let args = SidecarToolArgs::from_value(json!({"keystrokes": "ls", "append_enter": true}))
+            .unwrap();
+        assert_eq!(args.inner().len(), 2);
+        assert_eq!(args.inner()["keystrokes"].as_str().unwrap(), "ls");
+        assert!(args.inner()["append_enter"].as_bool().unwrap());
+    }
+
+    #[test]
+    fn tool_args_from_value_rejects_non_object() {
+        assert_eq!(
+            SidecarToolArgs::from_value(json!(["a", "b"])).unwrap_err(),
+            SidecarError::ArgumentsNotObject
+        );
+        assert_eq!(
+            SidecarToolArgs::from_value(json!("keystrokes")).unwrap_err(),
+            SidecarError::ArgumentsNotObject
+        );
+        assert_eq!(
+            SidecarToolArgs::from_value(json!(42)).unwrap_err(),
+            SidecarError::ArgumentsNotObject
+        );
+        assert_eq!(
+            SidecarToolArgs::from_value(json!(null)).unwrap_err(),
+            SidecarError::ArgumentsNotObject
+        );
+        assert_eq!(
+            SidecarToolArgs::from_value(json!(true)).unwrap_err(),
+            SidecarError::ArgumentsNotObject
+        );
+    }
+
+    #[test]
+    fn tool_args_from_map_preserves_entries() {
+        let mut map = Map::new();
+        map.insert("k".to_owned(), json!(1));
+        let args = SidecarToolArgs::from_map(map);
+        assert_eq!(args.inner()["k"].as_u64().unwrap(), 1);
+    }
+
+    // --- SidecarContent ---------------------------------------------------
+
+    #[test]
+    fn content_holds_text_including_empty() {
+        assert_eq!(SidecarContent::new("hello".to_owned()).as_str(), "hello");
+        // An empty pane is valid sidecar output, so empty text is allowed.
+        assert_eq!(SidecarContent::new(String::new()).as_str(), "");
+    }
+
+    // --- SidecarTool ------------------------------------------------------
+
+    #[test]
+    fn tool_accessors_round_trip_constructor_inputs() {
+        let name = SidecarToolName::new("capture-pane").unwrap();
+        let schema = json!({"type": "object"});
+        let tool = SidecarTool::new(name, "Capture the pane.".to_owned(), schema.clone());
+        assert_eq!(tool.name().as_str(), "capture-pane");
+        assert_eq!(tool.description(), "Capture the pane.");
+        assert_eq!(tool.input_schema(), &schema);
+    }
+
+    // --- SidecarServerInfo ------------------------------------------------
+
+    #[test]
+    fn server_info_serde_round_trip_preserves_fields() {
+        let info = SidecarServerInfo {
+            protocol_version: "2024-11-05".to_owned(),
+            server_name: "t-bench".to_owned(),
+            server_version: "1.6.0".to_owned(),
+        };
+        let json = serde_json::to_string(&info).unwrap();
+        let back: SidecarServerInfo = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, info);
+    }
+
+    #[test]
+    fn server_info_parses_the_f3_initialize_result() {
+        let result = json!({
+            "protocolVersion": "2024-11-05",
+            "capabilities": {"experimental": {}, "tools": {"listChanged": false}},
+            "serverInfo": {"name": "t-bench", "version": "1.6.0"}
+        });
+        // The client extracts these three fields by key; the type itself
+        // models only the protocolVersion + serverInfo pair the boundary
+        // exposes. Re-derive from the raw result to mirror `initialize`.
+        let info = SidecarServerInfo {
+            protocol_version: result["protocolVersion"].as_str().unwrap().to_owned(),
+            server_name: result["serverInfo"]["name"].as_str().unwrap().to_owned(),
+            server_version: result["serverInfo"]["version"].as_str().unwrap().to_owned(),
+        };
+        assert_eq!(info.protocol_version, "2024-11-05");
+        assert_eq!(info.server_name, "t-bench");
+        assert_eq!(info.server_version, "1.6.0");
+    }
+}
