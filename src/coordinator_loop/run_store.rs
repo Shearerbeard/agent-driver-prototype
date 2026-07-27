@@ -4,7 +4,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 
 use crate::types::Plan;
 
-use super::observation::ExecutionObservation;
+use super::observation::{ExecutionObservation, TaskObservation};
 use super::plan_id::PlanId;
 use super::tools::CreatePlanArgs;
 
@@ -115,4 +115,39 @@ impl RunStore {
             .executions
             .len()
     }
+
+    /// Record a per-task execution observation, keyed by task id and attempt.
+    ///
+    /// The S72 run journal backs this with persisted task records; the
+    /// skeleton declares the seam so `inspect_run` can address it.
+    pub fn record_task(&self, record: TaskRecord) {
+        let _ = record;
+        todo!("Phase 2: file the task record under (task_id, attempt)")
+    }
+
+    /// The task record for `(task_id, attempt)`, if this run produced one.
+    pub fn task(&self, task_id: usize, attempt: usize) -> Option<TaskRecord> {
+        let _ = (task_id, attempt);
+        todo!("Phase 2: look up the task record by (task_id, attempt)")
+    }
+}
+
+/// A per-task execution record, keyed by task id and attempt together.
+///
+/// The attempt is 1-indexed: the first attempt at a task is attempt 1. The
+/// key is the pair `(task_id, attempt)` because a task that fails and is
+/// retried produces multiple records that the coordinator inspects
+/// separately.
+///
+/// Forbidden invalid state: a task record whose observation is a blocked
+/// task carrying a failure category, or a completed task carrying an error
+/// preview — the invariants live on [`TaskObservation`], not here.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TaskRecord {
+    /// The task this record observes.
+    pub task_id: usize,
+    /// The 1-indexed attempt number.
+    pub attempt: usize,
+    /// The observation the attempt produced.
+    pub observation: TaskObservation,
 }

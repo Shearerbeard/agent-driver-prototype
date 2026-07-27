@@ -14,7 +14,9 @@ use super::{native_definition, observation_result};
 /// Each case names a record the run actually holds, and "the latest plan" is
 /// its own case rather than an absent handle: an optional field would encode
 /// a second selector inside the first, which is the shape `ExecuteArgs`
-/// rejects for the same reason.
+/// rejects for the same reason. The `Task` case addresses a per-task
+/// execution record by task id and attempt together, the key the S72 run
+/// journal uses.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(tag = "record", rename_all = "snake_case")]
 pub enum RunSelector {
@@ -24,6 +26,8 @@ pub enum RunSelector {
     LatestPlan,
     /// The most recent execution observation.
     LatestExecution,
+    /// A per-task execution record, keyed by task id and attempt.
+    Task { task_id: usize, attempt: usize },
 }
 
 /// What the coordinator wants to read.
@@ -79,6 +83,21 @@ impl InspectRunTool {
                                     "type": "object",
                                     "properties": { "record": { "const": "latest_execution" } },
                                     "required": ["record"]
+                                },
+                                {
+                                    "type": "object",
+                                    "properties": {
+                                        "record": { "const": "task" },
+                                        "task_id": {
+                                            "type": "integer",
+                                            "description": "The task id to read."
+                                        },
+                                        "attempt": {
+                                            "type": "integer",
+                                            "description": "The attempt number (1-indexed)."
+                                        }
+                                    },
+                                    "required": ["record", "task_id", "attempt"]
                                 }
                             ]
                         }
@@ -126,6 +145,13 @@ impl Tool for InspectRunTool {
                 Some(execution) => observation_result(&execution),
                 None => ToolResult::error("this run has not executed a plan yet".to_owned()),
             },
+            RunSelector::Task { task_id, attempt } => {
+                let _ = (task_id, attempt);
+                todo!(
+                    "Phase 2: read the task record keyed by (task_id, attempt) \
+                     from the run store"
+                )
+            }
         })
     }
 }

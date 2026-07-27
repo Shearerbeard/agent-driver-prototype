@@ -36,6 +36,7 @@ pub const PLANNING_PROMPT_TEMPLATE: &str = include_str!("prompts/planning_prompt
 pub const WORKER_ROSTER_TEMPLATE: &str = include_str!("prompts/worker_roster.md");
 pub const WORKER_GUIDELINES_TEMPLATE: &str = include_str!("prompts/worker_guidelines.md");
 pub const CONTINUATION_WRAPPER_TEMPLATE: &str = include_str!("prompts/continuation_wrapper.md");
+pub const PLANNING_LOOP_PROMPT_TEMPLATE: &str = include_str!("prompts/planning_loop_prompt.md");
 
 /// Trait for template variable providers.
 ///
@@ -201,6 +202,34 @@ impl TemplateVars for PlanningVars<'_> {
     }
 }
 
+/// Variables for the loop-shaped planning wrapper.
+///
+/// Structurally identical to [`PlanningVars`] — the same four placeholders
+/// — but a distinct type so the loop template and the bounded-router
+/// template cannot be silently swapped. The body names `respond`,
+/// `create_plan`, `execute`, and `inspect_run`, the four tools the
+/// coordinator loop registers.
+#[derive(Debug, Clone)]
+pub struct PlanningLoopVars<'a> {
+    pub timestamp: &'a str,
+    pub query: &'a str,
+    pub worker_section: &'a str,
+    pub worker_guidelines: &'a str,
+}
+
+impl TemplateVars for PlanningLoopVars<'_> {
+    const VARS: &'static [&'static str] =
+        &["TIMESTAMP", "QUERY", "WORKER_SECTION", "WORKER_GUIDELINES"];
+
+    fn render(&self, template: &str) -> String {
+        template
+            .replace("%%TIMESTAMP%%", self.timestamp)
+            .replace("%%QUERY%%", self.query)
+            .replace("%%WORKER_SECTION%%", self.worker_section)
+            .replace("%%WORKER_GUIDELINES%%", self.worker_guidelines)
+    }
+}
+
 /// Variables for the worker roster section in the planning wrapper.
 #[derive(Debug, Clone)]
 pub struct WorkerRosterVars<'a> {
@@ -279,6 +308,11 @@ pub fn render_session_history(vars: &SessionHistoryVars<'_>) -> String {
 /// Render the initial planning wrapper with the given variables.
 pub fn render_planning_prompt(vars: &PlanningVars<'_>) -> String {
     vars.render(PLANNING_PROMPT_TEMPLATE)
+}
+
+/// Render the loop-shaped planning wrapper with the given variables.
+pub fn render_planning_loop_prompt(vars: &PlanningLoopVars<'_>) -> String {
+    vars.render(PLANNING_LOOP_PROMPT_TEMPLATE)
 }
 
 /// Render the worker roster section with the given variables.
@@ -474,6 +508,12 @@ mod tests {
     }
 
     #[test]
+    fn test_planning_loop_template_matches_context() {
+        validate_template::<PlanningLoopVars>(PLANNING_LOOP_PROMPT_TEMPLATE)
+            .expect("Planning loop template should match PlanningLoopVars");
+    }
+
+    #[test]
     fn test_worker_roster_template_matches_context() {
         validate_template::<WorkerRosterVars>(WORKER_ROSTER_TEMPLATE)
             .expect("Worker roster template should match WorkerRosterVars");
@@ -610,6 +650,30 @@ mod tests {
         assert!(
             PLANNING_PROMPT_TEMPLATE.contains("%%WORKER_SECTION%%"),
             "Planning prompt template should contain WORKER_SECTION placeholder"
+        );
+    }
+
+    #[test]
+    fn test_planning_loop_template_loaded() {
+        assert!(
+            !PLANNING_LOOP_PROMPT_TEMPLATE.is_empty(),
+            "Planning loop template should be loaded"
+        );
+        assert!(
+            PLANNING_LOOP_PROMPT_TEMPLATE.contains("%%TIMESTAMP%%"),
+            "Planning loop template should contain TIMESTAMP placeholder"
+        );
+        assert!(
+            PLANNING_LOOP_PROMPT_TEMPLATE.contains("respond"),
+            "Planning loop template should name the respond tool"
+        );
+        assert!(
+            PLANNING_LOOP_PROMPT_TEMPLATE.contains("execute"),
+            "Planning loop template should name the execute tool"
+        );
+        assert!(
+            PLANNING_LOOP_PROMPT_TEMPLATE.contains("inspect_run"),
+            "Planning loop template should name the inspect_run tool"
         );
     }
 

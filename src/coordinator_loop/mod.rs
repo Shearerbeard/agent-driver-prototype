@@ -33,7 +33,7 @@ pub use observation::{
 pub use outcome::{CoordinatorOutcome, InterruptionReason};
 pub use plan_id::PlanId;
 pub use roster::WorkerRoster;
-pub use run_store::RunStore;
+pub use run_store::{RunStore, TaskRecord};
 pub use terminal::{FinalResponse, TerminalSlot, WorkerSubmission};
 pub use tools::{
     CreatePlanArgs, CreatePlanTool, ExecuteArgs, ExecuteTool, InspectRunArgs, InspectRunTool,

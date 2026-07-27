@@ -37,6 +37,12 @@ pub struct WorkerSections {
 
 impl WorkerSections {
     /// Render every worker section from an orchestration configuration.
+    ///
+    /// This is the parallel-derivation path: the roster text and the typed
+    /// roster are produced independently from the same config, so a prose
+    /// mismatch is representable. It stays until the single-derivation
+    /// [`from_roster`](Self::from_roster) path is wired in and the S70
+    /// goldens are re-goldened against it.
     pub fn from_config(
         config: &OrchestrationConfig,
         tool_list_limit: ToolListLimit,
@@ -50,6 +56,32 @@ impl WorkerSections {
             guidelines,
             roster: WorkerRoster::from_config(config),
         }
+    }
+
+    /// Render every worker section from a typed [`WorkerRoster`].
+    ///
+    /// This is the single-derivation path: the roster text, the worker-field
+    /// fragment, and the guidelines are all rendered from the typed roster,
+    /// so a prose/schema roster mismatch is unrepresentable. The skeleton
+    /// declares the signature; the render body lands in Phase 2, at which
+    /// point `from_config` is retired and the goldens are re-goldened
+    /// against this path.
+    ///
+    /// # Switchover plan
+    ///
+    /// 1. Phase 2 implements the render body, reading worker descriptions
+    ///    and tool lists from the roster's typed entries.
+    /// 2. The call site in `CoordinatorLoop::run` switches from
+    ///    `from_config` to `from_roster`.
+    /// 3. The S70 goldens are re-goldened against the single-derivation
+    ///    output.
+    /// 4. `from_config` and `build_worker_prompt_sections` are deleted.
+    pub fn from_roster(roster: WorkerRoster) -> Self {
+        let _ = roster;
+        todo!(
+            "Phase 2: render roster_section, worker_field, and guidelines \
+             from the typed WorkerRoster so the parallel derivation is removed"
+        )
     }
 
     /// A run with no workers configured, which is what the producer returns
