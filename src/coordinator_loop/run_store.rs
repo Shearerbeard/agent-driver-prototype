@@ -1,5 +1,6 @@
 //! The run's in-memory record of what the coordinator created and executed.
 
+use std::num::NonZeroUsize;
 use std::sync::{Arc, Mutex, PoisonError};
 
 use crate::types::Plan;
@@ -116,38 +117,127 @@ impl RunStore {
             .len()
     }
 
-    /// Record a per-task execution observation, keyed by task id and attempt.
+    /// Record a per-task execution observation, keyed by plan, task id, and
+    /// attempt.
     ///
     /// The S72 run journal backs this with persisted task records; the
     /// skeleton declares the seam so `inspect_run` can address it.
     pub fn record_task(&self, record: TaskRecord) {
         let _ = record;
-        todo!("Phase 2: file the task record under (task_id, attempt)")
+        todo!("Phase 2: file the task record under (plan_id, task_id, attempt)")
     }
 
-    /// The task record for `(task_id, attempt)`, if this run produced one.
-    pub fn task(&self, task_id: usize, attempt: usize) -> Option<TaskRecord> {
-        let _ = (task_id, attempt);
-        todo!("Phase 2: look up the task record by (task_id, attempt)")
+    /// The task record for `(plan_id, task_id, attempt)`, if this run
+    /// produced one.
+    pub fn task(&self, plan_id: &PlanId, task_id: usize, attempt: Attempt) -> Option<TaskRecord> {
+        let _ = (plan_id, task_id, attempt);
+        todo!("Phase 2: look up the task record by (plan_id, task_id, attempt)")
     }
 }
 
-/// A per-task execution record, keyed by task id and attempt together.
+/// A 1-indexed attempt number for a task execution.
+///
+/// The first attempt at a task is attempt 1. The newtype prevents zero
+/// from reaching the run journal's task records or the `inspect_run`
+/// selector.
+///
+/// Forbidden invalid state: an attempt number of zero.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct Attempt(NonZeroUsize);
+
+impl Attempt {
+    /// Parse a 1-indexed attempt number.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AttemptZero`] when `attempt` is zero.
+    pub fn new(attempt: usize) -> Result<Self, AttemptZero> {
+        NonZeroUsize::new(attempt)
+            .map(Self)
+            .ok_or(AttemptZero)
+    }
+
+    /// The 1-indexed attempt number.
+    pub fn get(&self) -> usize {
+        self.0.get()
+    }
+}
+
+impl std::fmt::Display for Attempt {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+impl serde::Serialize for Attempt {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        self.get().serialize(s)
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for Attempt {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        let raw = usize::deserialize(d)?;
+        Self::new(raw).map_err(serde::de::Error::custom)
+    }
+}
+
+/// Why an attempt number was rejected.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[error("attempt number is zero; attempts are 1-indexed")]
+pub struct AttemptZero;
+
+/// A per-task execution record, keyed by plan, task id, and attempt together.
 ///
 /// The attempt is 1-indexed: the first attempt at a task is attempt 1. The
-/// key is the pair `(task_id, attempt)` because a task that fails and is
-/// retried produces multiple records that the coordinator inspects
-/// separately.
+/// key is the triple `(plan_id, task_id, attempt)` because a revised plan
+/// restarts task ids at zero, so `(task_id, attempt)` alone is not
+/// run-unique.
+///
+/// The fields are private and the [`new`](Self::new) constructor derives
+/// `task_id` from the observation's correlation label, so a record cannot
+/// carry a `task_id` that disagrees with the observation it files.
 ///
 /// Forbidden invalid state: a task record whose observation is a blocked
 /// task carrying a failure category, or a completed task carrying an error
 /// preview — the invariants live on [`TaskObservation`], not here.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TaskRecord {
+    plan_id: PlanId,
+    task_id: usize,
+    attempt: Attempt,
+    observation: TaskObservation,
+}
+
+impl TaskRecord {
+    /// Construct a task record, deriving `task_id` from the observation's
+    /// correlation label.
+    pub fn new(plan_id: PlanId, attempt: Attempt, observation: TaskObservation) -> Self {
+        Self {
+            task_id: observation.label().task.get(),
+            plan_id,
+            attempt,
+            observation,
+        }
+    }
+
+    /// The plan this record belongs to.
+    pub fn plan_id(&self) -> &PlanId {
+        &self.plan_id
+    }
+
     /// The task this record observes.
-    pub task_id: usize,
+    pub fn task_id(&self) -> usize {
+        self.task_id
+    }
+
     /// The 1-indexed attempt number.
-    pub attempt: usize,
+    pub fn attempt(&self) -> Attempt {
+        self.attempt
+    }
+
     /// The observation the attempt produced.
-    pub observation: TaskObservation,
+    pub fn observation(&self) -> &TaskObservation {
+        &self.observation
+    }
 }

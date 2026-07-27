@@ -7,6 +7,7 @@ use async_trait::async_trait;
 
 use crate::artifacts::ArtifactStore;
 use crate::coordinator_loop::PlanExecutor;
+use crate::coordinator_loop::RunStore;
 use crate::coordinator_loop::WorkerSections;
 use crate::coordinator_loop::ExecutionObservation;
 use crate::mcp_client::SidecarClient;
@@ -33,6 +34,8 @@ pub struct DagExecutor {
     worker_config: WorkerLoopConfig,
     #[allow(dead_code)]
     worker_sections: WorkerSections,
+    #[allow(dead_code)]
+    runs: RunStore,
 }
 
 impl DagExecutor {
@@ -41,18 +44,27 @@ impl DagExecutor {
     /// The `sidecar` is the connected MCP client; `artifacts` is the
     /// filename-addressed store; `worker_config` carries the provider,
     /// model, and budget for worker inner loops; `worker_sections` is the
-    /// roster the executor reads worker preambles from.
+    /// roster the executor reads worker preambles from; `runs` is the run
+    /// store the executor files per-task records into.
+    ///
+    /// The `ExecuteTool` constructs the executor per dispatch from the
+    /// [`RunStore`] it already owns, so the executor sees the run's current
+    /// plan and task records. The executor allocates 1-indexed attempt
+    /// numbers per task: the first attempt at a task is attempt 1, a retry
+    /// is attempt 2, and so on.
     pub fn new(
         sidecar: SidecarClient,
         artifacts: ArtifactStore,
         worker_config: WorkerLoopConfig,
         worker_sections: WorkerSections,
+        runs: RunStore,
     ) -> Self {
         Self {
             sidecar,
             artifacts,
             worker_config,
             worker_sections,
+            runs,
         }
     }
 }

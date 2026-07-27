@@ -18,7 +18,7 @@ use std::collections::HashMap;
 /// Tool execution access is controlled by each worker's `mcp_filter`.
 /// This setting only affects what the coordinator sees when deciding how to
 /// assign tasks, balancing context length vs. precision.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum ToolVisibility {
     /// No tool information in planning prompt (minimal context, display only).
     None,

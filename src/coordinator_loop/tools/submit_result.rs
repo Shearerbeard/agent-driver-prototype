@@ -62,7 +62,8 @@ impl SubmitResultTool {
                     "properties": {
                         "summary": {
                             "type": "string",
-                            "description": "One or two sentences stating the finding."
+                            "description": "One or two sentences stating the finding.",
+                            "maxLength": crate::context::MAX_SUMMARY_CHARS
                         },
                         "result": {
                             "type": "string",

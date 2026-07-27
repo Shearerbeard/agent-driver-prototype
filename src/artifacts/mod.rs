@@ -12,4 +12,4 @@ mod spill;
 mod storage;
 
 pub use spill::{InlineThreshold, SpilledBody};
-pub use storage::{ArtifactError, ArtifactFilename, ArtifactStore};
+pub use storage::{ArtifactError, ArtifactFilename, ArtifactStore, RunId};

@@ -52,7 +52,7 @@ pub use frame::{
     AncestorDistance, DependencyRelation, PriorWorkEntry, PriorWorkFrame, TokenBudget,
 };
 pub use goal::PinnedGoal;
-pub use label::{CorrelationLabel, IterationNumber, TaskId, WorkerClaim, WorkerRole};
+pub use label::{CorrelationLabel, IterationNumber, MAX_SUMMARY_CHARS, TaskId, WorkerClaim, WorkerRole};
 pub use rendered::RenderedContext;
 pub use turn::{
     ClarificationQuestion, CoordinatorTurn, FinalResponse, PlanShape, RoutingRationale,

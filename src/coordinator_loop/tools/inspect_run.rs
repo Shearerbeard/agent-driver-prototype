@@ -6,7 +6,7 @@ use async_trait::async_trait;
 use serde::Deserialize;
 
 use super::super::plan_id::PlanId;
-use super::super::run_store::RunStore;
+use super::super::run_store::{Attempt, RunStore};
 use super::{native_definition, observation_result};
 
 /// Which record to read back.
@@ -15,8 +15,8 @@ use super::{native_definition, observation_result};
 /// its own case rather than an absent handle: an optional field would encode
 /// a second selector inside the first, which is the shape `ExecuteArgs`
 /// rejects for the same reason. The `Task` case addresses a per-task
-/// execution record by task id and attempt together, the key the S72 run
-/// journal uses.
+/// execution record by plan handle, task id, and attempt together, the key
+/// the S72 run journal uses.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(tag = "record", rename_all = "snake_case")]
 pub enum RunSelector {
@@ -26,8 +26,15 @@ pub enum RunSelector {
     LatestPlan,
     /// The most recent execution observation.
     LatestExecution,
-    /// A per-task execution record, keyed by task id and attempt.
-    Task { task_id: usize, attempt: usize },
+    /// A per-task execution record, keyed by plan, task id, and attempt.
+    Task {
+        /// The plan that created the task.
+        plan_id: PlanId,
+        /// The task id to read (0-indexed, matching the plan's task order).
+        task_id: usize,
+        /// The 1-indexed attempt number.
+        attempt: Attempt,
+    },
 }
 
 /// What the coordinator wants to read.
@@ -53,8 +60,9 @@ impl InspectRunTool {
             definition: native_definition(
                 "inspect_run",
                 "Read back one of this run's own records: a plan you created, the most recent \
-                 plan, or the most recent execution. Use it when you need the task text or the \
-                 full evidence that an earlier observation summarised.",
+                 plan, the most recent execution, or a per-task record by plan, task id, and \
+                 attempt. Use it when you need the task text or the full evidence that an \
+                 earlier observation summarised.",
                 serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -88,16 +96,22 @@ impl InspectRunTool {
                                     "type": "object",
                                     "properties": {
                                         "record": { "const": "task" },
+                                        "plan_id": {
+                                            "type": "string",
+                                            "description": "The plan_id that created the task."
+                                        },
                                         "task_id": {
                                             "type": "integer",
+                                            "minimum": 0,
                                             "description": "The task id to read."
                                         },
                                         "attempt": {
                                             "type": "integer",
+                                            "minimum": 1,
                                             "description": "The attempt number (1-indexed)."
                                         }
                                     },
-                                    "required": ["record", "task_id", "attempt"]
+                                    "required": ["record", "plan_id", "task_id", "attempt"]
                                 }
                             ]
                         }
@@ -145,10 +159,10 @@ impl Tool for InspectRunTool {
                 Some(execution) => observation_result(&execution),
                 None => ToolResult::error("this run has not executed a plan yet".to_owned()),
             },
-            RunSelector::Task { task_id, attempt } => {
-                let _ = (task_id, attempt);
+            RunSelector::Task { plan_id, task_id, attempt } => {
+                let _ = (plan_id, task_id, attempt);
                 todo!(
-                    "Phase 2: read the task record keyed by (task_id, attempt) \
+                    "Phase 2: read the task record keyed by (plan_id, task_id, attempt) \
                      from the run store"
                 )
             }

@@ -34,6 +34,10 @@ fn worker_tool_definition(name: &str, description: &str, schema: JsonValue) -> T
 // ============================================================================
 
 /// Arguments for the `keystrokes` tool, matching the sidecar's schema.
+///
+/// The schema carries `minLength: 1` on `keystrokes`; the tool body also
+/// rejects an empty string at the parse boundary (body stays `todo!()` in
+/// Phase 2a).
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct KeystrokesArgs {
     pub keystrokes: String,
@@ -67,7 +71,8 @@ impl KeystrokesTool {
                     "properties": {
                         "keystrokes": {
                             "type": "string",
-                            "description": "Keystrokes to execute in the terminal."
+                            "description": "Keystrokes to execute in the terminal.",
+                            "minLength": 1
                         },
                         "wait_time_sec": {
                             "type": "number",
@@ -185,7 +190,11 @@ impl Tool for CapturePaneTool {
 ///
 /// `filename` is a raw `String` on the wire; the execute body validates it
 /// through [`ArtifactFilename::new`] before it reaches the store. An
-/// optional `run_id` enables cross-run reads within the same session.
+/// optional `run_id` enables cross-run reads within the same session; the
+/// execute body parses it into [`RunId`](crate::artifacts::RunId) before
+/// calling [`ArtifactStore::read_artifact_cross_run`]. Both fields stay raw
+/// on the wire so the type mirrors the schema; the parse-at-boundary
+/// pattern matches `CreatePlanArgs`.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct ReadArtifactArgs {
     pub filename: String,

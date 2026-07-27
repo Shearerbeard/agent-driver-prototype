@@ -54,7 +54,7 @@ impl WorkerSections {
             roster_section,
             worker_field,
             guidelines,
-            roster: WorkerRoster::from_config(config),
+            roster: WorkerRoster::from_config(config, tool_list_limit, vector_stores),
         }
     }
 

@@ -61,9 +61,9 @@ impl SpilledBody {
     /// Parse a spill pointer from a validated filename and the full result
     /// length.
     ///
-    /// # Errors
-    ///
-    /// Returns [`ArtifactError::EmptyFilename`] when `filename` is empty.
+    /// Infallible because [`ArtifactFilename`] already rejected the
+    /// empty-filename case at its own constructor; nothing this constructor
+    /// does can fail.
     pub fn new(filename: ArtifactFilename, full_chars: usize) -> Self {
         Self {
             filename,

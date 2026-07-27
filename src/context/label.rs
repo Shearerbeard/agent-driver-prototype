@@ -109,12 +109,19 @@ impl std::fmt::Display for IterationNumber {
     }
 }
 
+/// The maximum character count for a worker-claim summary. The bound is
+/// enforced at the `submit_result` parse boundary so the coordinator's
+/// packet is bounded. Summaries over the bound are loudly rejected, not
+/// silently truncated.
+pub const MAX_SUMMARY_CHARS: usize = 2000;
+
 /// A worker's own `submit_result` claim: distilled summary plus stated
 /// confidence.
 ///
 /// The pair travels together. Confidence without a summary is
 /// unrepresentable, mirroring the collapse already encoded by
-/// `StructuredTaskOutput` in `orchestration::types`.
+/// `StructuredTaskOutput` in `orchestration::types`. The summary is
+/// character-bounded at construction by [`MAX_SUMMARY_CHARS`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WorkerClaim {
     summary: String,
@@ -127,10 +134,14 @@ impl WorkerClaim {
     /// # Errors
     ///
     /// Returns [`ContextError::EmptyWorkerClaimSummary`] when the summary is
-    /// empty or whitespace-only.
+    /// empty or whitespace-only, and [`ContextError::SummaryExceedsBound`]
+    /// when the summary exceeds [`MAX_SUMMARY_CHARS`] characters.
     pub fn new(summary: &str, confidence: Confidence) -> Result<Self, ContextError> {
         if summary.trim().is_empty() {
             return Err(ContextError::EmptyWorkerClaimSummary);
+        }
+        if summary.chars().count() > MAX_SUMMARY_CHARS {
+            return Err(ContextError::SummaryExceedsBound);
         }
         Ok(Self {
             summary: summary.to_owned(),

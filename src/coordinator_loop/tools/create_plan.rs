@@ -102,11 +102,7 @@ fn plan_schema(roster: &WorkerRoster, worker_field: &str) -> JsonValue {
         }
     });
     if !roster.is_empty() {
-        let names: Vec<&str> = roster
-            .names()
-            .iter()
-            .map(crate::context::WorkerRole::as_str)
-            .collect();
+        let names: Vec<&str> = roster.names();
         if let Some(properties) = leaf_properties.as_object_mut() {
             properties.insert(
                 "worker".to_owned(),

@@ -17,6 +17,12 @@ pub enum ContextError {
     /// A worker-claim summary was empty or whitespace-only.
     #[error("worker-claim summary is empty")]
     EmptyWorkerClaimSummary,
+    /// A worker-claim summary exceeded the maximum character count
+    /// ([`crate::context::MAX_SUMMARY_CHARS`]). The bound is enforced at
+    /// the `submit_result` parse boundary so the coordinator's packet is
+    /// bounded.
+    #[error("worker-claim summary exceeds the maximum character count")]
+    SummaryExceedsBound,
     /// Inline evidence text was empty or whitespace-only.
     #[error("inline evidence text is empty")]
     EmptyEvidenceText,

@@ -16,4 +16,4 @@ mod worker;
 
 pub use executor::DagExecutor;
 pub use tools::{CapturePaneArgs, CapturePaneTool, KeystrokesArgs, KeystrokesTool, ReadArtifactArgs, ReadArtifactTool};
-pub use worker::{WorkerLoop, WorkerLoopConfig};
+pub use worker::{WorkerLoop, WorkerLoopConfig, WorkerOutcome};

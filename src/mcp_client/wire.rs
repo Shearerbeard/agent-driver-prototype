@@ -121,10 +121,8 @@ pub struct SidecarTool {
 impl SidecarTool {
     /// Parse a `tools/list` entry.
     ///
-    /// # Errors
-    ///
-    /// Returns [`SidecarError::EmptyToolName`] when the entry's `name` is
-    /// empty.
+    /// Infallible because [`SidecarToolName`] already rejected the empty-name
+    /// case at its own constructor; nothing this constructor does can fail.
     pub fn new(name: SidecarToolName, description: String, input_schema: JsonValue) -> Self {
         Self {
             name,
