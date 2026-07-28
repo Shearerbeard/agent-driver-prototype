@@ -22,9 +22,12 @@
 //! `choices[0].delta.content` would corrupt the assistant answer and could
 //! leak reasoning tokens to the adapter. See DESIGN.md §C3.
 
+use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Instant;
 
 use agent_driver_rs::agent::{AgentEvent, AgentObserver, LoopStopReason};
+use agent_driver_rs::ToolCallId;
 use async_trait::async_trait;
 use tokio::sync::mpsc::Sender;
 use tokio::sync::Mutex;
@@ -59,6 +62,11 @@ pub struct ShimObserver {
     created: u64,
     usage: Arc<Mutex<UsageAccumulator>>,
     event_tx: Sender<AuraEvent>,
+    /// Per-tool-call start instants (R5): the coordinator's `ToolCallStart`
+    /// records `Instant::now()`, and the matching `ToolCallComplete` computes
+    /// `duration_ms`. A std mutex is held for the duration of the map lookup
+    /// only (no await while held).
+    tool_starts: std::sync::Mutex<HashMap<ToolCallId, Instant>>,
 }
 
 impl ShimObserver {
@@ -87,6 +95,7 @@ impl ShimObserver {
             created,
             usage,
             event_tx,
+            tool_starts: std::sync::Mutex::new(HashMap::new()),
         }
     }
 
@@ -138,12 +147,13 @@ impl ShimObserver {
         name: &agent_driver_rs::ToolName,
         result: &str,
         is_error: bool,
+        duration_ms: u64,
     ) -> ToolCompletePayload {
         if is_error {
             ToolCompletePayload::failure(
                 id.as_str(),
                 name.as_str(),
-                0,
+                duration_ms,
                 result,
                 COORDINATOR_AGENT_ID,
                 self.session_id.as_str(),
@@ -152,7 +162,7 @@ impl ShimObserver {
             ToolCompletePayload::success(
                 id.as_str(),
                 name.as_str(),
-                0,
+                duration_ms,
                 result,
                 COORDINATOR_AGENT_ID,
                 self.session_id.as_str(),
@@ -197,6 +207,12 @@ impl AgentObserver for ShimObserver {
                 // answer and could leak reasoning tokens to the adapter.
             }
             AgentEvent::ToolCallStart { id, name, .. } => {
+                // R5: record the start instant so ToolCallComplete can compute
+                // the tool-call duration.
+                self.tool_starts
+                    .lock()
+                    .expect("tool_starts lock poisoned")
+                    .insert(id.clone(), Instant::now());
                 self.emit(AuraEvent::ToolStart(self.tool_start_payload(id, name)))
                     .await;
             }
@@ -206,8 +222,15 @@ impl AgentObserver for ShimObserver {
                 result,
                 is_error,
             } => {
+                let duration_ms = self
+                    .tool_starts
+                    .lock()
+                    .expect("tool_starts lock poisoned")
+                    .remove(id)
+                    .map(|start| start.elapsed().as_millis() as u64)
+                    .unwrap_or(0);
                 self.emit(AuraEvent::ToolComplete(
-                    self.tool_complete_payload(id, name, result, *is_error),
+                    self.tool_complete_payload(id, name, result, *is_error, duration_ms),
                 ))
                 .await;
             }
@@ -263,10 +286,179 @@ pub fn error_termination_events(
     model: &str,
     session_id: &super::session::ShimSessionId,
 ) -> Vec<AuraEvent> {
-    // The implementation phase builds a finish-reason chunk with Stop
-    // and then [DONE] from the parameters above. For the skeleton, the
-    // signature is here so the stream handler can call it; the body is
-    // deferred.
-    let _ = (chat_completion_id, created, model, session_id);
-    todo!("build finish chunk with Stop + [DONE]")
+    // The session id is part of the termination context (A4) but the
+    // chat-completion chunk shape carries no session id; it is reserved for
+    // a future aura error event.
+    let _ = session_id;
+    let finish = ChatCompletionChunk::finish(chat_completion_id, created, model, FinishReason::Stop)
+        .expect("chat_completion_id and model are non-empty by construction");
+    vec![AuraEvent::ChatChunk(finish), AuraEvent::Done]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::sse_shim::events::{EVENT_USAGE, SSE_DONE};
+    use crate::sse_shim::session::{ShimSessionId, shared_accumulator};
+    use agent_driver_rs::streaming::TokenUsage;
+    use std::time::Duration;
+    use tokio::sync::mpsc;
+
+    async fn drain(rx: &mut mpsc::Receiver<AuraEvent>) -> Vec<AuraEvent> {
+        let mut out = Vec::new();
+        while let Some(event) = rx.recv().await {
+            out.push(event);
+        }
+        out
+    }
+
+    /// The `LoopComplete` sequence is `aura.usage` (with the accumulated
+    /// totals), then the terminal finish-reason chunk, then `[DONE]` — in
+    /// that order and no others.
+    #[tokio::test]
+    async fn loop_complete_emits_usage_then_finish_then_done() {
+        let session_id = ShimSessionId::generate();
+        let usage = shared_accumulator();
+        // Pre-feed the sink the way the UsageMeteringProvider would.
+        usage
+            .lock()
+            .await
+            .add(TokenUsage {
+                input_tokens: 100,
+                output_tokens: 40,
+            });
+
+        let (tx, mut rx) = mpsc::channel::<AuraEvent>(16);
+        {
+            let observer = ShimObserver::new(
+                session_id,
+                "configured-model",
+                "chatcmpl-test",
+                123,
+                Arc::clone(&usage),
+                tx,
+            );
+            observer
+                .on_event(&AgentEvent::LoopComplete {
+                    reason: LoopStopReason::EndTurn,
+                    total_iterations: 2,
+                })
+                .await;
+        }
+
+        let events = drain(&mut rx).await;
+        assert_eq!(events.len(), 3, "usage, finish chunk, done");
+
+        // 1. aura.usage with the accumulated totals.
+        assert!(matches!(events[0], AuraEvent::Usage(_)));
+        assert_eq!(events[0].sse_event_name(), Some(EVENT_USAGE));
+        let u: serde_json::Value = serde_json::from_str(&events[0].sse_data()).unwrap();
+        assert_eq!(u["prompt_tokens"].as_u64(), Some(100));
+        assert_eq!(u["completion_tokens"].as_u64(), Some(40));
+        assert_eq!(u["total_tokens"].as_u64(), Some(140));
+        let sid = session_id.as_str();
+        assert_eq!(u["session_id"].as_str(), Some(sid.as_str()));
+
+        // 2. data-only finish chunk with finish_reason "stop" and the
+        //    configured model (C9), never the request's model.
+        assert!(matches!(events[1], AuraEvent::ChatChunk(_)));
+        assert!(events[1].sse_event_name().is_none(), "chunk is data-only");
+        let c: serde_json::Value = serde_json::from_str(&events[1].sse_data()).unwrap();
+        assert_eq!(c["object"].as_str(), Some("chat.completion.chunk"));
+        assert_eq!(c["model"].as_str(), Some("configured-model"));
+        assert_eq!(c["id"].as_str(), Some("chatcmpl-test"));
+        assert_eq!(c["choices"][0]["finish_reason"].as_str(), Some("stop"));
+        assert!(c["choices"][0]["delta"]["content"].is_null());
+
+        // 3. [DONE] last, data-only.
+        assert!(matches!(events[2], AuraEvent::Done));
+        assert!(events[2].sse_event_name().is_none());
+        assert_eq!(events[2].sse_data(), SSE_DONE);
+    }
+
+    /// `MaxTokens` maps to `finish_reason: "length"` (the adapter's
+    /// context-length-exhaustion signal).
+    #[tokio::test]
+    async fn loop_complete_max_tokens_maps_to_length() {
+        let (tx, mut rx) = mpsc::channel::<AuraEvent>(16);
+        {
+            let observer = ShimObserver::new(
+                ShimSessionId::generate(),
+                "m",
+                "id",
+                0,
+                shared_accumulator(),
+                tx,
+            );
+            observer
+                .on_event(&AgentEvent::LoopComplete {
+                    reason: LoopStopReason::MaxTokens,
+                    total_iterations: 1,
+                })
+                .await;
+        }
+        let events = drain(&mut rx).await;
+        let c: serde_json::Value = serde_json::from_str(&events[1].sse_data()).unwrap();
+        assert_eq!(c["choices"][0]["finish_reason"].as_str(), Some("length"));
+    }
+
+    /// `error_termination_events` produces a `Stop` finish chunk then
+    /// `[DONE]`, in that order.
+    #[test]
+    fn error_termination_events_is_finish_stop_then_done() {
+        let session_id = ShimSessionId::generate();
+        let events = error_termination_events("chatcmpl-x", 99, "model-x", &session_id);
+        assert_eq!(events.len(), 2);
+        assert!(matches!(events[0], AuraEvent::ChatChunk(_)));
+        assert!(matches!(events[1], AuraEvent::Done));
+        let c: serde_json::Value = serde_json::from_str(&events[0].sse_data()).unwrap();
+        assert_eq!(c["id"].as_str(), Some("chatcmpl-x"));
+        assert_eq!(c["model"].as_str(), Some("model-x"));
+        assert_eq!(c["choices"][0]["finish_reason"].as_str(), Some("stop"));
+    }
+
+    /// R5: a tool call's `duration_ms` is populated from the wall-clock gap
+    /// between `ToolCallStart` and `ToolCallComplete`.
+    #[tokio::test]
+    async fn tool_call_duration_is_measured() {
+        let (tx, mut rx) = mpsc::channel::<AuraEvent>(16);
+        {
+            let observer = ShimObserver::new(
+                ShimSessionId::generate(),
+                "m",
+                "id",
+                0,
+                shared_accumulator(),
+                tx,
+            );
+            let id = agent_driver_rs::ToolCallId::new("call_1");
+            let name = agent_driver_rs::ToolName::new("read_file").unwrap();
+            observer
+                .on_event(&AgentEvent::ToolCallStart {
+                    id: id.clone(),
+                    name: name.clone(),
+                    input: serde_json::Value::Null,
+                })
+                .await;
+            // Sleep long enough that `as_millis()` is non-zero.
+            tokio::time::sleep(Duration::from_millis(3)).await;
+            observer
+                .on_event(&AgentEvent::ToolCallComplete {
+                    id,
+                    name,
+                    result: "ok".to_owned(),
+                    is_error: false,
+                })
+                .await;
+        }
+        let events = drain(&mut rx).await;
+        assert_eq!(events.len(), 2);
+        assert!(matches!(events[0], AuraEvent::ToolStart(_)));
+        assert!(matches!(events[1], AuraEvent::ToolComplete(_)));
+        let v: serde_json::Value = serde_json::from_str(&events[1].sse_data()).unwrap();
+        let duration = v["duration_ms"].as_u64().expect("duration_ms present");
+        assert!(duration >= 1, "duration_ms should reflect the sleep, got {duration}");
+        assert_eq!(v["success"].as_bool(), Some(true));
+        assert_eq!(v["result"].as_str(), Some("ok"));
+    }
 }

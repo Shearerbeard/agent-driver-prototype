@@ -51,3 +51,42 @@ impl IntoResponse for ShimError {
         (status, body).into_response()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::body::to_bytes;
+
+    fn body_error_key(response: Response) -> serde_json::Value {
+        let bytes = futures::executor::block_on(to_bytes(response.into_body(), 1 << 20)).unwrap();
+        serde_json::from_slice(&bytes).unwrap()
+    }
+
+    #[test]
+    fn invalid_request_maps_to_400() {
+        let response = ShimError::InvalidRequest("bad".to_owned()).into_response();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let v = body_error_key(response);
+        assert_eq!(v["error"].as_str(), Some("invalid chat completions request: bad"));
+    }
+
+    #[test]
+    fn server_maps_to_500() {
+        let response = ShimError::Server("boom".to_owned()).into_response();
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        let v = body_error_key(response);
+        assert!(v["error"].as_str().is_some());
+    }
+
+    #[test]
+    fn coordinator_maps_to_500() {
+        let response = ShimError::Coordinator("loop failed".to_owned()).into_response();
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    }
+
+    #[test]
+    fn otel_maps_to_500() {
+        let response = ShimError::Otel("exporter".to_owned()).into_response();
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    }
+}

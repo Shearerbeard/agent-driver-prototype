@@ -81,18 +81,61 @@ impl ShimCliArgs {
 
     /// Parse `std::env::args` into typed CLI args.
     ///
-    /// Expected: `sse_shim --port <N> --sidecar-url <URL> --config <PATH>`
+    /// Expected: `sse_shim --port <N> --sidecar-url <URL> --config <PATH>`.
+    /// Both `--flag value` and `--flag=value` forms are accepted; the program
+    /// name (argv[0]) is skipped. Unknown flags and missing values are hard
+    /// errors. The sidecar URL is validated via [`SidecarUrl::new`].
     ///
     /// # Errors
     ///
-    /// Returns [`ShimError::InvalidRequest`] when required args are missing
-    /// or malformed.
-    ///
-    /// # Panics
-    ///
-    /// This method body is `todo!()` in the type skeleton.
+    /// Returns [`ShimError::InvalidRequest`] when required args are missing,
+    /// a value is malformed, or an unknown argument is present.
     pub fn parse() -> Result<Self, ShimError> {
-        todo!("parse --port, --sidecar-url, --config from std::env::args")
+        let mut args = std::env::args().skip(1);
+        let mut port: Option<u16> = None;
+        let mut sidecar_url: Option<String> = None;
+        let mut config_path: Option<PathBuf> = None;
+
+        while let Some(arg) = args.next() {
+            // Split `--flag=value` so the value is not mistaken for the next
+            // flag. `split_once` splits on the first `=`, so a URL value with
+            // `=` in its query string is preserved intact.
+            let (flag, inline) = match arg.split_once('=') {
+                Some((f, v)) => (f, Some(v.to_owned())),
+                None => (arg.as_str(), None),
+            };
+            match flag {
+                "--port" => {
+                    let value = take_value(flag, inline, &mut args)?;
+                    let parsed: u16 = value.parse().map_err(|_| {
+                        ShimError::InvalidRequest(format!("--port must be a port number, got {value}"))
+                    })?;
+                    port = Some(parsed);
+                }
+                "--sidecar-url" => {
+                    sidecar_url = Some(take_value(flag, inline, &mut args)?);
+                }
+                "--config" => {
+                    config_path = Some(PathBuf::from(take_value(flag, inline, &mut args)?));
+                }
+                other => {
+                    return Err(ShimError::InvalidRequest(format!(
+                        "unknown CLI argument: {other}"
+                    )));
+                }
+            }
+        }
+
+        let port = port
+            .ok_or_else(|| ShimError::InvalidRequest("missing required --port".to_owned()))?;
+        let sidecar_raw = sidecar_url
+            .ok_or_else(|| ShimError::InvalidRequest("missing required --sidecar-url".to_owned()))?;
+        let config_path = config_path
+            .ok_or_else(|| ShimError::InvalidRequest("missing required --config".to_owned()))?;
+        let sidecar_url = SidecarUrl::new(&sidecar_raw)
+            .map_err(|e| ShimError::InvalidRequest(e.to_string()))?;
+
+        Self::from_parts(ShimPort::new(port), sidecar_url, config_path)
     }
 
     /// The listen port.
@@ -108,5 +151,28 @@ impl ShimCliArgs {
     /// The config file path.
     pub fn config_path(&self) -> &PathBuf {
         &self.config_path
+    }
+}
+
+/// Pull a flag's value from an inline `--flag=value` or the next argv slot.
+///
+/// # Errors
+///
+/// Returns [`ShimError::InvalidRequest`] when no value follows the flag.
+fn take_value(
+    flag: &str,
+    inline: Option<String>,
+    args: &mut impl Iterator<Item = String>,
+) -> Result<String, ShimError> {
+    if let Some(value) = inline {
+        if value.is_empty() {
+            return Err(ShimError::InvalidRequest(format!("empty value for {flag}")));
+        }
+        return Ok(value);
+    }
+    match args.next() {
+        Some(value) if !value.is_empty() => Ok(value),
+        Some(_) => Err(ShimError::InvalidRequest(format!("empty value for {flag}"))),
+        None => Err(ShimError::InvalidRequest(format!("missing value for {flag}"))),
     }
 }

@@ -2,6 +2,7 @@
 
 use std::collections::VecDeque;
 use std::sync::Arc;
+use std::time::Instant;
 
 use agent_driver_rs::tool::ToolContext;
 use agent_driver_rs::SystemPrompt;
@@ -21,6 +22,11 @@ use crate::types::{FailureCategory, Plan, Task, TaskState};
 
 use super::lifecycle::DagLifecycleObserver;
 use super::worker::{WorkerLoop, WorkerLoopConfig, WorkerOutcome};
+
+/// The orchestrator identity the executor reports to lifecycle observers.
+/// The executor owns no session id (the shim's `ShimDagObserver` carries that
+/// separately), so it reports a fixed coordinator label.
+const ORCHESTRATOR_ID: &str = "coordinator";
 
 /// The real DAG executor.
 ///
@@ -43,7 +49,6 @@ pub struct DagExecutor {
     /// emits `on_task_started` / `on_task_completed` around each task run.
     /// The shim's `build_request` plumbs a `ShimDagObserver` here; tests
     /// pass `None`.
-    #[allow(dead_code, reason = "type skeleton; called in the execute dispatch loop in the implementation phase")]
     lifecycle: Option<Arc<dyn DagLifecycleObserver>>,
 }
 
@@ -166,6 +171,21 @@ impl PlanExecutor for DagExecutor {
                 let index = *task_index.get(&task_id).expect("ready task id exists in plan");
                 work_plan.tasks[index].start();
 
+                // C2: notify the lifecycle observer before the worker loop
+                // begins. The description and worker identity are read here
+                // so the borrow ends before the worker runs.
+                let description = work_plan.tasks[index].description.as_str();
+                let worker_id = work_plan.tasks[index]
+                    .worker
+                    .as_deref()
+                    .unwrap_or("default");
+                let task_start = Instant::now();
+                if let Some(observer) = self.lifecycle.as_ref() {
+                    observer
+                        .on_task_started(task_id, description, worker_id, ORCHESTRATOR_ID)
+                        .await;
+                }
+
                 let config = WorkerLoopConfig {
                     provider: Arc::clone(&self.worker_config.provider),
                     model: self.worker_config.model.clone(),
@@ -188,6 +208,21 @@ impl PlanExecutor for DagExecutor {
                     .map_outcome(&outcome, &label, &work_plan.tasks[index])
                     .await;
                 observations[index] = Some(observation.clone());
+
+                // C2/R5: notify the lifecycle observer after the task settles.
+                // The duration is the wall-clock task run; success and result
+                // are read from the resolved plan state.
+                let success = matches!(new_state, TaskState::Complete { .. });
+                let result_text = match &new_state {
+                    TaskState::Complete { result } => Some(result.as_str()),
+                    _ => None,
+                };
+                let duration_ms = task_start.elapsed().as_millis() as u64;
+                if let Some(observer) = self.lifecycle.as_ref() {
+                    observer
+                        .on_task_completed(task_id, success, duration_ms, result_text)
+                        .await;
+                }
 
                 let record = TaskRecord::new(plan_id.clone(), attempt, observation);
                 self.runs.record_task(record);

@@ -640,3 +640,142 @@ impl AuraEvent {
         .unwrap_or_else(|_| "{}".to_owned())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn event_names_match_the_wire_contract() {
+        assert_eq!(EVENT_SESSION_INFO, "aura.session_info");
+        assert_eq!(EVENT_USAGE, "aura.usage");
+        assert_eq!(EVENT_TOOL_START, "aura.tool_start");
+        assert_eq!(EVENT_TOOL_COMPLETE, "aura.tool_complete");
+        assert_eq!(EVENT_TASK_STARTED, "aura.orchestrator.task_started");
+        assert_eq!(EVENT_TASK_COMPLETED, "aura.orchestrator.task_completed");
+    }
+
+    #[test]
+    fn sse_event_name_is_set_for_aura_events_and_absent_for_chunks_and_done() {
+        let session_info = AuraEvent::SessionInfo(
+            SessionInfoPayload::new("m", "sid", None, None).unwrap(),
+        );
+        assert_eq!(session_info.sse_event_name(), Some(EVENT_SESSION_INFO));
+
+        let usage = AuraEvent::Usage(UsagePayload::from_totals(1, 2, "sid"));
+        assert_eq!(usage.sse_event_name(), Some(EVENT_USAGE));
+
+        let chunk = AuraEvent::ChatChunk(
+            ChatCompletionChunk::text_delta("id", 0, "m", "hi").unwrap(),
+        );
+        assert!(chunk.sse_event_name().is_none(), "chat chunks are data-only");
+
+        assert!(AuraEvent::Done.sse_event_name().is_none(), "Done is data-only");
+    }
+
+    #[test]
+    fn done_serializes_as_the_done_sentinel() {
+        assert_eq!(AuraEvent::Done.sse_data(), SSE_DONE);
+        assert_eq!(SSE_DONE, "[DONE]");
+    }
+
+    #[test]
+    fn session_info_serializes_snake_case_fields() {
+        let payload = SessionInfoPayload::new("model-x", "session-y", Some(200_000), None).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&serde_json::to_string(&payload).unwrap())
+            .unwrap();
+        assert_eq!(v["model"].as_str(), Some("model-x"));
+        assert_eq!(v["session_id"].as_str(), Some("session-y"));
+        assert_eq!(v["model_context_limit"].as_u64(), Some(200_000));
+        // trace_id is None and skipped.
+        assert!(v.get("trace_id").is_none());
+    }
+
+    #[test]
+    fn usage_payload_total_is_the_sum() {
+        let payload = UsagePayload::from_totals(7, 11, "sid");
+        let v: serde_json::Value =
+            serde_json::from_str(&serde_json::to_string(&payload).unwrap()).unwrap();
+        assert_eq!(v["prompt_tokens"].as_u64(), Some(7));
+        assert_eq!(v["completion_tokens"].as_u64(), Some(11));
+        assert_eq!(v["total_tokens"].as_u64(), Some(18));
+        assert_eq!(v["session_id"].as_str(), Some("sid"));
+    }
+
+    #[test]
+    fn task_completed_success_and_failure_shapes_are_mutually_exclusive() {
+        let success = TaskCompletedPayload::success(1, 5, "coord", "w", "result", "w", "sid");
+        let vs: serde_json::Value =
+            serde_json::from_str(&serde_json::to_string(&success).unwrap()).unwrap();
+        assert_eq!(vs["success"].as_bool(), Some(true));
+        assert_eq!(vs["result"].as_str(), Some("result"));
+        assert!(vs.get("error").is_none());
+
+        let failure = TaskCompletedPayload::failure(1, 5, "coord", "w", "w", "sid");
+        let vf: serde_json::Value =
+            serde_json::from_str(&serde_json::to_string(&failure).unwrap()).unwrap();
+        assert_eq!(vf["success"].as_bool(), Some(false));
+        assert!(vf.get("result").is_none());
+    }
+
+    #[test]
+    fn tool_complete_success_and_failure_shapes_are_mutually_exclusive() {
+        let success = ToolCompletePayload::success("tid", "tname", 9, "res", "aid", "sid");
+        let vs: serde_json::Value =
+            serde_json::from_str(&serde_json::to_string(&success).unwrap()).unwrap();
+        assert_eq!(vs["tool_id"].as_str(), Some("tid"));
+        assert_eq!(vs["tool_name"].as_str(), Some("tname"));
+        assert_eq!(vs["duration_ms"].as_u64(), Some(9));
+        assert_eq!(vs["success"].as_bool(), Some(true));
+        assert_eq!(vs["result"].as_str(), Some("res"));
+        assert!(vs.get("error").is_none());
+
+        let failure = ToolCompletePayload::failure("tid", "tname", 0, "boom", "aid", "sid");
+        let vf: serde_json::Value =
+            serde_json::from_str(&serde_json::to_string(&failure).unwrap()).unwrap();
+        assert_eq!(vf["success"].as_bool(), Some(false));
+        assert_eq!(vf["error"].as_str(), Some("boom"));
+        assert!(vf.get("result").is_none());
+    }
+
+    #[test]
+    fn text_delta_chunk_carries_content_and_no_finish_reason() {
+        let chunk = ChatCompletionChunk::text_delta("chatcmpl-1", 99, "model-x", "hello").unwrap();
+        let v: serde_json::Value =
+            serde_json::from_str(&serde_json::to_string(&chunk).unwrap()).unwrap();
+        assert_eq!(v["object"].as_str(), Some("chat.completion.chunk"));
+        assert_eq!(v["id"].as_str(), Some("chatcmpl-1"));
+        assert_eq!(v["model"].as_str(), Some("model-x"));
+        assert_eq!(v["choices"][0]["delta"]["content"].as_str(), Some("hello"));
+        assert!(v["choices"][0]["finish_reason"].is_null());
+        // role is never emitted (A1).
+        assert!(v["choices"][0]["delta"].get("role").is_none());
+    }
+
+    #[test]
+    fn finish_chunk_has_empty_delta_and_finish_reason() {
+        let chunk =
+            ChatCompletionChunk::finish("chatcmpl-1", 99, "model-x", FinishReason::Length).unwrap();
+        let v: serde_json::Value =
+            serde_json::from_str(&serde_json::to_string(&chunk).unwrap()).unwrap();
+        assert_eq!(
+            v["choices"][0]["finish_reason"].as_str(),
+            Some("length")
+        );
+        assert!(v["choices"][0]["delta"].get("content").is_none());
+    }
+
+    #[test]
+    fn session_info_rejects_empty_or_zero_fields() {
+        assert!(SessionInfoPayload::new("", "sid", None, None).is_err());
+        assert!(SessionInfoPayload::new("m", "", None, None).is_err());
+        assert!(SessionInfoPayload::new("m", "sid", Some(0), None).is_err());
+    }
+
+    #[test]
+    fn task_started_rejects_empty_identity_fields() {
+        assert!(TaskStartedPayload::new(0, "", "w", "o", "a", "s").is_err());
+        assert!(TaskStartedPayload::new(0, "d", "", "o", "a", "s").is_err());
+        assert!(TaskStartedPayload::new(0, "d", "w", "", "a", "s").is_err());
+    }
+}

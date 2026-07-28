@@ -17,8 +17,7 @@
 //! `ArtifactStore` (C5), `DagExecutor`, and `CoordinatorLoop`, then spawns
 //! the loop and returns the event receiver + join handle (C4).
 //!
-//! Phase 1 (this code) lands the type skeleton with `todo!()` bodies. A
-//! later phase implements the bodies. See `DESIGN.md` for the type
+//! Phase 3 implements the bodies. See `DESIGN.md` for the type
 //! inventory, visibility/seam table, and residual risks.
 
 mod cli;

@@ -95,6 +95,12 @@ impl OtelConfig {
 
     /// Initialize the global tracer provider and tracing subscriber.
     ///
+    /// When no endpoint is configured, tracing is a no-op: the subscriber is
+    /// not installed and a no-op guard is returned (documented behavior, not
+    /// an error). When an endpoint is set, an OTLP/gRPC exporter is built, a
+    /// `SdkTracerProvider` is installed globally, and a `tracing_subscriber`
+    /// registry with a `tracing-opentelemetry` layer is installed.
+    ///
     /// Returns an [`OtelGuard`] that owns the tracer provider. The guard
     /// must live until the server shuts down so spans are flushed before
     /// the process exits.
@@ -102,15 +108,52 @@ impl OtelConfig {
     /// # Errors
     ///
     /// Returns [`ShimError::Otel`] when the exporter or provider cannot be
-    /// built.
-    ///
-    /// # Panics
-    ///
-    /// This method body is `todo!()` in the type skeleton. The
-    /// implementation phase will build the OTLP exporter, tracer provider,
-    /// and tracing-opentelemetry subscriber layer.
+    /// built, or when the tracing subscriber is already installed.
     pub fn init(self) -> Result<OtelGuard, ShimError> {
-        todo!("build OTLP exporter, TracerProvider, and tracing subscriber")
+        let Some(endpoint) = self.endpoint else {
+            // No collector configured: tracing is a no-op.
+            return Ok(OtelGuard::noop());
+        };
+
+        use opentelemetry::global;
+        use opentelemetry::trace::TracerProvider as _;
+        use opentelemetry_sdk::Resource;
+        use opentelemetry_sdk::propagation::TraceContextPropagator;
+        use opentelemetry_sdk::trace::SdkTracerProvider;
+        use opentelemetry_otlp::WithExportConfig as _;
+
+        let exporter = opentelemetry_otlp::SpanExporter::builder()
+            .with_tonic()
+            .with_endpoint(endpoint.as_str())
+            .build()
+            .map_err(|e| ShimError::Otel(format!("OTLP exporter build failed: {e}")))?;
+
+        let resource = Resource::builder()
+            .with_service_name("sse-shim")
+            .build();
+
+        let provider = SdkTracerProvider::builder()
+            .with_resource(resource)
+            .with_batch_exporter(exporter)
+            .build();
+
+        // Install the provider globally and register the W3C trace-context
+        // propagator so span context propagates across the coordinator loop.
+        let tracer = provider.tracer("sse-shim");
+        global::set_tracer_provider(provider.clone());
+        global::set_text_map_propagator(TraceContextPropagator::new());
+
+        // Bridge `tracing` spans to the OTEL pipeline so the coordinator loop's
+        // existing tracing spans export as OTEL spans.
+        use tracing_subscriber::prelude::*;
+        let telemetry = tracing_opentelemetry::layer().with_tracer(tracer);
+        tracing_subscriber::registry()
+            .with(telemetry)
+            .with(tracing_subscriber::EnvFilter::from_default_env())
+            .try_init()
+            .map_err(|e| ShimError::Otel(format!("tracing subscriber init failed: {e}")))?;
+
+        Ok(OtelGuard::from_provider(provider))
     }
 }
 

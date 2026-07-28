@@ -13,25 +13,37 @@
 //! channel; the SSE response reads from the channel receiver. See
 //! DESIGN.md §C5 for the per-request construction shape.
 
+use std::collections::VecDeque;
+use std::convert::Infallible;
 use std::path::PathBuf;
+use std::pin::Pin;
 use std::sync::Arc;
+use std::task::{Context, Poll};
+use std::time::{SystemTime, UNIX_EPOCH};
 
+use agent_driver_rs::agent::AgentObserver;
 use agent_driver_rs::{ModelId, Provider, SystemPrompt};
 use axum::extract::{Json, State};
 use axum::response::sse::{Event, Sse};
 use axum::response::IntoResponse;
+use futures::Stream;
 use serde::Deserialize;
 use tokio::sync::mpsc::Receiver;
 use tokio::task::JoinHandle;
+use tracing::Instrument;
 
-use crate::artifacts::InlineThreshold;
-use crate::coordinator_loop::{LoopBudget, WorkerSections};
-use crate::dag_executor::WorkerLoopConfig;
+use crate::artifacts::{ArtifactStore, InlineThreshold};
+use crate::context::PinnedGoal;
+use crate::coordinator_loop::{CoordinatorLoop, CoordinatorLoopConfig, LoopBudget, RunStore, WorkerSections};
+use crate::dag_executor::{DagExecutor, DagLifecycleObserver, WorkerLoopConfig};
 use crate::mcp_client::SidecarClient;
 
+use super::dag_lifecycle::ShimDagObserver;
 use super::error::ShimError;
 use super::events::AuraEvent;
-use super::session::ShimSessionId;
+use super::observer::{ShimObserver, error_termination_events};
+use super::session::{ShimSessionId, shared_accumulator};
+use super::usage_metering::UsageMeteringProvider;
 
 /// The bounded event-channel capacity (C10).
 ///
@@ -199,21 +211,100 @@ impl ShimState {
     /// # Errors
     ///
     /// Returns [`ShimError::Coordinator`] when the `CoordinatorLoop` cannot
-    /// be built (session construction failure).
-    ///
-    /// # Panics
-    ///
-    /// This method body is `todo!()` in the type skeleton.
+    /// be built (session construction failure), and [`ShimError::InvalidRequest`]
+    /// when the query is empty/whitespace-only and cannot pin a goal.
     pub async fn build_request(
         self: &Arc<Self>,
-        _query: &str,
+        query: &str,
     ) -> Result<ShimRequest, ShimError> {
-        todo!(
-            "create RunStore, ShimSessionId, UsageAccumulator + metered provider, \
-             bounded event channel, per-request ArtifactStore, DagExecutor with \
-             ShimDagObserver, CoordinatorLoopConfig, CoordinatorLoop, ShimObserver; \
-             spawn loop task; return ShimRequest"
-        )
+        // 1. Fresh session id.
+        let session_id = ShimSessionId::generate();
+        // 2. Fresh per-request usage sink (C1).
+        let usage = shared_accumulator();
+        // 3. Metered provider wrapping the shared base provider (C1).
+        let metered = Arc::new(UsageMeteringProvider::new(
+            Arc::clone(&self.base_provider),
+            Arc::clone(&usage),
+        )) as Arc<dyn Provider>;
+        // 4. Bounded event channel (C10).
+        let (event_tx, event_rx) = tokio::sync::mpsc::channel::<AuraEvent>(EVENT_CHANNEL_CAPACITY);
+        let dag_event_tx = event_tx.clone();
+        // 5. ShimObserver. The chat-completion id is derived from the session
+        //    id so the stream handler's error-termination chunks agree with
+        //    the observer's normal chunks.
+        let chat_completion_id = format!("chatcmpl-{}", session_id.as_str());
+        let created = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let observer = Arc::new(ShimObserver::new(
+            session_id,
+            self.model.as_str().to_owned(),
+            chat_completion_id,
+            created,
+            usage,
+            event_tx,
+        )) as Arc<dyn AgentObserver>;
+        // 6. ShimDagObserver (C2), sharing the event channel.
+        let dag_observer =
+            Arc::new(ShimDagObserver::new(session_id, dag_event_tx)) as Arc<dyn DagLifecycleObserver>;
+        // 7. Per-request ArtifactStore at a per-request run dir (C5).
+        let run_dir = self.artifact_root.join(session_id.as_str());
+        let artifacts = ArtifactStore::new(run_dir);
+        // 8. Fresh RunStore.
+        let runs = RunStore::new();
+        // 9. Per-request DagExecutor with the metered provider in
+        //    WorkerLoopConfig and the ShimDagObserver (C2).
+        let worker_config = WorkerLoopConfig {
+            provider: Arc::clone(&metered),
+            model: self.model.clone(),
+            budget: self.worker_config.budget,
+            system_prompt: self.worker_config.system_prompt.clone(),
+        };
+        let executor = DagExecutor::new(
+            self.sidecar.clone(),
+            artifacts,
+            worker_config,
+            self.worker_sections.clone(),
+            runs.clone(),
+            self.inline_threshold,
+            Some(dag_observer),
+        );
+        // 10. CoordinatorLoopConfig with the metered provider.
+        let loop_config = CoordinatorLoopConfig {
+            provider: Arc::clone(&metered),
+            model: self.model.clone(),
+            system_prompt: self.coordinator_prompt.clone(),
+            budget: self.budget,
+            executor: Arc::new(executor),
+            worker_sections: self.worker_sections.clone(),
+            runs,
+        };
+        // 11. CoordinatorLoop with the ShimObserver attached.
+        let loop_run = CoordinatorLoop::new(loop_config)
+            .await
+            .map_err(|e| ShimError::Coordinator(e.to_string()))?
+            .with_observer(observer);
+        // The user instruction is the last user message; PinnedGoal pins it.
+        let goal = PinnedGoal::new(query).map_err(|e| ShimError::InvalidRequest(e.to_string()))?;
+        // 12. Spawn the loop run inside a per-request span carrying session.id
+        //     (C7/DESIGN.md §4). The span is created here — where the session
+        //     id is generated — because the handler only learns the id after
+        //     this call returns, by which point the loop is already running.
+        let span = tracing::info_span!("chat.completions", session.id = %session_id);
+        let join_handle = tokio::spawn(
+            async move {
+                if let Err(error) = loop_run.run(&goal).await {
+                    tracing::error!(session_id = %session_id, %error, "coordinator loop run failed");
+                }
+            }
+            .instrument(span),
+        );
+        Ok(ShimRequest {
+            session_id,
+            event_rx,
+            join_handle,
+        })
     }
 }
 
@@ -250,33 +341,243 @@ pub async fn health() -> impl IntoResponse {
 /// returns an SSE stream.
 ///
 /// The handler:
-/// 1. Validates the request (non-empty messages, `stream: true`).
+/// 1. Validates the request (non-empty messages, `stream: true`, at least one
+///    user message) BEFORE any per-request construction.
 /// 2. Extracts the last user message as the query.
 /// 3. Calls `ShimState::build_request` to create the coordinator loop and
 ///    event channel.
-/// 4. Returns an `Sse` response reading from the event channel receiver.
-///    The spawned loop task (owned by `ShimRequest::join_handle`) runs
-///    concurrently.
-///
-/// # Panics
-///
-/// This function body is `todo!()` in the type skeleton. The signature is
-/// here so the router can mount it; the implementation phase fills in the
-/// validation, loop spawning, and stream construction.
+/// 4. Returns an `Sse` response reading from the event channel receiver. The
+///    spawned loop task (owned by `ShimRequest::join_handle`) runs
+///    concurrently; the stream awaits it after the channel closes so a
+///    panicked loop surfaces in the logs.
 pub async fn chat_completions(
-    State(_state): State<Arc<ShimState>>,
-    Json(_req): Json<ChatCompletionsRequest>,
-) -> Sse<futures::stream::Empty<Result<Event, std::convert::Infallible>>> {
-    todo!(
-        "validate request, build coordinator loop, spawn task, return SSE stream"
-    )
+    State(state): State<Arc<ShimState>>,
+    Json(req): Json<ChatCompletionsRequest>,
+) -> Result<Sse<impl Stream<Item = Result<Event, Infallible>> + Send>, ShimError> {
+    if req.messages.is_empty() {
+        return Err(ShimError::InvalidRequest(
+            "messages list is empty".to_owned(),
+        ));
+    }
+    if !req.stream {
+        return Err(ShimError::InvalidRequest(
+            "the shim only supports streaming; set stream: true".to_owned(),
+        ));
+    }
+    let last_user = req
+        .messages
+        .iter()
+        .rev()
+        .find(|m| m.role == ChatRole::User)
+        .ok_or_else(|| ShimError::InvalidRequest("no user message in the request".to_owned()))?;
+    let query = &last_user.content;
+
+    let shim_request = state.build_request(query).await?;
+
+    // The chat-completion id is derived from the session id (the same formula
+    // build_request used for the observer), so any error-termination chunks
+    // the stream synthesizes agree with the observer's normal chunks.
+    let chat_completion_id = format!("chatcmpl-{}", shim_request.session_id.as_str());
+    let created = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let stream = ShimSseStream {
+        rx: shim_request.event_rx,
+        join: shim_request.join_handle,
+        pending: VecDeque::new(),
+        terminated: false,
+        channel_closed: false,
+        chat_completion_id,
+        created,
+        model: state.model().as_str().to_owned(),
+        session_id: shim_request.session_id,
+    };
+    Ok(Sse::new(stream))
 }
 
 /// Build the axum router with the two routes mounted.
+pub fn router(state: Arc<ShimState>) -> axum::Router {
+    axum::Router::new()
+        .route("/health", axum::routing::get(health))
+        .route("/v1/chat/completions", axum::routing::post(chat_completions))
+        .with_state(state)
+}
+
+// ---------------------------------------------------------------------------
+// SSE stream
+// ---------------------------------------------------------------------------
+
+/// The SSE response body: maps the bounded event channel to axum SSE frames
+/// and awaits the coordinator-loop task after the channel closes.
 ///
-/// # Panics
+/// Event mapping (wire contract: `aura_terminalbench/stream.py`):
+/// - `aura.*` events get an `event: <name>` line plus a `data: <json>` line.
+/// - `ChatChunk` events are data-only (no `event:` line) so standard OpenAI
+///   clients process them.
+/// - `Done` serializes as `data: [DONE]` with no event name and terminates
+///   the stream.
 ///
-/// This function body is `todo!()` in the type skeleton.
-pub fn router(_state: Arc<ShimState>) -> axum::Router {
-    todo!("build Router with /health and /v1/chat/completions")
+/// If the channel closes without a preceding `Done` (the loop failed before
+/// `LoopComplete`), the stream synthesizes a clean termination via
+/// [`error_termination_events`] before ending. After the channel closes the
+/// stream polls the loop's `JoinHandle` so a panicked task surfaces in the
+/// logs.
+struct ShimSseStream {
+    rx: Receiver<AuraEvent>,
+    join: JoinHandle<()>,
+    pending: VecDeque<AuraEvent>,
+    terminated: bool,
+    channel_closed: bool,
+    chat_completion_id: String,
+    created: u64,
+    model: String,
+    session_id: ShimSessionId,
+}
+
+impl Stream for ShimSseStream {
+    type Item = Result<Event, Infallible>;
+
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let this = self.get_mut();
+        loop {
+            // Drain events queued by the error-termination path first.
+            if let Some(event) = this.pending.pop_front() {
+                return Poll::Ready(Some(Ok(aura_event_to_sse(&event))));
+            }
+            if !this.channel_closed {
+                match this.rx.poll_recv(cx) {
+                    Poll::Ready(Some(event)) => {
+                        if matches!(event, AuraEvent::Done) {
+                            this.terminated = true;
+                        }
+                        return Poll::Ready(Some(Ok(aura_event_to_sse(&event))));
+                    }
+                    Poll::Ready(None) => {
+                        // Channel closed. If the observer never emitted Done,
+                        // the loop failed before LoopComplete: synthesize a
+                        // clean termination (finish chunk + [DONE]).
+                        if !this.terminated {
+                            let events = error_termination_events(
+                                &this.chat_completion_id,
+                                this.created,
+                                &this.model,
+                                &this.session_id,
+                            );
+                            this.pending.extend(events);
+                            this.terminated = true;
+                        }
+                        this.channel_closed = true;
+                        continue; // drain the queued termination events
+                    }
+                    Poll::Pending => return Poll::Pending,
+                }
+            }
+            // Channel closed and termination emitted: await the loop task so a
+            // panic surfaces in the logs, then end the stream.
+            match Pin::new(&mut this.join).poll(cx) {
+                Poll::Ready(join_result) => {
+                    if let Err(error) = join_result {
+                        tracing::error!(
+                            session_id = %this.session_id,
+                            %error,
+                            "coordinator loop task panicked"
+                        );
+                    }
+                    return Poll::Ready(None);
+                }
+                Poll::Pending => return Poll::Pending,
+            }
+        }
+    }
+}
+
+/// Map one [`AuraEvent`] to an axum SSE [`Event`]: named `aura.*` events carry
+/// an `event:` field; `ChatChunk` and `Done` are data-only.
+fn aura_event_to_sse(event: &AuraEvent) -> Event {
+    let data = event.sse_data();
+    match event.sse_event_name() {
+        Some(name) => Event::default().event(name).data(data),
+        None => Event::default().data(data),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::coordinator_loop::LoopBudget;
+    use crate::dag_executor::WorkerLoopConfig;
+    use crate::mcp_client::SidecarClient;
+    use agent_driver_rs::mock::MockProvider;
+    use agent_driver_rs::{ModelId, Provider, SystemPrompt};
+
+    /// A minimal `ShimState` whose provider is a `MockProvider` and whose
+    /// sidecar is disconnected. Validation rejections happen before
+    /// `build_request`, so neither is exercised.
+    fn test_state() -> Arc<ShimState> {
+        let provider: Arc<dyn Provider> = Arc::new(MockProvider::new(vec![]));
+        let model = ModelId::new("mock-model").unwrap();
+        let worker_config = WorkerLoopConfig {
+            provider: Arc::clone(&provider),
+            model: model.clone(),
+            budget: LoopBudget::CANONICAL,
+            system_prompt: SystemPrompt::empty(),
+        };
+        Arc::new(ShimState::from_parts(
+            provider,
+            model,
+            SystemPrompt::empty(),
+            LoopBudget::CANONICAL,
+            SidecarClient::disconnected(),
+            PathBuf::from("/tmp/sse-shim-test-artifacts"),
+            worker_config,
+            WorkerSections::none(),
+            InlineThreshold::DEFAULT,
+            PathBuf::from("/tmp/sse-shim-test.toml"),
+        ))
+    }
+
+    #[tokio::test]
+    async fn rejects_empty_messages() {
+        let state = test_state();
+        let req = ChatCompletionsRequest {
+            model: "x".to_owned(),
+            messages: vec![],
+            stream: true,
+        };
+        let result = chat_completions(State(state), Json(req)).await;
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(matches!(err, ShimError::InvalidRequest(_)));
+    }
+
+    #[tokio::test]
+    async fn rejects_stream_false() {
+        let state = test_state();
+        let req = ChatCompletionsRequest {
+            model: "x".to_owned(),
+            messages: vec![ChatMessage {
+                role: ChatRole::User,
+                content: "hi".to_owned(),
+            }],
+            stream: false,
+        };
+        let result = chat_completions(State(state), Json(req)).await;
+        assert!(matches!(result, Err(ShimError::InvalidRequest(_))));
+    }
+
+    #[tokio::test]
+    async fn rejects_request_with_no_user_message() {
+        let state = test_state();
+        let req = ChatCompletionsRequest {
+            model: "x".to_owned(),
+            messages: vec![ChatMessage {
+                role: ChatRole::Assistant,
+                content: "hi".to_owned(),
+            }],
+            stream: true,
+        };
+        let result = chat_completions(State(state), Json(req)).await;
+        assert!(matches!(result, Err(ShimError::InvalidRequest(_))));
+    }
 }
