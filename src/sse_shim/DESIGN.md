@@ -136,7 +136,7 @@ invariant at construction (C8).
 1. Fresh `ShimSessionId` via `generate()`
 2. Fresh `Arc<Mutex<UsageAccumulator>>` (the usage sink)
 3. `UsageMeteringProvider` wrapping `base_provider` + sink (C1)
-4. Bounded event channel with `EVENT_CHANNEL_CAPACITY` (C10)
+4. Bounded event channel with `EVENT_CHANNEL_CAPACITY` (C10); emit `aura.session_info` as the first event (model + session id; `model_context_limit`/`trace_id` omitted — `ShimState` carries no context window or trace id)
 5. `ShimObserver` (session id, configured model, chat-completion id, usage sink, event sender)
 6. `ShimDagObserver` (session id, event sender) (C2)
 7. Fresh `ArtifactStore` at `artifact_root.join(session_id)` (C5)

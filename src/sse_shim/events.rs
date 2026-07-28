@@ -577,8 +577,9 @@ impl ChatCompletionChunk {
 ///
 /// `Done` is the terminal event. Ordering — `SessionInfo` first, `Done`
 /// last, `Usage` before the finish chunk — is a runtime convention owned by
-/// [`ShimObserver`](super::observer::ShimObserver), not a type-level
-/// guarantee (A9: typestate rejected; single ordered producer, complexity
+/// `ShimState::build_request` (the `SessionInfo` head frame) and
+/// [`ShimObserver`](super::observer::ShimObserver) (usage, finish, `Done`),
+/// not a type-level guarantee (A9: typestate rejected; single ordered producer, complexity
 /// outweighs the risk).
 #[derive(Debug, Clone)]
 #[non_exhaustive]

@@ -40,7 +40,7 @@ use crate::mcp_client::SidecarClient;
 
 use super::dag_lifecycle::ShimDagObserver;
 use super::error::ShimError;
-use super::events::AuraEvent;
+use super::events::{AuraEvent, SessionInfoPayload};
 use super::observer::{ShimObserver, error_termination_events};
 use super::session::{ShimSessionId, shared_accumulator};
 use super::usage_metering::UsageMeteringProvider;
@@ -229,6 +229,22 @@ impl ShimState {
         // 4. Bounded event channel (C10).
         let (event_tx, event_rx) = tokio::sync::mpsc::channel::<AuraEvent>(EVENT_CHANNEL_CAPACITY);
         let dag_event_tx = event_tx.clone();
+        // aura.session_info is the first stream event. The channel is empty
+        // and capacity is 256, so the send cannot block or fail.
+        // model_context_limit and trace_id are None: ShimState carries no
+        // context_window config or trace id (the real server sources both
+        // from agent config / CorrelationContext).
+        let session_info = SessionInfoPayload::new(
+            self.model.as_str(),
+            session_id.as_str(),
+            None,
+            None,
+        )
+        .expect("model and session_id are non-empty by ShimState/ShimSessionId construction");
+        event_tx
+            .send(AuraEvent::SessionInfo(session_info))
+            .await
+            .expect("channel is empty with capacity and the receiver is held");
         // 5. ShimObserver. The chat-completion id is derived from the session
         //    id so the stream handler's error-termination chunks agree with
         //    the observer's normal chunks.
