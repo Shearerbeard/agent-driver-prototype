@@ -17,6 +17,7 @@ pub mod message;
 pub mod persistence;
 pub mod producers;
 pub mod prompt_constants;
+pub mod sse_shim;
 pub mod templates;
 pub mod tools;
 pub mod types;

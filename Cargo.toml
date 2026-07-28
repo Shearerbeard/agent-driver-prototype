@@ -10,7 +10,12 @@ publish = false
 # Pinned worktree of agent-driver-rs at 674a093. The S70 frame port does
 # not call it yet; the loop wiring lands in S71. Present now so the crate
 # always compiles against the pin the flow depends on.
-agent-driver-rs = { path = "../agent-driver-rs-pin" }
+# S73: the `bedrock` feature is enabled so the shim can construct a
+# Bedrock-backed `Provider` via `ProviderConfig::from_env()`. The `phoenix`
+# feature is deliberately NOT enabled: the shim wires OTEL directly through
+# its own `opentelemetry` deps rather than inheriting the pin's Phoenix
+# tracing pipeline. See `src/sse_shim/DESIGN.md` for the rationale.
+agent-driver-rs = { path = "../agent-driver-rs-pin", features = ["bedrock"] }
 async-trait = "0.1"
 # `Bytes` is the chunk type of the reqwest SSE response stream and is named in
 # the `dyn Stream<Item = Result<Bytes, reqwest::Error>>` field of `SseReader`.
@@ -35,12 +40,35 @@ thiserror = "1"
 # `tokio::sync::Mutex` to hold the SSE stream across `.await`, and
 # `tokio::time::timeout` for bounded response reads. Also a dev-dep so the
 # integration-test crate can name `tokio` directly; features unify.
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "fs"] }
+# S73: the `signal` feature gates `tokio::signal::ctrl_c()` for graceful
+# shim shutdown.
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "fs", "signal"] }
 tracing = "0.1"
 # RFC 3986 resolution of the relative `endpoint` event URL against the SSE
 # base URL in `SidecarClient::connect`, matching aura's `url::Url::join`.
 # `SidecarUrl::new` keeps its prefix check; full parse happens in `connect`.
 url = "2"
+
+# --- S73: SSE shim server deps ---
+
+# HTTP server for the shim's `/health` and `/v1/chat/completions` endpoints.
+# `axum::response::sse::Sse` provides the SSE response body; `Json` extracts
+# the chat-completions request body. No tower-http/cors: localhost harness
+# traffic only.
+axum = "0.8"
+
+# OpenTelemetry for the trace-receipt canary: OTEL spans carry `session.id`
+# so Phoenix can query a uniquely tagged span back. The shim wires OTEL
+# directly rather than enabling the pin's `phoenix` feature. Versions match
+# the pin's own `phoenix` feature deps so the dep tree unifies.
+opentelemetry = { version = "0.32", features = ["trace"] }
+opentelemetry_sdk = { version = "0.32", features = ["rt-tokio", "trace"] }
+opentelemetry-otlp = { version = "0.32", features = ["grpc-tonic", "trace"] }
+# Bridge `tracing` spans to the OTEL pipeline so existing `tracing::info_span!`
+# calls in the coordinator loop are exported as OTEL spans.
+tracing-opentelemetry = "0.30"
+# Env-filter subscriber for the shim's tracing init.
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 [dev-dependencies]
 # The mock provider lives behind `test-support`; integration tests are a
