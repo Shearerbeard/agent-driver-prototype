@@ -28,8 +28,7 @@ use std::collections::HashSet;
 // Template constants loaded at compile time
 pub const WORKER_TASK_PROMPT_TEMPLATE: &str = include_str!("prompts/worker_task_prompt.md");
 pub const CONTINUATION_PROMPT_TEMPLATE: &str = include_str!("prompts/continuation_prompt.md");
-pub const ORCHESTRATOR_PREAMBLE_TEMPLATE: &str =
-    include_str!("prompts/orchestrator_preamble.md");
+pub const ORCHESTRATOR_PREAMBLE_TEMPLATE: &str = include_str!("prompts/orchestrator_preamble.md");
 pub const WORKER_PREAMBLE_TEMPLATE: &str = include_str!("prompts/worker_preamble.md");
 pub const SESSION_HISTORY_TEMPLATE: &str = include_str!("prompts/session_history.md");
 pub const PLANNING_PROMPT_TEMPLATE: &str = include_str!("prompts/planning_prompt.md");
@@ -824,11 +823,8 @@ Do not try to compute results yourself — delegate to workers.";
             "PHASE: COORDINATOR SYSTEM PROMPT (routing / continuation)"
         );
         let _ = writeln!(out, "{separator}\n");
-        let coordinator_preamble = crate::config_builders::build_coordinator_preamble(
-            agent_system_prompt,
-            true,
-            false,
-        );
+        let coordinator_preamble =
+            crate::config_builders::build_coordinator_preamble(agent_system_prompt, true, false);
         let _ = writeln!(out, "{coordinator_preamble}");
 
         // ================================================================

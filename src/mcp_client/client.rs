@@ -30,7 +30,9 @@ use serde_json::Value as JsonValue;
 use tokio::sync::Mutex as TokioMutex;
 use tokio::time::timeout;
 
-use super::wire::{SidecarContent, SidecarServerInfo, SidecarTool, SidecarToolArgs, SidecarToolName};
+use super::wire::{
+    SidecarContent, SidecarServerInfo, SidecarTool, SidecarToolArgs, SidecarToolName,
+};
 
 /// Bound on how long a single JSON-RPC response read may block the stream.
 ///
@@ -134,10 +136,7 @@ enum SseItem {
     /// An event frame with an optional `event:` type and the joined `data:`
     /// payload. `event == None` means no `event:` field was present, which the
     /// SSE spec dispatches as the default `message` event.
-    Frame {
-        event: Option<String>,
-        data: String,
-    },
+    Frame { event: Option<String>, data: String },
     /// A `: ...` comment line (keep-alive ping). Carries no event or data.
     Comment(String),
 }
@@ -203,7 +202,11 @@ fn parse_sse_block(block: &str) -> Option<SseItem> {
 fn line_break_len(bytes: &[u8], i: usize) -> Option<usize> {
     match bytes[i] {
         b'\n' => Some(1),
-        b'\r' => Some(if i + 1 < bytes.len() && bytes[i + 1] == b'\n' { 2 } else { 1 }),
+        b'\r' => Some(if i + 1 < bytes.len() && bytes[i + 1] == b'\n' {
+            2
+        } else {
+            1
+        }),
         _ => None,
     }
 }
@@ -252,9 +255,7 @@ struct SseParser {
 
 impl SseParser {
     fn new() -> Self {
-        Self {
-            buf: String::new(),
-        }
+        Self { buf: String::new() }
     }
 
     fn feed(&mut self, chunk: &str) {
@@ -433,8 +434,8 @@ impl SidecarClient {
     /// not `text/event-stream`, and [`SidecarError::MissingEndpointEvent`] when
     /// the stream closes before the `endpoint` event arrives.
     pub async fn connect(url: SidecarUrl) -> Result<Self, SidecarError> {
-        let base = url::Url::parse(url.as_str())
-            .map_err(|e| SidecarError::InvalidUrl(e.to_string()))?;
+        let base =
+            url::Url::parse(url.as_str()).map_err(|e| SidecarError::InvalidUrl(e.to_string()))?;
 
         let http = reqwest::Client::builder()
             .build()
@@ -629,9 +630,9 @@ impl SidecarClient {
     /// [`SidecarError::EmptyToolName`] when a tool entry has an empty name.
     pub async fn list_tools(&self) -> Result<Vec<SidecarTool>, SidecarError> {
         let result = self.request("tools/list", None).await?;
-        let tools = result
-            .get("tools")
-            .ok_or_else(|| SidecarError::Protocol("tools/list response missing tools".to_owned()))?;
+        let tools = result.get("tools").ok_or_else(|| {
+            SidecarError::Protocol("tools/list response missing tools".to_owned())
+        })?;
         let tools_arr = tools.as_array().ok_or_else(|| {
             SidecarError::Protocol("tools/list tools field not an array".to_owned())
         })?;
@@ -647,10 +648,7 @@ impl SidecarClient {
                 .and_then(|v| v.as_str())
                 .unwrap_or("")
                 .to_owned();
-            let input_schema = entry
-                .get("inputSchema")
-                .cloned()
-                .unwrap_or(JsonValue::Null);
+            let input_schema = entry.get("inputSchema").cloned().unwrap_or(JsonValue::Null);
             out.push(SidecarTool::new(name, description, input_schema));
         }
         Ok(out)
@@ -680,9 +678,9 @@ impl SidecarClient {
         let content = result.get("content").ok_or_else(|| {
             SidecarError::Protocol("tools/call response missing content".to_owned())
         })?;
-        let content_arr = content.as_array().ok_or_else(|| {
-            SidecarError::Protocol("tools/call content not an array".to_owned())
-        })?;
+        let content_arr = content
+            .as_array()
+            .ok_or_else(|| SidecarError::Protocol("tools/call content not an array".to_owned()))?;
         let mut text = String::new();
         for item in content_arr {
             if item.get("type").and_then(|v| v.as_str()) == Some("text")
@@ -726,9 +724,8 @@ impl SidecarClient {
         if let Some(p) = params {
             envelope["params"] = p;
         }
-        let body = serde_json::to_string(&envelope).map_err(|e| {
-            SidecarError::Protocol(format!("request serialize failed: {e}"))
-        })?;
+        let body = serde_json::to_string(&envelope)
+            .map_err(|e| SidecarError::Protocol(format!("request serialize failed: {e}")))?;
         *self.shared.last_request.lock().unwrap() = Some(body.clone());
 
         let post = self
@@ -774,7 +771,9 @@ impl SidecarClient {
             .body(body)
             .send()
             .await
-            .map_err(|e| SidecarError::Protocol(format!("POST notification {method} failed: {e}")))?;
+            .map_err(|e| {
+                SidecarError::Protocol(format!("POST notification {method} failed: {e}"))
+            })?;
         post.error_for_status().map_err(|e| {
             SidecarError::Protocol(format!("POST notification {method} bad status: {e}"))
         })?;
@@ -810,8 +809,7 @@ impl SidecarClient {
                     self.push_frame(SseItem::Comment(c));
                 }
                 SseItem::Frame { event, data } => {
-                    let is_message =
-                        event.as_deref() == Some("message") || event.is_none();
+                    let is_message = event.as_deref() == Some("message") || event.is_none();
                     if !is_message {
                         self.push_frame(SseItem::Frame { event, data });
                         continue;
@@ -820,9 +818,7 @@ impl SidecarClient {
                         SidecarError::Protocol(format!("JSON-RPC response parse failed: {e}"))
                     })?;
                     let rid = value.get("id").and_then(|x| x.as_u64()).ok_or_else(|| {
-                        SidecarError::Protocol(
-                            "JSON-RPC response missing numeric id".to_owned(),
-                        )
+                        SidecarError::Protocol("JSON-RPC response missing numeric id".to_owned())
                     })?;
                     self.push_frame(SseItem::Frame {
                         event: event.clone(),
@@ -879,7 +875,10 @@ mod tests {
     fn split_sse_field_strips_one_leading_space() {
         assert_eq!(split_sse_field("data: hello"), ("data", "hello"));
         assert_eq!(split_sse_field("data:hello"), ("data", "hello"));
-        assert_eq!(split_sse_field("data:  two spaces"), ("data", " two spaces"));
+        assert_eq!(
+            split_sse_field("data:  two spaces"),
+            ("data", " two spaces")
+        );
         assert_eq!(split_sse_field("data:"), ("data", ""));
         assert_eq!(split_sse_field(": ping - x"), ("", "ping - x"));
     }
@@ -891,10 +890,7 @@ mod tests {
         let block = "event: endpoint\ndata: /messages/?session_id=abc\n\n";
         let item = parse_sse_block(block).unwrap();
         match item {
-            SseItem::Frame {
-                event,
-                data,
-            } => {
+            SseItem::Frame { event, data } => {
                 assert_eq!(event.as_deref(), Some("endpoint"));
                 assert_eq!(data, "/messages/?session_id=abc");
             }
@@ -906,7 +902,10 @@ mod tests {
     fn parse_comment_block_yields_comment() {
         let block = ": ping - 2026-07-26 03:10:14.816383+00:00\n\n";
         let item = parse_sse_block(block).unwrap();
-        assert_eq!(item, SseItem::Comment("ping - 2026-07-26 03:10:14.816383+00:00".to_owned()));
+        assert_eq!(
+            item,
+            SseItem::Comment("ping - 2026-07-26 03:10:14.816383+00:00".to_owned())
+        );
     }
 
     #[test]
@@ -948,8 +947,12 @@ mod tests {
         parser.feed("\n\nevent: endpoint\ndata: /m/?s=1\n\n");
         let items = parser.take_frames();
         assert_eq!(items.len(), 2);
-        assert!(matches!(&items[0], SseItem::Frame { event, .. } if event.as_deref() == Some("message")));
-        assert!(matches!(&items[1], SseItem::Frame { event, .. } if event.as_deref() == Some("endpoint")));
+        assert!(
+            matches!(&items[0], SseItem::Frame { event, .. } if event.as_deref() == Some("message"))
+        );
+        assert!(
+            matches!(&items[1], SseItem::Frame { event, .. } if event.as_deref() == Some("endpoint"))
+        );
     }
 
     // --- The frozen F3 transcript -----------------------------------------
@@ -1026,7 +1029,11 @@ data: {"jsonrpc":"2.0","id":4,"result":{"content":[{"type":"text","text":"111e30
         parser.feed(&F3_TRANSCRIPT[mid..]);
         let second = parser.take_frames();
         let items: Vec<SseItem> = first.into_iter().chain(second).collect();
-        assert_eq!(items.len(), 9, "splitting the feed must not lose or duplicate frames");
+        assert_eq!(
+            items.len(),
+            9,
+            "splitting the feed must not lose or duplicate frames"
+        );
         assert!(parser.take_frames().is_empty());
     }
 
@@ -1075,7 +1082,11 @@ data: {"jsonrpc":"2.0","id":4,"result":{"content":[{"type":"text","text":"111e30
         let mut parser = SseParser::new();
         parser.feed(crlf);
         let items = parser.take_frames();
-        assert_eq!(items.len(), 3, "endpoint frame + message frame + ping comment");
+        assert_eq!(
+            items.len(),
+            3,
+            "endpoint frame + message frame + ping comment"
+        );
 
         assert!(matches!(&items[0], SseItem::Frame { event, data }
             if event.as_deref() == Some("endpoint")
@@ -1131,8 +1142,12 @@ data: {"jsonrpc":"2.0","id":4,"result":{"content":[{"type":"text","text":"111e30
             2,
             "splitting the CRLF feed must not lose or duplicate frames"
         );
-        assert!(matches!(&items[0], SseItem::Frame { event, .. } if event.as_deref() == Some("endpoint")));
-        assert!(matches!(&items[1], SseItem::Frame { event, .. } if event.as_deref() == Some("message")));
+        assert!(
+            matches!(&items[0], SseItem::Frame { event, .. } if event.as_deref() == Some("endpoint"))
+        );
+        assert!(
+            matches!(&items[1], SseItem::Frame { event, .. } if event.as_deref() == Some("message"))
+        );
         assert!(parser.take_frames().is_empty());
     }
 
@@ -1145,9 +1160,9 @@ data: {"jsonrpc":"2.0","id":4,"result":{"content":[{"type":"text","text":"111e30
         // (the connect path supplies `CONNECT_TIMEOUT`); unbounded it would
         // hang forever. A short caller timeout must fire so the regression
         // fails loud instead of hanging.
-        let mock = futures::stream::iter(vec![
-            Ok::<Bytes, reqwest::Error>(Bytes::from_static(b": ping\r\n\r\n")),
-        ])
+        let mock = futures::stream::iter(vec![Ok::<Bytes, reqwest::Error>(Bytes::from_static(
+            b": ping\r\n\r\n",
+        ))])
         .chain(futures::stream::pending::<Result<Bytes, reqwest::Error>>());
 
         let mut reader = SseReader {
@@ -1178,10 +1193,7 @@ data: {"jsonrpc":"2.0","id":4,"result":{"content":[{"type":"text","text":"111e30
         assert_eq!(env["jsonrpc"].as_str(), Some("2.0"));
         assert_eq!(env["method"].as_str(), Some("notifications/initialized"));
         // A notification carries no id and elicits no response.
-        assert!(
-            env.get("id").is_none(),
-            "notification must not carry an id"
-        );
+        assert!(env.get("id").is_none(), "notification must not carry an id");
         assert!(
             env.get("params").is_none(),
             "initialized notification carries no params"

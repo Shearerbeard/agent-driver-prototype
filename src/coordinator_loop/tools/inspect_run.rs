@@ -159,14 +159,16 @@ impl Tool for InspectRunTool {
                 Some(execution) => observation_result(&execution),
                 None => ToolResult::error("this run has not executed a plan yet".to_owned()),
             },
-            RunSelector::Task { plan_id, task_id, attempt } => {
-                match self.runs.task(&plan_id, task_id, attempt) {
-                    Some(record) => observation_result(record.observation()),
-                    None => ToolResult::error(format!(
-                        "no task record for plan {plan_id}, task {task_id}, attempt {attempt}"
-                    )),
-                }
-            }
+            RunSelector::Task {
+                plan_id,
+                task_id,
+                attempt,
+            } => match self.runs.task(&plan_id, task_id, attempt) {
+                Some(record) => observation_result(record.observation()),
+                None => ToolResult::error(format!(
+                    "no task record for plan {plan_id}, task {task_id}, attempt {attempt}"
+                )),
+            },
         })
     }
 }

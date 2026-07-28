@@ -4,8 +4,8 @@ use std::collections::VecDeque;
 use std::sync::Arc;
 use std::time::Instant;
 
-use agent_driver_rs::tool::ToolContext;
 use agent_driver_rs::SystemPrompt;
+use agent_driver_rs::tool::ToolContext;
 use async_trait::async_trait;
 
 use crate::artifacts::{ArtifactFilename, ArtifactStore, InlineThreshold, SpilledBody};
@@ -15,7 +15,7 @@ use crate::context::{
 };
 use crate::coordinator_loop::{
     Attempt, ExecutionObservation, PlanExecutor, RunStore, TaskObservation, TaskRecord,
-  TerminalSlot, WorkerSections, WorkerSubmission,
+    TerminalSlot, WorkerSections, WorkerSubmission,
 };
 use crate::mcp_client::SidecarClient;
 use crate::types::{FailureCategory, Plan, Task, TaskState};
@@ -141,16 +141,12 @@ impl PlanExecutor for DagExecutor {
         let plan_id = match self.runs.latest_plan() {
             Some((id, _)) => id,
             None => {
-                return Self::execution_failed(
-                    "no plan was created before execution",
-                    Vec::new(),
-                )
+                return Self::execution_failed("no plan was created before execution", Vec::new());
             }
         };
 
         let attempt = Attempt::new(1).expect("1 is non-zero");
-        let mut observations: Vec<Option<TaskObservation>> =
-            vec![None; work_plan.tasks.len()];
+        let mut observations: Vec<Option<TaskObservation>> = vec![None; work_plan.tasks.len()];
 
         // Task ids are not assumed to be contiguous or ordered; build a
         // lookup once so the dispatch loop is O(n) overall, not O(n^2).
@@ -168,7 +164,9 @@ impl PlanExecutor for DagExecutor {
             }
 
             for task_id in ready {
-                let index = *task_index.get(&task_id).expect("ready task id exists in plan");
+                let index = *task_index
+                    .get(&task_id)
+                    .expect("ready task id exists in plan");
                 work_plan.tasks[index].start();
 
                 // C2: notify the lifecycle observer before the worker loop
@@ -194,14 +192,8 @@ impl PlanExecutor for DagExecutor {
                 };
 
                 let slot: TerminalSlot<WorkerSubmission> = TerminalSlot::new();
-                let worker = WorkerLoop::new(
-                    config,
-                    self.sidecar.clone(),
-                    self.artifacts.clone(),
-                );
-                let outcome = worker
-                    .run_task(&work_plan.tasks[index], slot.clone())
-                    .await;
+                let worker = WorkerLoop::new(config, self.sidecar.clone(), self.artifacts.clone());
+                let outcome = worker.run_task(&work_plan.tasks[index], slot.clone()).await;
 
                 let label = Self::correlation_label(&work_plan.tasks[index]);
                 let (observation, new_state) = self
@@ -242,8 +234,7 @@ impl PlanExecutor for DagExecutor {
                 None => {
                     let label = Self::correlation_label(task);
                     let blocked = TaskObservation::Blocked { label };
-                    let record =
-                        TaskRecord::new(plan_id.clone(), attempt, blocked.clone());
+                    let record = TaskRecord::new(plan_id.clone(), attempt, blocked.clone());
                     self.runs.record_task(record);
                     final_observations.push(blocked);
                 }
@@ -273,8 +264,8 @@ impl DagExecutor {
                 let claim = submission.claim().clone();
 
                 if self.inline_threshold.allows_inline(result_text) {
-                    let evidence =
-                        EvidenceEntry::from_completed_result(result_text, Some(claim)).expect(
+                    let evidence = EvidenceEntry::from_completed_result(result_text, Some(claim))
+                        .expect(
                             "worker submission guarantees a non-blank result; \
                              inline text that fits the threshold carries no spill footer",
                         );
@@ -289,40 +280,31 @@ impl DagExecutor {
                     (observation, state)
                 } else {
                     let worker_name = task.worker.as_deref().unwrap_or("default");
-                    let filename_str =
-                        format!("task-{}-{}-result.txt", task.id, worker_name);
+                    let filename_str = format!("task-{}-{}-result.txt", task.id, worker_name);
                     let spill_result = match ArtifactFilename::new(&filename_str) {
-                        Ok(filename) => {
-                            self.artifacts
-                                .write_artifact(&filename, result_text)
-                                .await
-                                .map(|_| filename)
-                        }
+                        Ok(filename) => self
+                            .artifacts
+                            .write_artifact(&filename, result_text)
+                            .await
+                            .map(|_| filename),
                         Err(error) => Err(error),
                     };
 
                     match spill_result {
                         Ok(filename) => {
-                            let spilled_body = SpilledBody::new(
-                                filename.clone(),
-                                result_text.chars().count(),
-                            );
-                            let spilled_text =
-                                format!("{}\n\n{spilled_body}", claim.summary());
-                            let evidence = EvidenceEntry::from_completed_result(
-                                &spilled_text,
-                                Some(claim),
-                            )
-                            .expect(
-                                "spilled text carries a footer with a non-blank claim \
+                            let spilled_body =
+                                SpilledBody::new(filename.clone(), result_text.chars().count());
+                            let spilled_text = format!("{}\n\n{spilled_body}", claim.summary());
+                            let evidence =
+                                EvidenceEntry::from_completed_result(&spilled_text, Some(claim))
+                                    .expect(
+                                        "spilled text carries a footer with a non-blank claim \
                                  summary prefix; from_completed_result takes the \
                                  ArtifactPointer path which is infallible with a claim",
-                            );
-                            let artifact_ref = ArtifactRef::new(
-                                filename.as_str(),
-                                result_text.len() as u64,
-                            )
-                            .expect("filename validated by ArtifactFilename::new");
+                                    );
+                            let artifact_ref =
+                                ArtifactRef::new(filename.as_str(), result_text.len() as u64)
+                                    .expect("filename validated by ArtifactFilename::new");
                             let observation = TaskObservation::Completed {
                                 label: label.clone(),
                                 evidence,
@@ -342,10 +324,7 @@ impl DagExecutor {
                             let observation = TaskObservation::Failed {
                                 label: label.clone(),
                                 category,
-                                error: ErrorPreview::new(
-                                    &message,
-                                    ErrorPreviewWidth::DEFAULT,
-                                ),
+                                error: ErrorPreview::new(&message, ErrorPreviewWidth::DEFAULT),
                                 artifacts: Vec::new(),
                             };
                             let state = TaskState::Failed {
@@ -460,9 +439,7 @@ fn fail_descendants_of(plan: &mut Plan, failed_task_id: usize) {
     queue.push_back(failed_task_id);
     while let Some(current_id) = queue.pop_front() {
         for task in plan.tasks.iter_mut() {
-            if task.dependencies.contains(&current_id)
-                && matches!(task.state, TaskState::Pending)
-            {
+            if task.dependencies.contains(&current_id) && matches!(task.state, TaskState::Pending) {
                 task.fail(
                     format!("ancestor task {failed_task_id} failed"),
                     FailureCategory::DependencyFailed,

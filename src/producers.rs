@@ -11,7 +11,7 @@ use std::collections::HashMap;
 use crate::bounding::ToolListLimit;
 use crate::config::{OrchestrationConfig, VectorStoreConfig};
 use crate::context::{
-    AncestorDistance, CorrelationLabel, CoordinatorTurn, DependencyRelation, EvidenceEntry,
+    AncestorDistance, CoordinatorTurn, CorrelationLabel, DependencyRelation, EvidenceEntry,
     PriorWorkEntry, PriorWorkFrame, TaskId, TokenBudget, WorkerClaim, WorkerRole,
 };
 use crate::types::{Plan, PlanningResponse, TaskState};
@@ -52,8 +52,7 @@ pub fn build_continuation_wrapper(
     content_max_length: usize,
 ) -> String {
     let timestamp = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
-    let base =
-        ctx.build_continuation_prompt(max_iterations, show_tool_chain, content_max_length);
+    let base = ctx.build_continuation_prompt(max_iterations, show_tool_chain, content_max_length);
     crate::templates::render_continuation_wrapper(&crate::templates::ContinuationWrapperVars {
         timestamp: &timestamp,
         continuation_body: &base,
@@ -82,9 +81,7 @@ pub fn compact_decision_turn(decision: &PlanningResponse, model_text: &str) -> S
     match CoordinatorTurn::try_from(decision) {
         Ok(turn) => String::from(turn.render()),
         Err(e) => {
-            tracing::warn!(
-                "Routing decision has no compact turn ({e}); recording fallback text"
-            );
+            tracing::warn!("Routing decision has no compact turn ({e}); recording fallback text");
             if model_text.trim().is_empty() {
                 decision.variant_name().to_owned()
             } else {
@@ -237,24 +234,20 @@ pub fn build_worker_prompt_sections(
 
     if config.has_workers() {
         let worker_names: Vec<&str> = config.available_worker_names();
-        let names_json: Vec<String> =
-            worker_names.iter().map(|n| format!("\"{}\"", n)).collect();
+        let names_json: Vec<String> = worker_names.iter().map(|n| format!("\"{}\"", n)).collect();
 
         let field = r#",
       "worker": "worker_name""#
             .to_string();
 
-        let guidelines = crate::templates::render_worker_guidelines(
-            &crate::templates::WorkerGuidelinesVars {
+        let guidelines =
+            crate::templates::render_worker_guidelines(&crate::templates::WorkerGuidelinesVars {
                 valid_worker_names: &names_json.join(", "),
-            },
-        );
+            });
 
         let section = match &config.tools_in_planning {
             ToolVisibility::None => build_workers_section_no_tools(config),
-            ToolVisibility::Summary => {
-                build_workers_section_with_tools(config, tool_list_limit)
-            }
+            ToolVisibility::Summary => build_workers_section_with_tools(config, tool_list_limit),
             ToolVisibility::Full => {
                 build_workers_section_with_full_tools(config, tool_list_limit, vector_stores)
             }
@@ -388,9 +381,7 @@ pub fn build_workers_section_with_full_tools(
 /// The corpus is MCP-less, so `all_tools` is always empty here. Only
 /// `vector_search_{store}` tools from `worker_config.vector_stores` are
 /// added. Source anchor: orchestrator.rs:2141-2171.
-pub fn resolve_worker_tools(
-    config: &OrchestrationConfig,
-) -> HashMap<String, Vec<String>> {
+pub fn resolve_worker_tools(config: &OrchestrationConfig) -> HashMap<String, Vec<String>> {
     let all_tools: Vec<String> = Vec::new();
     let mut worker_tools = HashMap::new();
 
@@ -450,9 +441,7 @@ pub fn format_tool_list(tools: &[String], max: usize) -> String {
 /// `Some` (orchestrator.rs:2177-2208). The corpus is MCP-less, so that block
 /// is omitted entirely. Only vector store descriptions from the config mirror
 /// are collected. Source anchor: orchestrator.rs:2177-2222.
-pub fn get_all_tool_descriptions(
-    vector_stores: &[VectorStoreConfig],
-) -> HashMap<String, String> {
+pub fn get_all_tool_descriptions(vector_stores: &[VectorStoreConfig]) -> HashMap<String, String> {
     let mut descriptions = HashMap::new();
 
     // Collect from vector stores (context_prefix becomes the description)

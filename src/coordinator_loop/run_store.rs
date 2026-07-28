@@ -170,9 +170,7 @@ impl Attempt {
     ///
     /// Returns [`AttemptZero`] when `attempt` is zero.
     pub fn new(attempt: usize) -> Result<Self, AttemptZero> {
-        NonZeroUsize::new(attempt)
-            .map(Self)
-            .ok_or(AttemptZero)
+        NonZeroUsize::new(attempt).map(Self).ok_or(AttemptZero)
     }
 
     /// The 1-indexed attempt number.

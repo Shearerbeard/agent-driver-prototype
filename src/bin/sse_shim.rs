@@ -35,9 +35,7 @@ use agent_driver_prototype::config_builders::{build_coordinator_preamble, build_
 use agent_driver_prototype::coordinator_loop::{LoopBudget, WorkerRoster, WorkerSections};
 use agent_driver_prototype::dag_executor::WorkerLoopConfig;
 use agent_driver_prototype::mcp_client::SidecarClient;
-use agent_driver_prototype::sse_shim::{
-    OtelConfig, ShimCliArgs, ShimError, ShimPort, ShimState,
-};
+use agent_driver_prototype::sse_shim::{OtelConfig, ShimCliArgs, ShimError, ShimPort, ShimState};
 
 use agent_driver_rs::config::ProviderConfig;
 use agent_driver_rs::provider::BedrockProvider;
@@ -145,8 +143,8 @@ async fn build_state(args: &ShimCliArgs) -> Result<ShimState, ShimError> {
         .saturating_mul(2)
         .saturating_add(4)
         .max(1);
-    let budget = LoopBudget::new(coordinator_turns as u32)
-        .map_err(|e| ShimError::Server(e.to_string()))?;
+    let budget =
+        LoopBudget::new(coordinator_turns as u32).map_err(|e| ShimError::Server(e.to_string()))?;
 
     // Inline spill threshold.
     let inline_threshold = match config.orchestration.artifacts.result_artifact_threshold {
@@ -238,9 +236,7 @@ async fn shutdown_signal() {
 ///
 /// The crate enables only the `bedrock` feature, so only the `Bedrock` arm is
 /// reachable; any other provider kind is a configuration error.
-async fn build_provider(
-    config: ProviderConfig,
-) -> Result<(Arc<dyn Provider>, ModelId), ShimError> {
+async fn build_provider(config: ProviderConfig) -> Result<(Arc<dyn Provider>, ModelId), ShimError> {
     match config {
         ProviderConfig::Bedrock(cfg) => {
             let model = ModelId::new(cfg.model.model_id())
@@ -343,10 +339,7 @@ fn load_shim_config(path: &std::path::Path) -> Result<ShimConfig, ShimError> {
     let text = std::fs::read_to_string(path)
         .map_err(|e| ShimError::Server(format!("failed to read config {}: {e}", path.display())))?;
     let parsed: ParsedConfig = toml::from_str(&text).map_err(|e| {
-        ShimError::Server(format!(
-            "malformed TOML in config {}: {e}",
-            path.display()
-        ))
+        ShimError::Server(format!("malformed TOML in config {}: {e}", path.display()))
     })?;
 
     let tool_visibility = parse_tool_visibility(&parsed.orchestration.tools_in_planning);

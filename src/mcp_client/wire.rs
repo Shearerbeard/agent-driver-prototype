@@ -174,9 +174,18 @@ mod tests {
 
     #[test]
     fn tool_name_rejects_empty_or_whitespace() {
-        assert_eq!(SidecarToolName::new("").unwrap_err(), SidecarError::EmptyToolName);
-        assert_eq!(SidecarToolName::new("   ").unwrap_err(), SidecarError::EmptyToolName);
-        assert_eq!(SidecarToolName::new("\t\n").unwrap_err(), SidecarError::EmptyToolName);
+        assert_eq!(
+            SidecarToolName::new("").unwrap_err(),
+            SidecarError::EmptyToolName
+        );
+        assert_eq!(
+            SidecarToolName::new("   ").unwrap_err(),
+            SidecarError::EmptyToolName
+        );
+        assert_eq!(
+            SidecarToolName::new("\t\n").unwrap_err(),
+            SidecarError::EmptyToolName
+        );
     }
 
     #[test]
@@ -192,8 +201,8 @@ mod tests {
 
     #[test]
     fn tool_args_from_value_accepts_object() {
-        let args = SidecarToolArgs::from_value(json!({"keystrokes": "ls", "append_enter": true}))
-            .unwrap();
+        let args =
+            SidecarToolArgs::from_value(json!({"keystrokes": "ls", "append_enter": true})).unwrap();
         assert_eq!(args.inner().len(), 2);
         assert_eq!(args.inner()["keystrokes"].as_str().unwrap(), "ls");
         assert!(args.inner()["append_enter"].as_bool().unwrap());

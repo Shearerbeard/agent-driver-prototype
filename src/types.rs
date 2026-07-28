@@ -1016,9 +1016,9 @@ fn render_tool_chain_lines(
 
 #[cfg(test)]
 mod tests {
+    use super::*;
     use crate::bounding::FailureHandleWidth;
     use crate::context::{ErrorPreview, FailureHandle, PinnedGoal};
-    use super::*;
 
     #[test]
     fn test_plan_creation() {
@@ -1787,7 +1787,9 @@ mod tests {
 
         let deserialized: PlanningResponse = serde_json::from_str(&json).unwrap();
         match deserialized {
-            PlanningResponse::Clarification { question, options, .. } => {
+            PlanningResponse::Clarification {
+                question, options, ..
+            } => {
                 assert_eq!(question, "Which service?");
                 assert_eq!(options.unwrap(), vec!["API", "Worker"]);
             }

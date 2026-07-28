@@ -12,8 +12,8 @@
 //! ([`Plan`], [`FailureSummary`], [`ToolTraceEntry`], [`RunManifest`],
 //! [`OrchestrationConfig`]); they never re-model what those already forbid.
 
-use crate::config::{SkillConfig, ToolVisibility, VectorStoreConfig};
 use crate::config::OrchestrationConfig;
+use crate::config::{SkillConfig, ToolVisibility, VectorStoreConfig};
 use crate::context::{
     ContextError, EvidenceText, PinnedGoal, ResultPreview, SpilledArtifact, WorkerClaim,
 };
@@ -127,10 +127,7 @@ pub(crate) struct WorkerRosterFixture {
 }
 
 impl WorkerRosterFixture {
-    pub(crate) fn new(
-        config: OrchestrationConfig,
-        vector_catalog: Vec<VectorStoreConfig>,
-    ) -> Self {
+    pub(crate) fn new(config: OrchestrationConfig, vector_catalog: Vec<VectorStoreConfig>) -> Self {
         Self {
             config,
             vector_catalog,
@@ -177,7 +174,9 @@ impl PlanDecision {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum SpilledStandIn {
-    ClaimEcho { claim: WorkerClaim },
+    ClaimEcho {
+        claim: WorkerClaim,
+    },
     RawPreview {
         preview: ResultPreview,
         claim: Option<WorkerClaim>,

@@ -14,8 +14,11 @@ use agent_driver_rs::streaming::CollectedResponse;
 use agent_driver_rs::types::{ContentBlock, ModelId, SystemPrompt};
 use async_trait::async_trait;
 
+use agent_driver_prototype::artifacts::{ArtifactStore, InlineThreshold};
 use agent_driver_prototype::bounding::{ErrorPreviewWidth, ToolListLimit};
-use agent_driver_prototype::config::{OrchestrationConfig, ToolVisibility, VectorStoreConfig, WorkerConfig};
+use agent_driver_prototype::config::{
+    OrchestrationConfig, ToolVisibility, VectorStoreConfig, WorkerConfig,
+};
 use agent_driver_prototype::context::{
     CorrelationLabel, ErrorPreview, EvidenceEntry, EvidenceText, PinnedGoal, TaskId, WorkerClaim,
     WorkerRole,
@@ -27,7 +30,6 @@ use agent_driver_prototype::coordinator_loop::{
     WorkerRoster, WorkerSections,
 };
 use agent_driver_prototype::dag_executor::{DagExecutor, WorkerLoopConfig};
-use agent_driver_prototype::artifacts::{ArtifactStore, InlineThreshold};
 use agent_driver_prototype::mcp_client::SidecarClient;
 use agent_driver_prototype::producers::build_worker_prompt_sections;
 use agent_driver_prototype::templates::{PlanningLoopVars, render_planning_loop_prompt};
@@ -223,8 +225,7 @@ async fn create_plan_then_execute_continues_without_a_stream_break() {
         mock_text_response(""),
     ];
 
-    let coordinator = coordinator(responses, two_task_worker_responses(), 8)
-        .await;
+    let coordinator = coordinator(responses, two_task_worker_responses(), 8).await;
     let runs = coordinator.runs().clone();
     let (observer, calls) = recorder();
     let outcome = coordinator
@@ -285,8 +286,7 @@ async fn turn_budget_stops_the_loop_and_the_host_writes_the_answer() {
         ),
     ];
 
-    let coordinator = coordinator(responses, two_task_worker_responses(), 2)
-        .await;
+    let coordinator = coordinator(responses, two_task_worker_responses(), 2).await;
     let runs = coordinator.runs().clone();
     let (observer, calls) = recorder();
     let outcome = coordinator
@@ -858,22 +858,22 @@ fn from_roster_matches_the_producer_oracle_byte_for_byte() {
         let (oracle_section, oracle_field, oracle_guidelines) =
             build_worker_prompt_sections(&config, limit, &stores);
 
-        let sections = WorkerSections::from_roster(WorkerRoster::from_config(
-            &config,
-            limit,
-            &stores,
-        ));
+        let sections =
+            WorkerSections::from_roster(WorkerRoster::from_config(&config, limit, &stores));
 
         assert_eq!(
-            sections.roster_section(), oracle_section,
+            sections.roster_section(),
+            oracle_section,
             "roster_section diverges for {visibility:?}"
         );
         assert_eq!(
-            sections.worker_field(), oracle_field,
+            sections.worker_field(),
+            oracle_field,
             "worker_field diverges for {visibility:?}"
         );
         assert_eq!(
-            sections.guidelines(), oracle_guidelines,
+            sections.guidelines(),
+            oracle_guidelines,
             "guidelines diverge for {visibility:?}"
         );
     }
@@ -887,11 +887,7 @@ fn from_roster_with_no_workers_renders_empty_sections() {
     let limit = ToolListLimit::new(10);
     let (oracle_section, oracle_field, oracle_guidelines) =
         build_worker_prompt_sections(&config, limit, &[]);
-    let sections = WorkerSections::from_roster(WorkerRoster::from_config(
-        &config,
-        limit,
-        &[],
-    ));
+    let sections = WorkerSections::from_roster(WorkerRoster::from_config(&config, limit, &[]));
     assert_eq!(sections.roster_section(), oracle_section);
     assert_eq!(sections.worker_field(), oracle_field);
     assert_eq!(sections.guidelines(), oracle_guidelines);

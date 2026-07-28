@@ -7,8 +7,8 @@ use agent_driver_rs::error::ProviderError;
 use agent_driver_rs::{ConfigError, ModelId, Provider, SessionBuilder, SystemPrompt};
 
 use crate::artifacts::ArtifactStore;
-use crate::coordinator_loop::{InterruptionReason, LoopBudget, SubmitResultTool, TerminalSlot};
 use crate::coordinator_loop::WorkerSubmission;
+use crate::coordinator_loop::{InterruptionReason, LoopBudget, SubmitResultTool, TerminalSlot};
 use crate::mcp_client::SidecarClient;
 use crate::types::{FailureCategory, Task};
 
@@ -90,11 +90,7 @@ impl WorkerLoop {
     /// `capture-pane` tools forward through. The `artifacts` is the
     /// filename-addressed store the `read_artifact` tool reads from.
     /// The loop builds the four-tool set per task from these handles.
-    pub fn new(
-        config: WorkerLoopConfig,
-        sidecar: SidecarClient,
-        artifacts: ArtifactStore,
-    ) -> Self {
+    pub fn new(config: WorkerLoopConfig, sidecar: SidecarClient, artifacts: ArtifactStore) -> Self {
         Self {
             config,
             sidecar,
@@ -199,18 +195,16 @@ fn stop_reason_to_outcome(reason: LoopStopReason) -> WorkerOutcome {
     match reason {
         LoopStopReason::EndTurn => WorkerOutcome::StoppedWithoutSubmission,
         LoopStopReason::MaxToolDepthReached => WorkerOutcome::BudgetExhausted,
-        LoopStopReason::MaxTokens => {
-            WorkerOutcome::Interrupted(InterruptionReason::TokenLimit)
-        }
+        LoopStopReason::MaxTokens => WorkerOutcome::Interrupted(InterruptionReason::TokenLimit),
         LoopStopReason::StopSequence => {
             WorkerOutcome::Interrupted(InterruptionReason::StopSequence)
         }
         LoopStopReason::ContentFilter => {
             WorkerOutcome::Interrupted(InterruptionReason::ContentFilter)
         }
-        LoopStopReason::Cancelled => WorkerOutcome::Interrupted(
-            InterruptionReason::Unclassified("cancelled".to_owned()),
-        ),
+        LoopStopReason::Cancelled => {
+            WorkerOutcome::Interrupted(InterruptionReason::Unclassified("cancelled".to_owned()))
+        }
         LoopStopReason::ToolError { .. } | LoopStopReason::LoopFailed { .. } => {
             WorkerOutcome::Failed(FailureCategory::AgentError)
         }

@@ -10,17 +10,19 @@
 
 use std::collections::HashMap;
 
-use crate::config::{SkillConfig, SkillName, ToolVisibility, VectorStoreConfig, WorkerConfig};
 use crate::config::OrchestrationConfig;
+use crate::config::{SkillConfig, SkillName, ToolVisibility, VectorStoreConfig, WorkerConfig};
 use crate::context::{
     ContextError, EvidenceText, PinnedGoal, ResultPreview, SpilledArtifact, WorkerClaim,
 };
 use crate::persistence::{
-    ArtifactEntry, ArtifactKind, ErrorContext, RunManifest, RunStatus, RoutingMode, TaskSummary,
+    ArtifactEntry, ArtifactKind, ErrorContext, RoutingMode, RunManifest, RunStatus, TaskSummary,
     ToolOutcome, ToolTraceEntry,
 };
 use crate::tools::submit_result::Confidence;
-use crate::types::{FailureCategory, FailureSummary, Plan, PlanningResponse, StepInput, Task, TaskStatus};
+use crate::types::{
+    FailureCategory, FailureSummary, Plan, PlanningResponse, StepInput, Task, TaskStatus,
+};
 
 use crate::fixture::{
     CompletedResultFixture, ContinuationThread, CoordinatorCall, CoordinatorScenario,
@@ -939,10 +941,12 @@ fn bare_role_preamble() -> WorkerPreambleFixture {
 fn completed_task(id: usize, description: &str, result: &CompletedResultFixture) -> Task {
     let mut task = Task::new(id, description, "fixture ancestor");
     task.complete(result.raw_result());
-    task.structured_output = result.claim().map(|claim| crate::types::StructuredTaskOutput {
-        summary: claim.summary().to_owned(),
-        confidence: claim.confidence(),
-    });
+    task.structured_output = result
+        .claim()
+        .map(|claim| crate::types::StructuredTaskOutput {
+            summary: claim.summary().to_owned(),
+            confidence: claim.confidence(),
+        });
     task
 }
 

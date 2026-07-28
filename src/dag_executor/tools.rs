@@ -291,5 +291,3 @@ impl Tool for ReadArtifactTool {
         }
     }
 }
-
-

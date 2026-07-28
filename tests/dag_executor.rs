@@ -7,7 +7,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use agent_driver_rs::provider::mock::{mock_text_response, mock_tool_call_response, MockProvider};
+use agent_driver_rs::provider::mock::{MockProvider, mock_text_response, mock_tool_call_response};
 use agent_driver_rs::tool::ToolContext;
 use agent_driver_rs::types::{ModelId, SystemPrompt};
 use tokio_util::sync::CancellationToken;
@@ -15,7 +15,7 @@ use tokio_util::sync::CancellationToken;
 use agent_driver_prototype::artifacts::{ArtifactFilename, ArtifactStore, InlineThreshold};
 use agent_driver_prototype::bounding::ToolListLimit;
 use agent_driver_prototype::config::{OrchestrationConfig, WorkerConfig};
-use agent_driver_prototype::context::{EvidenceEntry, ErrorPreview};
+use agent_driver_prototype::context::{ErrorPreview, EvidenceEntry};
 use agent_driver_prototype::coordinator_loop::{
     Attempt, CreatePlanArgs, ExecutionObservation, LoopBudget, PlanExecutor, RunStore,
     TaskObservation, WorkerRoster, WorkerSections,
@@ -96,9 +96,7 @@ fn worker_config(responses: Vec<Vec<agent_driver_rs::StreamEvent>>) -> WorkerLoo
 }
 
 fn submit_result_json(summary: &str, result: &str, confidence: &str) -> String {
-    format!(
-        r#"{{"summary":"{summary}","result":"{result}","confidence":"{confidence}"}}"#
-    )
+    format!(r#"{{"summary":"{summary}","result":"{result}","confidence":"{confidence}"}}"#)
 }
 
 // ---------------------------------------------------------------------------
@@ -109,7 +107,9 @@ fn submit_result_json(summary: &str, result: &str, confidence: &str) -> String {
 async fn two_task_dag_with_dependency_runs_to_completion() {
     let runs = RunStore::new();
     let args = two_task_args();
-    let plan = args.to_plan(&test_sections().roster().clone()).expect("valid plan");
+    let plan = args
+        .to_plan(&test_sections().roster().clone())
+        .expect("valid plan");
     let plan_id = runs.record_plan(&args, plan.clone());
 
     // flatten_steps wires sequential dependencies: task 1 depends on task 0.
@@ -176,9 +176,13 @@ async fn two_task_dag_with_dependency_runs_to_completion() {
 
     // Attempt numbering: task records filed with attempt 1.
     let attempt = Attempt::new(1).expect("1 is non-zero");
-    let record0 = runs.task(&plan_id, 0, attempt).expect("task 0 record filed");
+    let record0 = runs
+        .task(&plan_id, 0, attempt)
+        .expect("task 0 record filed");
     assert_eq!(record0.attempt().get(), 1);
-    let record1 = runs.task(&plan_id, 1, attempt).expect("task 1 record filed");
+    let record1 = runs
+        .task(&plan_id, 1, attempt)
+        .expect("task 1 record filed");
     assert_eq!(record1.attempt().get(), 1);
 }
 
@@ -190,7 +194,9 @@ async fn two_task_dag_with_dependency_runs_to_completion() {
 async fn spilled_full_body_is_retrievable_via_artifact_handle() {
     let runs = RunStore::new();
     let args = two_task_args();
-    let plan = args.to_plan(&test_sections().roster().clone()).expect("valid plan");
+    let plan = args
+        .to_plan(&test_sections().roster().clone())
+        .expect("valid plan");
     let _plan_id = runs.record_plan(&args, plan.clone());
 
     // flatten_steps wires sequential dependencies: task 1 depends on task 0.
@@ -244,11 +250,18 @@ async fn spilled_full_body_is_retrievable_via_artifact_handle() {
         matches!(evidence, EvidenceEntry::ArtifactPointer { .. }),
         "long result must spill"
     );
-    assert_eq!(artifacts.len(), 1, "spilled result carries one artifact handle");
+    assert_eq!(
+        artifacts.len(),
+        1,
+        "spilled result carries one artifact handle"
+    );
 
     // The full body is retrievable via the artifact store.
     let filename = ArtifactFilename::new(artifacts[0].filename()).expect("valid filename");
-    let full_body = store.read_artifact(&filename).await.expect("read spilled body");
+    let full_body = store
+        .read_artifact(&filename)
+        .await
+        .expect("read spilled body");
     assert_eq!(full_body, long_result);
 
     // Task 1: short result stays inline.
@@ -275,7 +288,9 @@ async fn spilled_full_body_is_retrievable_via_artifact_handle() {
 async fn dependency_failure_blocks_descendant_without_failure_category() {
     let runs = RunStore::new();
     let args = two_task_args();
-    let plan = args.to_plan(&test_sections().roster().clone()).expect("valid plan");
+    let plan = args
+        .to_plan(&test_sections().roster().clone())
+        .expect("valid plan");
     let _plan_id = runs.record_plan(&args, plan.clone());
 
     // 1 response: task 0's worker stops without submitting (text only, no
@@ -283,9 +298,7 @@ async fn dependency_failure_blocks_descendant_without_failure_category() {
     // The single-response queue is load-bearing: if task 1 were
     // independent (no dependency on task 0), the executor would dispatch
     // it next, consume a second worker response, and panic the mock.
-    let responses = vec![
-        mock_text_response("I cannot complete this task."),
-    ];
+    let responses = vec![mock_text_response("I cannot complete this task.")];
 
     let dir = tempfile::TempDir::new().expect("temp dir");
     let executor = DagExecutor::new(
@@ -338,7 +351,9 @@ async fn budget_exhausted_maps_to_depth_exhausted() {
         }],
         planning_rationale: "One task".to_owned(),
     };
-    let plan = args.to_plan(&test_sections().roster().clone()).expect("valid plan");
+    let plan = args
+        .to_plan(&test_sections().roster().clone())
+        .expect("valid plan");
     let _plan_id = runs.record_plan(&args, plan.clone());
 
     // Budget 1: the worker calls submit_result with an empty summary (rejected
@@ -409,7 +424,9 @@ async fn spill_failure_with_disabled_store_produces_bounded_failed_observation()
         }],
         planning_rationale: "One task".to_owned(),
     };
-    let plan = args.to_plan(&test_sections().roster().clone()).expect("valid plan");
+    let plan = args
+        .to_plan(&test_sections().roster().clone())
+        .expect("valid plan");
     let _plan_id = runs.record_plan(&args, plan.clone());
 
     let long_result = "X".repeat(50);

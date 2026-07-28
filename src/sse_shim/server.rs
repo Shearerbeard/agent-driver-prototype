@@ -24,8 +24,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use agent_driver_rs::agent::AgentObserver;
 use agent_driver_rs::{ModelId, Provider, SystemPrompt};
 use axum::extract::{Json, State};
-use axum::response::sse::{Event, Sse};
 use axum::response::IntoResponse;
+use axum::response::sse::{Event, Sse};
 use futures::Stream;
 use serde::Deserialize;
 use tokio::sync::mpsc::Receiver;
@@ -34,7 +34,9 @@ use tracing::Instrument;
 
 use crate::artifacts::{ArtifactStore, InlineThreshold};
 use crate::context::PinnedGoal;
-use crate::coordinator_loop::{CoordinatorLoop, CoordinatorLoopConfig, LoopBudget, RunStore, WorkerSections};
+use crate::coordinator_loop::{
+    CoordinatorLoop, CoordinatorLoopConfig, LoopBudget, RunStore, WorkerSections,
+};
 use crate::dag_executor::{DagExecutor, DagLifecycleObserver, WorkerLoopConfig};
 use crate::mcp_client::SidecarClient;
 
@@ -212,10 +214,7 @@ impl ShimState {
     /// Returns [`ShimError::Coordinator`] when the `CoordinatorLoop` cannot
     /// be built (session construction failure), and [`ShimError::InvalidRequest`]
     /// when the query is empty/whitespace-only and cannot pin a goal.
-    pub async fn build_request(
-        self: &Arc<Self>,
-        query: &str,
-    ) -> Result<ShimRequest, ShimError> {
+    pub async fn build_request(self: &Arc<Self>, query: &str) -> Result<ShimRequest, ShimError> {
         // 1. Fresh session id.
         let session_id = ShimSessionId::generate();
         // 2. Fresh per-request usage sink (C1).
@@ -233,13 +232,10 @@ impl ShimState {
         // model_context_limit and trace_id are None: ShimState carries no
         // context_window config or trace id (the real server sources both
         // from agent config / CorrelationContext).
-        let session_info = SessionInfoPayload::new(
-            self.model.as_str(),
-            session_id.as_str(),
-            None,
-            None,
-        )
-        .expect("model and session_id are non-empty by ShimState/ShimSessionId construction");
+        let session_info =
+            SessionInfoPayload::new(self.model.as_str(), session_id.as_str(), None, None).expect(
+                "model and session_id are non-empty by ShimState/ShimSessionId construction",
+            );
         event_tx
             .send(AuraEvent::SessionInfo(session_info))
             .await
@@ -261,8 +257,8 @@ impl ShimState {
             event_tx,
         )) as Arc<dyn AgentObserver>;
         // 6. ShimDagObserver (C2), sharing the event channel.
-        let dag_observer =
-            Arc::new(ShimDagObserver::new(session_id, dag_event_tx)) as Arc<dyn DagLifecycleObserver>;
+        let dag_observer = Arc::new(ShimDagObserver::new(session_id, dag_event_tx))
+            as Arc<dyn DagLifecycleObserver>;
         // 7. Per-request ArtifactStore at a per-request run dir (C5).
         let run_dir = self.artifact_root.join(session_id.as_str());
         let artifacts = ArtifactStore::new(run_dir);
@@ -415,7 +411,10 @@ pub async fn chat_completions(
 pub fn router(state: Arc<ShimState>) -> axum::Router {
     axum::Router::new()
         .route("/health", axum::routing::get(health))
-        .route("/v1/chat/completions", axum::routing::post(chat_completions))
+        .route(
+            "/v1/chat/completions",
+            axum::routing::post(chat_completions),
+        )
         .with_state(state)
 }
 

@@ -54,18 +54,18 @@ impl WorkerSections {
         }
 
         let worker_field = r#",
-      "worker": "worker_name""#.to_string();
+      "worker": "worker_name""#
+            .to_string();
 
         let names_json: Vec<String> = roster
             .names()
             .iter()
             .map(|name| format!("\"{name}\""))
             .collect();
-        let guidelines = crate::templates::render_worker_guidelines(
-            &crate::templates::WorkerGuidelinesVars {
+        let guidelines =
+            crate::templates::render_worker_guidelines(&crate::templates::WorkerGuidelinesVars {
                 valid_worker_names: &names_json.join(", "),
-            },
-        );
+            });
 
         let roster_section = render_roster_section(&roster);
 
@@ -339,8 +339,7 @@ impl CoordinatorLoop {
     /// fails outright. A loop that stops for any reported reason, the turn
     /// budget included, is an outcome rather than an error.
     pub async fn run(self, query: &PinnedGoal) -> Result<CoordinatorOutcome, CoordinatorRunError> {
-        let timestamp =
-            chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+        let timestamp = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
         let message = render_planning_loop_prompt(&PlanningLoopVars {
             timestamp: &timestamp,
             query: query.as_str(),

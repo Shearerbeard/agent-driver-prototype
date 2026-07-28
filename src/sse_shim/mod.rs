@@ -33,18 +33,17 @@ mod usage_metering;
 pub use cli::{ShimCliArgs, ShimPort};
 pub use dag_lifecycle::ShimDagObserver;
 pub use error::ShimError;
+pub use events::UsagePayload;
 pub use events::{
-    AuraEvent, ChatCompletionChunk, ChunkChoice, ChunkDelta, FinishReason, SessionInfoPayload,
-    SSE_DONE, EVENT_SESSION_INFO, EVENT_TASK_COMPLETED, EVENT_TASK_STARTED, EVENT_TOOL_COMPLETE,
-    EVENT_TOOL_START, EVENT_USAGE,
+    AuraEvent, ChatCompletionChunk, ChunkChoice, ChunkDelta, EVENT_SESSION_INFO,
+    EVENT_TASK_COMPLETED, EVENT_TASK_STARTED, EVENT_TOOL_COMPLETE, EVENT_TOOL_START, EVENT_USAGE,
+    FinishReason, SSE_DONE, SessionInfoPayload,
 };
 pub use events::{TaskCompletedPayload, TaskStartedPayload, ToolCompletePayload, ToolStartPayload};
-pub use events::UsagePayload;
 pub use observer::ShimObserver;
 pub use otel::{OtelConfig, OtelEndpoint, OtelGuard};
 pub use server::{
-    ChatCompletionsRequest, ChatMessage, ChatRole, ShimRequest, ShimState,
-    EVENT_CHANNEL_CAPACITY,
+    ChatCompletionsRequest, ChatMessage, ChatRole, EVENT_CHANNEL_CAPACITY, ShimRequest, ShimState,
 };
 pub use server::{chat_completions, health, router};
 pub use session::{ShimSessionId, UsageAccumulator, shared_accumulator};

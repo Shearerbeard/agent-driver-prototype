@@ -658,20 +658,24 @@ mod tests {
 
     #[test]
     fn sse_event_name_is_set_for_aura_events_and_absent_for_chunks_and_done() {
-        let session_info = AuraEvent::SessionInfo(
-            SessionInfoPayload::new("m", "sid", None, None).unwrap(),
-        );
+        let session_info =
+            AuraEvent::SessionInfo(SessionInfoPayload::new("m", "sid", None, None).unwrap());
         assert_eq!(session_info.sse_event_name(), Some(EVENT_SESSION_INFO));
 
         let usage = AuraEvent::Usage(UsagePayload::from_totals(1, 2, "sid"));
         assert_eq!(usage.sse_event_name(), Some(EVENT_USAGE));
 
-        let chunk = AuraEvent::ChatChunk(
-            ChatCompletionChunk::text_delta("id", 0, "m", "hi").unwrap(),
+        let chunk =
+            AuraEvent::ChatChunk(ChatCompletionChunk::text_delta("id", 0, "m", "hi").unwrap());
+        assert!(
+            chunk.sse_event_name().is_none(),
+            "chat chunks are data-only"
         );
-        assert!(chunk.sse_event_name().is_none(), "chat chunks are data-only");
 
-        assert!(AuraEvent::Done.sse_event_name().is_none(), "Done is data-only");
+        assert!(
+            AuraEvent::Done.sse_event_name().is_none(),
+            "Done is data-only"
+        );
     }
 
     #[test]
@@ -683,8 +687,8 @@ mod tests {
     #[test]
     fn session_info_serializes_snake_case_fields() {
         let payload = SessionInfoPayload::new("model-x", "session-y", Some(200_000), None).unwrap();
-        let v: serde_json::Value = serde_json::from_str(&serde_json::to_string(&payload).unwrap())
-            .unwrap();
+        let v: serde_json::Value =
+            serde_json::from_str(&serde_json::to_string(&payload).unwrap()).unwrap();
         assert_eq!(v["model"].as_str(), Some("model-x"));
         assert_eq!(v["session_id"].as_str(), Some("session-y"));
         assert_eq!(v["model_context_limit"].as_u64(), Some(200_000));
@@ -759,10 +763,7 @@ mod tests {
             ChatCompletionChunk::finish("chatcmpl-1", 99, "model-x", FinishReason::Length).unwrap();
         let v: serde_json::Value =
             serde_json::from_str(&serde_json::to_string(&chunk).unwrap()).unwrap();
-        assert_eq!(
-            v["choices"][0]["finish_reason"].as_str(),
-            Some("length")
-        );
+        assert_eq!(v["choices"][0]["finish_reason"].as_str(), Some("length"));
         assert!(v["choices"][0]["delta"].get("content").is_none());
     }
 

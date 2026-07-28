@@ -7,8 +7,8 @@
 
 use std::sync::Arc;
 
-use agent_driver_rs::streaming::TokenUsage;
 use agent_driver_rs::CorrelationId;
+use agent_driver_rs::streaming::TokenUsage;
 use tokio::sync::Mutex;
 
 /// The session identity for one `/v1/chat/completions` request.

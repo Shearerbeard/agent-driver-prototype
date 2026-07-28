@@ -26,11 +26,11 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Instant;
 
-use agent_driver_rs::agent::{AgentEvent, AgentObserver, LoopStopReason};
 use agent_driver_rs::ToolCallId;
+use agent_driver_rs::agent::{AgentEvent, AgentObserver, LoopStopReason};
 use async_trait::async_trait;
-use tokio::sync::mpsc::Sender;
 use tokio::sync::Mutex;
+use tokio::sync::mpsc::Sender;
 
 use super::events::{
     AuraEvent, ChatCompletionChunk, FinishReason, ToolCompletePayload, ToolStartPayload,
@@ -173,24 +173,14 @@ impl ShimObserver {
     /// A text-delta chat-completion chunk. Always uses the configured model
     /// (C9), never the request's arbitrary model string.
     fn text_chunk(&self, text: &str) -> ChatCompletionChunk {
-        ChatCompletionChunk::text_delta(
-            &self.chat_completion_id,
-            self.created,
-            &self.model,
-            text,
-        )
-        .expect("chat_completion_id and model are non-empty by ShimState construction")
+        ChatCompletionChunk::text_delta(&self.chat_completion_id, self.created, &self.model, text)
+            .expect("chat_completion_id and model are non-empty by ShimState construction")
     }
 
     /// The terminal finish-reason chunk.
     fn finish_chunk(&self, reason: FinishReason) -> ChatCompletionChunk {
-        ChatCompletionChunk::finish(
-            &self.chat_completion_id,
-            self.created,
-            &self.model,
-            reason,
-        )
-        .expect("chat_completion_id and model are non-empty by ShimState construction")
+        ChatCompletionChunk::finish(&self.chat_completion_id, self.created, &self.model, reason)
+            .expect("chat_completion_id and model are non-empty by ShimState construction")
     }
 }
 
@@ -229,9 +219,13 @@ impl AgentObserver for ShimObserver {
                     .remove(id)
                     .map(|start| start.elapsed().as_millis() as u64)
                     .unwrap_or(0);
-                self.emit(AuraEvent::ToolComplete(
-                    self.tool_complete_payload(id, name, result, *is_error, duration_ms),
-                ))
+                self.emit(AuraEvent::ToolComplete(self.tool_complete_payload(
+                    id,
+                    name,
+                    result,
+                    *is_error,
+                    duration_ms,
+                )))
                 .await;
             }
             AgentEvent::IterationComplete { .. } => {
@@ -253,8 +247,10 @@ impl AgentObserver for ShimObserver {
                 drop(usage);
 
                 // Emit the terminal finish-reason chunk.
-                self.emit(AuraEvent::ChatChunk(self.finish_chunk(Self::finish_reason(reason))))
-                    .await;
+                self.emit(AuraEvent::ChatChunk(
+                    self.finish_chunk(Self::finish_reason(reason)),
+                ))
+                .await;
 
                 // Emit the terminal [DONE] sentinel.
                 self.emit(AuraEvent::Done).await;
@@ -289,8 +285,9 @@ pub fn error_termination_events(
     // chat-completion chunk shape carries no session id; it is reserved for
     // a future aura error event.
     let _ = session_id;
-    let finish = ChatCompletionChunk::finish(chat_completion_id, created, model, FinishReason::Stop)
-        .expect("chat_completion_id and model are non-empty by construction");
+    let finish =
+        ChatCompletionChunk::finish(chat_completion_id, created, model, FinishReason::Stop)
+            .expect("chat_completion_id and model are non-empty by construction");
     vec![AuraEvent::ChatChunk(finish), AuraEvent::Done]
 }
 
@@ -319,13 +316,10 @@ mod tests {
         let session_id = ShimSessionId::generate();
         let usage = shared_accumulator();
         // Pre-feed the sink the way the UsageMeteringProvider would.
-        usage
-            .lock()
-            .await
-            .add(TokenUsage {
-                input_tokens: 100,
-                output_tokens: 40,
-            });
+        usage.lock().await.add(TokenUsage {
+            input_tokens: 100,
+            output_tokens: 40,
+        });
 
         let (tx, mut rx) = mpsc::channel::<AuraEvent>(16);
         {
@@ -456,7 +450,10 @@ mod tests {
         assert!(matches!(events[1], AuraEvent::ToolComplete(_)));
         let v: serde_json::Value = serde_json::from_str(&events[1].sse_data()).unwrap();
         let duration = v["duration_ms"].as_u64().expect("duration_ms present");
-        assert!(duration >= 1, "duration_ms should reflect the sleep, got {duration}");
+        assert!(
+            duration >= 1,
+            "duration_ms should reflect the sleep, got {duration}"
+        );
         assert_eq!(v["success"].as_bool(), Some(true));
         assert_eq!(v["result"].as_str(), Some("ok"));
     }

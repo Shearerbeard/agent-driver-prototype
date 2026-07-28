@@ -68,9 +68,7 @@ impl ShimCliArgs {
         config_path: PathBuf,
     ) -> Result<Self, ShimError> {
         if config_path.as_os_str().is_empty() {
-            return Err(ShimError::InvalidRequest(
-                "config path is empty".to_owned(),
-            ));
+            return Err(ShimError::InvalidRequest("config path is empty".to_owned()));
         }
         Ok(Self {
             port,
@@ -108,7 +106,9 @@ impl ShimCliArgs {
                 "--port" => {
                     let value = take_value(flag, inline, &mut args)?;
                     let parsed: u16 = value.parse().map_err(|_| {
-                        ShimError::InvalidRequest(format!("--port must be a port number, got {value}"))
+                        ShimError::InvalidRequest(format!(
+                            "--port must be a port number, got {value}"
+                        ))
                     })?;
                     port = Some(parsed);
                 }
@@ -126,14 +126,15 @@ impl ShimCliArgs {
             }
         }
 
-        let port = port
-            .ok_or_else(|| ShimError::InvalidRequest("missing required --port".to_owned()))?;
-        let sidecar_raw = sidecar_url
-            .ok_or_else(|| ShimError::InvalidRequest("missing required --sidecar-url".to_owned()))?;
+        let port =
+            port.ok_or_else(|| ShimError::InvalidRequest("missing required --port".to_owned()))?;
+        let sidecar_raw = sidecar_url.ok_or_else(|| {
+            ShimError::InvalidRequest("missing required --sidecar-url".to_owned())
+        })?;
         let config_path = config_path
             .ok_or_else(|| ShimError::InvalidRequest("missing required --config".to_owned()))?;
-        let sidecar_url = SidecarUrl::new(&sidecar_raw)
-            .map_err(|e| ShimError::InvalidRequest(e.to_string()))?;
+        let sidecar_url =
+            SidecarUrl::new(&sidecar_raw).map_err(|e| ShimError::InvalidRequest(e.to_string()))?;
 
         Self::from_parts(ShimPort::new(port), sidecar_url, config_path)
     }
@@ -173,6 +174,8 @@ fn take_value(
     match args.next() {
         Some(value) if !value.is_empty() => Ok(value),
         Some(_) => Err(ShimError::InvalidRequest(format!("empty value for {flag}"))),
-        None => Err(ShimError::InvalidRequest(format!("missing value for {flag}"))),
+        None => Err(ShimError::InvalidRequest(format!(
+            "missing value for {flag}"
+        ))),
     }
 }

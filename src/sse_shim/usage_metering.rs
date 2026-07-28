@@ -21,10 +21,10 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll};
 
+use agent_driver_rs::Provider;
 use agent_driver_rs::error::{ProviderError, StreamError};
 use agent_driver_rs::provider::{CompletionRequest, ModelInfo, ProviderContext, ProviderInfo};
 use agent_driver_rs::streaming::{CompletionStream, StreamEvent, StreamHandle};
-use agent_driver_rs::Provider;
 
 use futures::Stream;
 use tokio::sync::Mutex;
@@ -80,8 +80,15 @@ impl Provider for UsageMeteringProvider {
             let cancellation = handle.cancellation_token().clone();
             let correlation_id = handle.correlation_id();
             let stream = handle.into_stream();
-            let metered = MeteredStream { inner: stream, sink };
-            Ok(StreamHandle::new(Box::pin(metered), cancellation, correlation_id))
+            let metered = MeteredStream {
+                inner: stream,
+                sink,
+            };
+            Ok(StreamHandle::new(
+                Box::pin(metered),
+                cancellation,
+                correlation_id,
+            ))
         })
     }
 
@@ -145,13 +152,13 @@ mod tests {
     use super::*;
     use crate::sse_shim::session::shared_accumulator;
 
+    use agent_driver_rs::mock::MockProvider;
     use agent_driver_rs::provider::{CompletionRequest, ProviderContext};
     use agent_driver_rs::streaming::{
-        CompletionMetadata, ContentBlockType, StreamDelta, StopReason,
+        CompletionMetadata, ContentBlockType, StopReason, StreamDelta,
     };
     use agent_driver_rs::types::{CorrelationId, ModelId};
     use agent_driver_rs::{Provider, TokenUsage};
-    use agent_driver_rs::mock::MockProvider;
     use tokio_util::sync::CancellationToken;
     use tokio_util::task::TaskTracker;
 
@@ -175,7 +182,9 @@ mod tests {
                 text: text.to_owned(),
             }),
             StreamEvent::ContentBlockStop { index: 0 },
-            StreamEvent::Completed { metadata: completed },
+            StreamEvent::Completed {
+                metadata: completed,
+            },
         ]
     }
 

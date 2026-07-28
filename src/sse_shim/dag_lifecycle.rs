@@ -37,7 +37,7 @@ pub struct ShimDagObserver {
 
 impl ShimDagObserver {
     /// Construct a DAG lifecycle observer for one request.
-        #[must_use]
+    #[must_use]
     pub fn new(session_id: ShimSessionId, event_tx: Sender<AuraEvent>) -> Self {
         Self {
             session_id,
@@ -150,8 +150,7 @@ mod tests {
     #[tokio::test]
     async fn task_started_emits_payload_with_identity_fields() {
         let (tx, mut rx) = mpsc::channel::<AuraEvent>(16);
-        let observer =
-            ShimDagObserver::new(ShimSessionId::generate(), tx);
+        let observer = ShimDagObserver::new(ShimSessionId::generate(), tx);
         observer
             .on_task_started(7, "do the thing", "operations", "coordinator")
             .await;

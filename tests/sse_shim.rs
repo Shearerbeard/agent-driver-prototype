@@ -18,9 +18,9 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use agent_driver_rs::provider::mock::{mock_text_response, mock_tool_call_response, MockProvider};
-use agent_driver_rs::types::{ModelId, SystemPrompt};
 use agent_driver_rs::Provider;
+use agent_driver_rs::provider::mock::{MockProvider, mock_text_response, mock_tool_call_response};
+use agent_driver_rs::types::{ModelId, SystemPrompt};
 
 use agent_driver_prototype::artifacts::InlineThreshold;
 use agent_driver_prototype::bounding::ToolListLimit;
@@ -30,7 +30,7 @@ use agent_driver_prototype::coordinator_loop::{
 };
 use agent_driver_prototype::dag_executor::WorkerLoopConfig;
 use agent_driver_prototype::mcp_client::SidecarClient;
-use agent_driver_prototype::sse_shim::{router, ShimState};
+use agent_driver_prototype::sse_shim::{ShimState, router};
 use agent_driver_prototype::types::StepInput;
 
 // ---------------------------------------------------------------------------
@@ -105,8 +105,7 @@ fn submit_result_json(summary: &str, result: &str, confidence: &str) -> String {
 /// proof the loop made exactly six calls.
 fn shim_provider() -> Arc<dyn Provider> {
     let expected_id = PlanId::derive(&one_task_plan_args());
-    let plan_args_json =
-        serde_json::to_string(&one_task_plan_args()).expect("plan args serialize");
+    let plan_args_json = serde_json::to_string(&one_task_plan_args()).expect("plan args serialize");
 
     let responses = vec![
         mock_tool_call_response("c1", "create_plan", &plan_args_json),
@@ -250,10 +249,7 @@ async fn chat_completions_emits_full_aura_vocabulary_and_terminates_with_done() 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
         .expect("bind to ephemeral port");
-    let port = listener
-        .local_addr()
-        .expect("local addr")
-        .port();
+    let port = listener.local_addr().expect("local addr").port();
     tokio::spawn(async move {
         let _ = axum::serve(listener, app).await;
     });
@@ -284,18 +280,18 @@ async fn chat_completions_emits_full_aura_vocabulary_and_terminates_with_done() 
         response.status()
     );
 
-    let text = tokio::time::timeout(
-        Duration::from_secs(30),
-        response.text(),
-    )
-    .await
-    .expect("body did not complete within 30s — stream did not terminate via [DONE]")
-    .expect("reading response body failed");
+    let text = tokio::time::timeout(Duration::from_secs(30), response.text())
+        .await
+        .expect("body did not complete within 30s — stream did not terminate via [DONE]")
+        .expect("reading response body failed");
 
     // Parse the SSE body into structured frames.
     let frames = parse_sse_frames(&text);
     let transcript = transcript_summary(&frames);
-    eprintln!("SSE event transcript ({n} frames): {transcript:?}", n = frames.len());
+    eprintln!(
+        "SSE event transcript ({n} frames): {transcript:?}",
+        n = frames.len()
+    );
     eprintln!("Raw SSE body:\n{text}");
 
     // Collect every broken assertion so one run shows the full picture.
@@ -319,7 +315,9 @@ async fn chat_completions_emits_full_aura_vocabulary_and_terminates_with_done() 
                 }
             }
             Err(e) => {
-                failures.push(format!("(a) aura.session_info payload is not valid JSON: {e}"));
+                failures.push(format!(
+                    "(a) aura.session_info payload is not valid JSON: {e}"
+                ));
             }
         }
     }
@@ -341,7 +339,9 @@ async fn chat_completions_emits_full_aura_vocabulary_and_terminates_with_done() 
                     .is_ok_and(|v| v["tool_name"].as_str() == Some(tool_name))
         });
         if !has_complete {
-            failures.push(format!("(b) aura.tool_complete for '{tool_name}' not found"));
+            failures.push(format!(
+                "(b) aura.tool_complete for '{tool_name}' not found"
+            ));
         }
     }
 
@@ -359,9 +359,8 @@ async fn chat_completions_emits_full_aura_vocabulary_and_terminates_with_done() 
                 .is_ok_and(|v| v["success"].as_bool() == Some(true))
     });
     if !task_completed_success {
-        failures.push(
-            "(c) aura.orchestrator.task_completed with success:true not found".to_owned(),
-        );
+        failures
+            .push("(c) aura.orchestrator.task_completed with success:true not found".to_owned());
     }
 
     // (d) aura.usage present with integer prompt_tokens / completion_tokens.
@@ -407,9 +406,7 @@ async fn chat_completions_emits_full_aura_vocabulary_and_terminates_with_done() 
         f.event.is_none()
             && f.data != "[DONE]"
             && serde_json::from_str::<serde_json::Value>(&f.data)
-                .is_ok_and(|v| {
-                    !v["choices"][0]["finish_reason"].is_null()
-                })
+                .is_ok_and(|v| !v["choices"][0]["finish_reason"].is_null())
             && done_index.is_some_and(|di| i < di)
     });
     if !finish_chunk_before_done {

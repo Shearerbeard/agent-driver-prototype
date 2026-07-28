@@ -12,7 +12,9 @@
 
 use std::process::exit;
 
-use agent_driver_prototype::mcp_client::{SidecarClient, SidecarToolArgs, SidecarToolName, SidecarUrl};
+use agent_driver_prototype::mcp_client::{
+    SidecarClient, SidecarToolArgs, SidecarToolName, SidecarUrl,
+};
 use serde_json::json;
 
 /// `echo S72_PROBE_OK_$((50+22))` evaluates to `S72_PROBE_OK_72` in bash.
@@ -24,10 +26,7 @@ const PROBE_TOKEN: &str = "S72_PROBE_OK_72";
 async fn main() {
     let args: Vec<String> = std::env::args().collect();
     if args.len() != 2 {
-        let prog = args
-            .first()
-            .map(String::as_str)
-            .unwrap_or("sidecar_probe");
+        let prog = args.first().map(String::as_str).unwrap_or("sidecar_probe");
         eprintln!("usage: {prog} <sse-base-url>");
         eprintln!("example: {prog} http://localhost:8000/sse");
         exit(2);

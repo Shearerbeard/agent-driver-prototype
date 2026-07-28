@@ -192,7 +192,10 @@ impl ArtifactStore {
     /// Returns [`ArtifactError::Disabled`] when the store is disabled,
     /// [`ArtifactError::Io`] when the read fails (including file-not-found,
     /// surfaced as the io error message).
-    pub async fn read_artifact(&self, filename: &ArtifactFilename) -> Result<String, ArtifactError> {
+    pub async fn read_artifact(
+        &self,
+        filename: &ArtifactFilename,
+    ) -> Result<String, ArtifactError> {
         if self.is_disabled() {
             return Err(ArtifactError::Disabled);
         }
@@ -221,10 +224,9 @@ impl ArtifactStore {
         if self.is_disabled() {
             return Err(ArtifactError::Disabled);
         }
-        let session_dir = self
-            .base_path
-            .parent()
-            .ok_or_else(|| ArtifactError::Io("cannot resolve session directory from base path".to_owned()))?;
+        let session_dir = self.base_path.parent().ok_or_else(|| {
+            ArtifactError::Io("cannot resolve session directory from base path".to_owned())
+        })?;
         let cross_path = session_dir
             .join(run_id.as_str())
             .join("artifacts")
@@ -332,9 +334,6 @@ mod tests {
 
     #[test]
     fn inline_threshold_rejects_zero() {
-        assert_eq!(
-            InlineThreshold::new(0),
-            Err(ArtifactError::Disabled)
-        );
+        assert_eq!(InlineThreshold::new(0), Err(ArtifactError::Disabled));
     }
 }

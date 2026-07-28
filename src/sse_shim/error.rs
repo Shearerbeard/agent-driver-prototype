@@ -9,9 +9,9 @@
 //! handlers can return it directly: `InvalidRequest` maps to 400, everything
 //! else to 500, with a JSON error body.
 
+use axum::Json;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
-use axum::Json;
 
 /// Why a shim operation failed.
 ///
@@ -67,7 +67,10 @@ mod tests {
         let response = ShimError::InvalidRequest("bad".to_owned()).into_response();
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
         let v = body_error_key(response);
-        assert_eq!(v["error"].as_str(), Some("invalid chat completions request: bad"));
+        assert_eq!(
+            v["error"].as_str(),
+            Some("invalid chat completions request: bad")
+        );
     }
 
     #[test]

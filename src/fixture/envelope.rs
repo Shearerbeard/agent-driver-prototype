@@ -19,15 +19,17 @@ use crate::producers::{
     build_continuation_wrapper, build_planning_wrapper, build_task_context,
     build_worker_prompt_sections, compact_decision_turn,
 };
-use crate::templates::{WorkerPreambleVars, WorkerTaskVars, render_worker_preamble, render_worker_task_prompt};
+use crate::templates::{
+    WorkerPreambleVars, WorkerTaskVars, render_worker_preamble, render_worker_task_prompt,
+};
 use crate::types::{IterationContext, Plan, StructuredTaskOutput};
 
 use super::helpers::{SCRATCHPAD_PREAMBLE, build_session_context, render_skill_catalog};
 use super::scenario::{
     CoordinatorCall, CoordinatorScenario, CoordinatorToolConfig, FixtureError, HistoryTools,
     IterationFixture, PreambleFixture, ReconTools, ScratchpadWiring, TaskOutcome,
-    WorkerFrameFixture, WorkerPreambleAppends, WorkerPreambleFixture, WorkerScenario,
-    WorkerRosterFixture,
+    WorkerFrameFixture, WorkerPreambleAppends, WorkerPreambleFixture, WorkerRosterFixture,
+    WorkerScenario,
 };
 use super::scenario::{FailedResultFixture, PlanDecision};
 use super::tool_definitions;
@@ -64,13 +66,10 @@ pub(crate) fn executed_plan(iteration: &IterationFixture) -> Plan {
         match outcome {
             TaskOutcome::Complete { result, .. } => {
                 task.complete(result.raw_result());
-                task.structured_output =
-                    result
-                        .claim()
-                        .map(|claim| StructuredTaskOutput {
-                            summary: claim.summary().to_owned(),
-                            confidence: claim.confidence(),
-                        });
+                task.structured_output = result.claim().map(|claim| StructuredTaskOutput {
+                    summary: claim.summary().to_owned(),
+                    confidence: claim.confidence(),
+                });
             }
             TaskOutcome::Failed { report, .. } => match report {
                 FailedResultFixture::Hard { error, category } => {
@@ -82,11 +81,10 @@ pub(crate) fn executed_plan(iteration: &IterationFixture) -> Plan {
                         None => claim.summary().to_owned(),
                     };
                     task.fail(error, crate::types::FailureCategory::SoftFailure);
-                    task.structured_output =
-                        Some(StructuredTaskOutput {
-                            summary: claim.summary().to_owned(),
-                            confidence: claim.confidence(),
-                        });
+                    task.structured_output = Some(StructuredTaskOutput {
+                        summary: claim.summary().to_owned(),
+                        confidence: claim.confidence(),
+                    });
                 }
             },
             TaskOutcome::Blocked => {}
@@ -132,7 +130,10 @@ pub(crate) fn merged_traces(
 
 /// Collect failed tasks from this iteration into failure records.
 /// Ported from `Orchestrator::collect_iteration_failures`.
-fn collect_iteration_failures(plan: &Plan, iteration: usize) -> Vec<crate::types::FailedTaskRecord> {
+fn collect_iteration_failures(
+    plan: &Plan,
+    iteration: usize,
+) -> Vec<crate::types::FailedTaskRecord> {
     plan.tasks
         .iter()
         .filter_map(|t| match &t.state {
@@ -187,8 +188,7 @@ pub(crate) fn coordinator_envelope(
             )
             .with_pinned_goal(scenario.query().clone());
 
-            let assistant_text =
-                compact_decision_turn(iteration.decision().as_response(), "");
+            let assistant_text = compact_decision_turn(iteration.decision().as_response(), "");
             messages.push(Message::assistant(assistant_text));
             messages.push(Message::user(build_continuation_wrapper(
                 &context,

@@ -117,10 +117,10 @@ impl OtelConfig {
 
         use opentelemetry::global;
         use opentelemetry::trace::TracerProvider as _;
+        use opentelemetry_otlp::WithExportConfig as _;
         use opentelemetry_sdk::Resource;
         use opentelemetry_sdk::propagation::TraceContextPropagator;
         use opentelemetry_sdk::trace::SdkTracerProvider;
-        use opentelemetry_otlp::WithExportConfig as _;
 
         let exporter = opentelemetry_otlp::SpanExporter::builder()
             .with_tonic()
@@ -128,9 +128,7 @@ impl OtelConfig {
             .build()
             .map_err(|e| ShimError::Otel(format!("OTLP exporter build failed: {e}")))?;
 
-        let resource = Resource::builder()
-            .with_service_name("sse-shim")
-            .build();
+        let resource = Resource::builder().with_service_name("sse-shim").build();
 
         let provider = SdkTracerProvider::builder()
             .with_resource(resource)
@@ -173,13 +171,13 @@ pub struct OtelGuard {
 
 impl OtelGuard {
     /// A no-op guard with no tracer provider (used when no endpoint is set).
-        #[must_use]
+    #[must_use]
     pub fn noop() -> Self {
         Self { provider: None }
     }
 
     /// A guard owning a real tracer provider.
-        #[must_use]
+    #[must_use]
     pub fn from_provider(provider: opentelemetry_sdk::trace::SdkTracerProvider) -> Self {
         Self {
             provider: Some(provider),

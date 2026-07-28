@@ -166,10 +166,7 @@ impl WorkerRoster {
 
     /// The configured role names, in configuration order.
     pub fn names(&self) -> Vec<&str> {
-        self.workers
-            .iter()
-            .map(|spec| spec.role.as_str())
-            .collect()
+        self.workers.iter().map(|spec| spec.role.as_str()).collect()
     }
 
     /// The per-worker specs, in configuration order.
