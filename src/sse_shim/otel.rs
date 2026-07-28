@@ -173,15 +173,13 @@ pub struct OtelGuard {
 
 impl OtelGuard {
     /// A no-op guard with no tracer provider (used when no endpoint is set).
-    #[allow(dead_code, reason = "type skeleton; called by OtelConfig::init in the implementation phase")]
-    #[must_use]
+        #[must_use]
     pub fn noop() -> Self {
         Self { provider: None }
     }
 
     /// A guard owning a real tracer provider.
-    #[allow(dead_code, reason = "type skeleton; called by OtelConfig::init in the implementation phase")]
-    #[must_use]
+        #[must_use]
     pub fn from_provider(provider: opentelemetry_sdk::trace::SdkTracerProvider) -> Self {
         Self {
             provider: Some(provider),

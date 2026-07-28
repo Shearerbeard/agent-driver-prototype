@@ -15,14 +15,6 @@ use crate::dag_executor::DagLifecycleObserver;
 use crate::sse_shim::events::{AuraEvent, TaskCompletedPayload, TaskStartedPayload};
 use crate::sse_shim::session::ShimSessionId;
 
-/// The agent id the DAG observer uses for task payloads. The worker that
-/// runs the task is the agent, so `agent_id` mirrors the per-task `worker_id`.
-const TASK_AGENT_ID_SOURCE: &str = "worker";
-
-/// The orchestrator id the executor reports (it owns no session id, so it
-/// passes this constant; the shim's session id is carried separately).
-const ORCHESTRATOR_ID: &str = "coordinator";
-
 /// The shim's implementation of [`DagLifecycleObserver`].
 ///
 /// One observer per `/v1/chat/completions` request, constructed by
@@ -37,7 +29,6 @@ const ORCHESTRATOR_ID: &str = "coordinator";
 /// `worker_id` or `orchestrator_id`, so the observer remembers the pair from
 /// `on_task_started` (keyed by task id) and reuses it at completion, keeping
 /// the two payloads' correlation fields consistent.
-#[allow(dead_code, reason = "type skeleton; constructed by build_request in the implementation phase")]
 pub struct ShimDagObserver {
     session_id: ShimSessionId,
     event_tx: Sender<AuraEvent>,
@@ -46,8 +37,7 @@ pub struct ShimDagObserver {
 
 impl ShimDagObserver {
     /// Construct a DAG lifecycle observer for one request.
-    #[allow(dead_code, reason = "type skeleton; called by build_request in the implementation phase")]
-    #[must_use]
+        #[must_use]
     pub fn new(session_id: ShimSessionId, event_tx: Sender<AuraEvent>) -> Self {
         Self {
             session_id,
@@ -91,25 +81,15 @@ impl DagLifecycleObserver for ShimDagObserver {
             .expect("task_workers lock poisoned")
             .insert(task_id, (worker_id.to_owned(), orchestrator_id.to_owned()));
 
-        let payload = match TaskStartedPayload::new(
+        let payload = TaskStartedPayload::new(
             task_id,
             description,
             worker_id,
             orchestrator_id,
             worker_id,
             self.session_id.as_str(),
-        ) {
-            Ok(payload) => payload,
-            Err(error) => {
-                tracing::warn!(
-                    session_id = %self.session_id,
-                    %task_id,
-                    %error,
-                    "task_started payload rejected; dropping event"
-                );
-                return;
-            }
-        };
+        )
+        .expect("task description, worker_id, and orchestrator_id are non-empty: the coordinator plan and DAG executor supply them");
         self.emit(AuraEvent::TaskStarted(payload)).await;
     }
 
@@ -125,14 +105,7 @@ impl DagLifecycleObserver for ShimDagObserver {
             .lock()
             .expect("task_workers lock poisoned")
             .remove(&task_id)
-            .unwrap_or_else(|| {
-                tracing::warn!(
-                    session_id = %self.session_id,
-                    %task_id,
-                    "task_completed without a matching task_started; using default identity"
-                );
-                (TASK_AGENT_ID_SOURCE.to_owned(), ORCHESTRATOR_ID.to_owned())
-            });
+            .expect("on_task_completed called for a task with no matching task_started: the DAG executor always pairs started/completed");
 
         let payload = if success {
             let result_text = result.unwrap_or("");

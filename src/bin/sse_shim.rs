@@ -181,7 +181,7 @@ async fn build_state(args: &ShimCliArgs) -> Result<ShimState, ShimError> {
 /// the requested port was ephemeral (C11), serve with graceful shutdown
 /// (C7), and await full server termination.
 async fn serve(state: Arc<ShimState>, port: ShimPort) -> Result<(), ShimError> {
-    let listener = tokio::net::TcpListener::bind(format!("0.0.0.0:{}", port.get()))
+    let listener = tokio::net::TcpListener::bind(format!("127.0.0.1:{}", port.get()))
         .await
         .map_err(|e| ShimError::Server(format!("TCP bind to port {} failed: {e}", port.get())))?;
     let actual_port = listener

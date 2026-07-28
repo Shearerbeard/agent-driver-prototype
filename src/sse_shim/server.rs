@@ -130,7 +130,6 @@ pub struct ChatCompletionsRequest {
 /// sidecar; a state where the coordinator and worker budgets or prompts are
 /// inconsistent with the config they were built from. The constructor takes
 /// all parts, so a missing piece cannot be discovered mid-request.
-#[allow(dead_code, reason = "type skeleton; fields are read by build_request in the implementation phase")]
 pub struct ShimState {
     base_provider: Arc<dyn Provider>,
     model: ModelId,

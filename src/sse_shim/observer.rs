@@ -278,7 +278,6 @@ impl AgentObserver for ShimObserver {
 /// Returns the events to emit (finish chunk + done). The parameters carry
 /// the observer state the function needs (C4/A4): the chat-completion id,
 /// timestamp, configured model, and session id.
-#[allow(dead_code, reason = "type skeleton; called by the stream handler in the implementation phase")]
 #[must_use]
 pub fn error_termination_events(
     chat_completion_id: &str,

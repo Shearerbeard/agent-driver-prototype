@@ -111,8 +111,8 @@ invariant at construction (C8).
 | `health` | `pub async` | Stays. Infallible; implemented. |
 | `OtelConfig::init` | `pub` | Stays. The implementation phase builds the OTLP exporter, `SdkTracerProvider`, and tracing subscriber. Returns `OtelGuard` via `noop()` or `from_provider()`. |
 | `ShimCliArgs::parse` | `pub` | Stays. |
-| `error_termination_events` | `pub`, `#[allow(dead_code)]` | Called by the stream handler when the loop fails before `LoopComplete`. Takes explicit parameters (C4/A4). |
-| `ShimState` fields | private, `#[allow(dead_code)]` | Read by `build_request`. Accessors `model()` and `config_path()` are public. |
+| `error_termination_events` | `pub` | Called by the stream handler when the loop fails before `LoopComplete`. Takes explicit parameters (C4/A4). |
+| `ShimState` fields | private | Read by `build_request`. Accessors `model()` and `config_path()` are public. |
 | `AuraEvent::sse_event_name` / `sse_data` | `pub` | Stays. |
 | Event name constants | `pub` | Stays. |
 | `EVENT_CHANNEL_CAPACITY` | `pub` | Stays (C10). |
