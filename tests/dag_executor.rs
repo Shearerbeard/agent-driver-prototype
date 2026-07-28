@@ -141,6 +141,7 @@ async fn two_task_dag_with_dependency_runs_to_completion() {
         test_sections(),
         runs.clone(),
         InlineThreshold::DEFAULT,
+        None,
     );
 
     let observation = executor.execute(&plan, &ctx()).await;
@@ -220,6 +221,7 @@ async fn spilled_full_body_is_retrievable_via_artifact_handle() {
         test_sections(),
         runs,
         InlineThreshold::new(10).expect("non-zero threshold"),
+        None,
     );
 
     let observation = executor.execute(&plan, &ctx()).await;
@@ -293,6 +295,7 @@ async fn dependency_failure_blocks_descendant_without_failure_category() {
         test_sections(),
         runs,
         InlineThreshold::DEFAULT,
+        None,
     );
 
     let observation = executor.execute(&plan, &ctx()).await;
@@ -370,6 +373,7 @@ async fn budget_exhausted_maps_to_depth_exhausted() {
         test_sections(),
         runs,
         InlineThreshold::DEFAULT,
+        None,
     );
 
     let observation = executor.execute(&plan, &ctx()).await;
@@ -425,6 +429,7 @@ async fn spill_failure_with_disabled_store_produces_bounded_failed_observation()
         test_sections(),
         runs,
         InlineThreshold::new(10).expect("non-zero threshold"),
+        None,
     );
 
     let observation = executor.execute(&plan, &ctx()).await;

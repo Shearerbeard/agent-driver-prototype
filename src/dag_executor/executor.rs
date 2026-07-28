@@ -19,6 +19,7 @@ use crate::coordinator_loop::{
 use crate::mcp_client::SidecarClient;
 use crate::types::{FailureCategory, Plan, Task, TaskState};
 
+use super::lifecycle::DagLifecycleObserver;
 use super::worker::{WorkerLoop, WorkerLoopConfig, WorkerOutcome};
 
 /// The real DAG executor.
@@ -38,6 +39,12 @@ pub struct DagExecutor {
     worker_sections: WorkerSections,
     runs: RunStore,
     inline_threshold: InlineThreshold,
+    /// Optional DAG-lifecycle observer (C2). When present, the executor
+    /// emits `on_task_started` / `on_task_completed` around each task run.
+    /// The shim's `build_request` plumbs a `ShimDagObserver` here; tests
+    /// pass `None`.
+    #[allow(dead_code, reason = "type skeleton; called in the execute dispatch loop in the implementation phase")]
+    lifecycle: Option<Arc<dyn DagLifecycleObserver>>,
 }
 
 impl DagExecutor {
@@ -48,7 +55,10 @@ impl DagExecutor {
     /// model, and budget for worker inner loops; `worker_sections` is the
     /// roster the executor reads worker preambles from; `runs` is the run
     /// store the executor files per-task records into; `inline_threshold`
-    /// is the character bound at which worker results spill to artifacts.
+    /// is the character bound at which worker results spill to artifacts;
+    /// `lifecycle` is an optional DAG-lifecycle observer (C2) that
+    /// receives `on_task_started` / `on_task_completed` around each task
+    /// run — pass `None` when lifecycle events are not needed.
     ///
     /// The `ExecuteTool` constructs the executor per dispatch from the
     /// [`RunStore`] it already owns, so the executor sees the run's current
@@ -62,6 +72,7 @@ impl DagExecutor {
         worker_sections: WorkerSections,
         runs: RunStore,
         inline_threshold: InlineThreshold,
+        lifecycle: Option<Arc<dyn DagLifecycleObserver>>,
     ) -> Self {
         Self {
             sidecar,
@@ -70,6 +81,7 @@ impl DagExecutor {
             worker_sections,
             runs,
             inline_threshold,
+            lifecycle,
         }
     }
 

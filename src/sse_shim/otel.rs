@@ -11,6 +11,12 @@
 
 use std::fmt;
 
+// Brings `TracerProvider::shutdown` into scope for `SdkTracerProvider`.
+// The `as _` form is needed for method resolution only; the lint warns
+// despite the method call below.
+#[allow(unused_imports)]
+use opentelemetry::trace::TracerProvider as _;
+
 use super::error::ShimError;
 
 /// The OTLP exporter endpoint URL.
@@ -115,17 +121,48 @@ impl OtelConfig {
 /// lifetime ensures the trace-receipt canary's spans are exported before
 /// the process exits.
 ///
-/// Forbidden invalid state: a tracer provider dropped before spans are
-/// exported (losing trace evidence). The guard's `Drop` impl calls
-/// `shutdown()` on the provider.
+/// The guard stores `Option<SdkTracerProvider>`: `Some` when an OTLP
+/// endpoint is configured, `None` when tracing is a no-op. `Drop` calls
+/// `shutdown()` on the provider and logs flush failures (C6).
 pub struct OtelGuard {
-    // The concrete tracer provider type is an implementation detail.
-    // It is populated by `OtelConfig::init` in the implementation phase.
-    _private: (),
+    provider: Option<opentelemetry_sdk::trace::SdkTracerProvider>,
+}
+
+impl OtelGuard {
+    /// A no-op guard with no tracer provider (used when no endpoint is set).
+    #[allow(dead_code, reason = "type skeleton; called by OtelConfig::init in the implementation phase")]
+    #[must_use]
+    pub fn noop() -> Self {
+        Self { provider: None }
+    }
+
+    /// A guard owning a real tracer provider.
+    #[allow(dead_code, reason = "type skeleton; called by OtelConfig::init in the implementation phase")]
+    #[must_use]
+    pub fn from_provider(provider: opentelemetry_sdk::trace::SdkTracerProvider) -> Self {
+        Self {
+            provider: Some(provider),
+        }
+    }
+}
+
+impl Drop for OtelGuard {
+    fn drop(&mut self) {
+        if let Some(provider) = self.provider.take()
+            && let Err(error) = provider.shutdown()
+        {
+            tracing::error!(
+                %error,
+                "OTEL tracer provider shutdown failed; spans may be lost"
+            );
+        }
+    }
 }
 
 impl fmt::Debug for OtelGuard {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("OtelGuard").finish_non_exhaustive()
+        f.debug_struct("OtelGuard")
+            .field("has_provider", &self.provider.is_some())
+            .finish()
     }
 }

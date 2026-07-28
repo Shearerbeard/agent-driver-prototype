@@ -4,6 +4,14 @@
 //! init raise through. Each variant names the boundary that raised it, so a
 //! caller can distinguish a bad request from a server failure without matching
 //! on a blanket message.
+//!
+//! [`ShimError`] implements [`axum::response::IntoResponse`] (A7) so axum
+//! handlers can return it directly: `InvalidRequest` maps to 400, everything
+//! else to 500, with a JSON error body.
+
+use axum::http::StatusCode;
+use axum::response::{IntoResponse, Response};
+use axum::Json;
 
 /// Why a shim operation failed.
 ///
@@ -29,4 +37,17 @@ pub enum ShimError {
     /// the tracer provider could not be installed.
     #[error("OTEL initialization error: {0}")]
     Otel(String),
+}
+
+impl IntoResponse for ShimError {
+    fn into_response(self) -> Response {
+        let status = match &self {
+            ShimError::InvalidRequest(_) => StatusCode::BAD_REQUEST,
+            ShimError::Server(_) | ShimError::Coordinator(_) | ShimError::Otel(_) => {
+                StatusCode::INTERNAL_SERVER_ERROR
+            }
+        };
+        let body = Json(serde_json::json!({"error": self.to_string()}));
+        (status, body).into_response()
+    }
 }

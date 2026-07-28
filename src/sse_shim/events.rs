@@ -13,8 +13,17 @@
 //! line, and a blank terminator. Data-only chat-completion chunks omit the
 //! `event:` line so standard OpenAI clients process them. The terminal
 //! `data: [DONE]` sentinel ends the stream.
+//!
+//! ## Construction invariants (C8)
+//!
+//! Payload fields are private; each type has a validated constructor that
+//! rejects the forbidden state its DESIGN.md row names. Where a rule is
+//! genuinely runtime-only (enforced by the caller, not by construction),
+//! the DESIGN.md row says so. serde serializes private fields fine.
 
 use serde::Serialize;
+
+use super::error::ShimError;
 
 // ---------------------------------------------------------------------------
 // Event name constants — match `aura-events/src/event_names.rs` and
@@ -52,19 +61,68 @@ const CHAT_OBJECT: &str = "chat.completion.chunk";
 ///
 /// Forbidden invalid state: an empty `session_id` or `model`; a
 /// `model_context_limit` of zero (the field is `Option` and omitted when
-/// unknown, never zero-filled).
+/// unknown, never zero-filled). The private fields and [`new`](Self::new)
+/// constructor enforce these at construction.
 #[derive(Debug, Clone, Serialize)]
 pub struct SessionInfoPayload {
-    /// The model name (e.g. `"claude-sonnet-4.5"`).
-    pub model: String,
-    /// The session id as a hyphenated UUID string.
-    pub session_id: String,
-    /// Context window limit in tokens, if known. Omitted when `None`.
+    model: String,
+    session_id: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub model_context_limit: Option<u64>,
-    /// OTEL trace id, for Phoenix correlation. Omitted when `None`.
+    model_context_limit: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub trace_id: Option<String>,
+    trace_id: Option<String>,
+}
+
+impl SessionInfoPayload {
+    /// Construct a session-info payload, rejecting empty model/session_id
+    /// and a zero context limit.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ShimError::InvalidRequest`] when `model` or `session_id` is
+    /// empty, or when `model_context_limit` is `Some(0)`.
+    pub fn new(
+        model: impl Into<String>,
+        session_id: impl Into<String>,
+        model_context_limit: Option<u64>,
+        trace_id: Option<String>,
+    ) -> Result<Self, ShimError> {
+        let model = model.into();
+        let session_id = session_id.into();
+        if model.trim().is_empty() {
+            return Err(ShimError::InvalidRequest(
+                "session_info model is empty".to_owned(),
+            ));
+        }
+        if session_id.trim().is_empty() {
+            return Err(ShimError::InvalidRequest(
+                "session_info session_id is empty".to_owned(),
+            ));
+        }
+        if let Some(0) = model_context_limit {
+            return Err(ShimError::InvalidRequest(
+                "model_context_limit must not be zero".to_owned(),
+            ));
+        }
+        Ok(Self {
+            model,
+            session_id,
+            model_context_limit,
+            trace_id,
+        })
+    }
+
+    /// The model name.
+    #[must_use]
+    pub fn model(&self) -> &str {
+        &self.model
+    }
+
+    /// The session id.
+    #[must_use]
+    pub fn session_id(&self) -> &str {
+        &self.session_id
+    }
 }
 
 /// The `aura.usage` payload.
@@ -74,17 +132,15 @@ pub struct SessionInfoPayload {
 /// included to match the real aura server's shape.
 ///
 /// Forbidden invalid state: a usage payload with mismatched totals
-/// (`total != prompt + completion`); the constructor enforces the sum.
+/// (`total != prompt + completion`). The [`from_totals`](Self::from_totals)
+/// constructor derives `total_tokens` so the three fields can never
+/// disagree.
 #[derive(Debug, Clone, Serialize)]
 pub struct UsagePayload {
-    /// Total prompt (input) tokens across all iterations.
-    pub prompt_tokens: u64,
-    /// Total completion (output) tokens across all iterations.
-    pub completion_tokens: u64,
-    /// Total tokens (`prompt_tokens + completion_tokens`).
-    pub total_tokens: u64,
-    /// The session id, for correlation.
-    pub session_id: String,
+    prompt_tokens: u64,
+    completion_tokens: u64,
+    total_tokens: u64,
+    session_id: String,
 }
 
 impl UsagePayload {
@@ -108,17 +164,45 @@ impl UsagePayload {
 /// Emitted when a tool call begins (coordinator or worker). The adapter
 /// records these as marker events.
 ///
-/// Forbidden invalid state: empty `tool_id` or `tool_name`.
+/// Forbidden invalid state: empty `tool_id` or `tool_name`. The private
+/// fields and [`new`](Self::new) constructor enforce this.
 #[derive(Debug, Clone, Serialize)]
 pub struct ToolStartPayload {
-    /// The tool call id from the provider.
-    pub tool_id: String,
-    /// The tool name (e.g. `"create_plan"`, `"keystrokes"`).
-    pub tool_name: String,
-    /// The agent id: `"main"` for the coordinator, the worker name for workers.
-    pub agent_id: String,
-    /// The session id, for correlation.
-    pub session_id: String,
+    tool_id: String,
+    tool_name: String,
+    agent_id: String,
+    session_id: String,
+}
+
+impl ToolStartPayload {
+    /// Construct a tool-start payload, rejecting empty `tool_id` or
+    /// `tool_name`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ShimError::InvalidRequest`] when `tool_id` or `tool_name`
+    /// is empty.
+    pub fn new(
+        tool_id: impl Into<String>,
+        tool_name: impl Into<String>,
+        agent_id: impl Into<String>,
+        session_id: impl Into<String>,
+    ) -> Result<Self, ShimError> {
+        let tool_id = tool_id.into();
+        let tool_name = tool_name.into();
+        if tool_id.trim().is_empty() {
+            return Err(ShimError::InvalidRequest("tool_id is empty".to_owned()));
+        }
+        if tool_name.trim().is_empty() {
+            return Err(ShimError::InvalidRequest("tool_name is empty".to_owned()));
+        }
+        Ok(Self {
+            tool_id,
+            tool_name,
+            agent_id: agent_id.into(),
+            session_id: session_id.into(),
+        })
+    }
 }
 
 /// The `aura.tool_complete` payload.
@@ -128,27 +212,69 @@ pub struct ToolStartPayload {
 /// marker events.
 ///
 /// Forbidden invalid state: both `result` and `error` present, or both
-/// absent; a `success: true` with an `error` field.
+/// absent; a `success: true` with an `error` field. The [`success`]
+/// and [`failure`] constructors enforce the mutual exclusion by shape.
+///
+/// [`success`]: Self::success
+/// [`failure`]: Self::failure
 #[derive(Debug, Clone, Serialize)]
 pub struct ToolCompletePayload {
-    /// The tool call id, matching the preceding `aura.tool_start`.
-    pub tool_id: String,
-    /// The tool name.
-    pub tool_name: String,
-    /// Wall-clock duration in milliseconds.
-    pub duration_ms: u64,
-    /// Whether the tool call succeeded.
-    pub success: bool,
-    /// The tool result content on success. Omitted on failure.
+    tool_id: String,
+    tool_name: String,
+    duration_ms: u64,
+    success: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub result: Option<String>,
-    /// The error message on failure. Omitted on success.
+    result: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub error: Option<String>,
-    /// The agent id.
-    pub agent_id: String,
-    /// The session id, for correlation.
-    pub session_id: String,
+    error: Option<String>,
+    agent_id: String,
+    session_id: String,
+}
+
+impl ToolCompletePayload {
+    /// Construct a successful tool-complete payload.
+    #[must_use]
+    pub fn success(
+        tool_id: impl Into<String>,
+        tool_name: impl Into<String>,
+        duration_ms: u64,
+        result: impl Into<String>,
+        agent_id: impl Into<String>,
+        session_id: impl Into<String>,
+    ) -> Self {
+        Self {
+            tool_id: tool_id.into(),
+            tool_name: tool_name.into(),
+            duration_ms,
+            success: true,
+            result: Some(result.into()),
+            error: None,
+            agent_id: agent_id.into(),
+            session_id: session_id.into(),
+        }
+    }
+
+    /// Construct a failed tool-complete payload.
+    #[must_use]
+    pub fn failure(
+        tool_id: impl Into<String>,
+        tool_name: impl Into<String>,
+        duration_ms: u64,
+        error: impl Into<String>,
+        agent_id: impl Into<String>,
+        session_id: impl Into<String>,
+    ) -> Self {
+        Self {
+            tool_id: tool_id.into(),
+            tool_name: tool_name.into(),
+            duration_ms,
+            success: false,
+            result: None,
+            error: Some(error.into()),
+            agent_id: agent_id.into(),
+            session_id: session_id.into(),
+        }
+    }
 }
 
 /// The `aura.orchestrator.task_started` payload.
@@ -159,21 +285,59 @@ pub struct ToolCompletePayload {
 /// the correlation fields.
 ///
 /// Forbidden invalid state: an empty `description`, `worker_id`, or
-/// `orchestrator_id`.
+/// `orchestrator_id`. The private fields and [`new`](Self::new)
+/// constructor enforce this.
 #[derive(Debug, Clone, Serialize)]
 pub struct TaskStartedPayload {
-    /// The plan task id (0-indexed in the plan).
-    pub task_id: usize,
-    /// The task description the worker is executing.
-    pub description: String,
-    /// The worker name assigned to this task.
-    pub worker_id: String,
-    /// The orchestrator id (e.g. `"coordinator"`).
-    pub orchestrator_id: String,
-    /// The agent id, matching the real server's `AgentContext.agent_id`.
-    pub agent_id: String,
-    /// The session id, for correlation.
-    pub session_id: String,
+    task_id: usize,
+    description: String,
+    worker_id: String,
+    orchestrator_id: String,
+    agent_id: String,
+    session_id: String,
+}
+
+impl TaskStartedPayload {
+    /// Construct a task-started payload, rejecting empty `description`,
+    /// `worker_id`, or `orchestrator_id`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ShimError::InvalidRequest`] when any of `description`,
+    /// `worker_id`, or `orchestrator_id` is empty.
+    pub fn new(
+        task_id: usize,
+        description: impl Into<String>,
+        worker_id: impl Into<String>,
+        orchestrator_id: impl Into<String>,
+        agent_id: impl Into<String>,
+        session_id: impl Into<String>,
+    ) -> Result<Self, ShimError> {
+        let description = description.into();
+        let worker_id = worker_id.into();
+        let orchestrator_id = orchestrator_id.into();
+        if description.trim().is_empty() {
+            return Err(ShimError::InvalidRequest(
+                "task description is empty".to_owned(),
+            ));
+        }
+        if worker_id.trim().is_empty() {
+            return Err(ShimError::InvalidRequest("worker_id is empty".to_owned()));
+        }
+        if orchestrator_id.trim().is_empty() {
+            return Err(ShimError::InvalidRequest(
+                "orchestrator_id is empty".to_owned(),
+            ));
+        }
+        Ok(Self {
+            task_id,
+            description,
+            worker_id,
+            orchestrator_id,
+            agent_id: agent_id.into(),
+            session_id: session_id.into(),
+        })
+    }
 }
 
 /// The `aura.orchestrator.task_completed` payload.
@@ -182,26 +346,70 @@ pub struct TaskStartedPayload {
 /// server's `OrchestrationStreamEvent::TaskCompleted` shape.
 ///
 /// Forbidden invalid state: a `success: false` with a `result` field; a
-/// `success: true` with no `result` (the worker submitted evidence).
+/// `success: true` with no `result` (the worker submitted evidence). The
+/// [`success`] and [`failure`] constructors enforce the mutual exclusion
+/// by shape.
+///
+/// [`success`]: Self::success
+/// [`failure`]: Self::failure
 #[derive(Debug, Clone, Serialize)]
 pub struct TaskCompletedPayload {
-    /// The plan task id, matching the preceding `task_started`.
-    pub task_id: usize,
-    /// Whether the task succeeded.
-    pub success: bool,
-    /// Wall-clock duration in milliseconds.
-    pub duration_ms: u64,
-    /// The orchestrator id.
-    pub orchestrator_id: String,
-    /// The worker name.
-    pub worker_id: String,
-    /// The task result on success. Omitted on failure.
+    task_id: usize,
+    success: bool,
+    duration_ms: u64,
+    orchestrator_id: String,
+    worker_id: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub result: Option<String>,
-    /// The agent id.
-    pub agent_id: String,
-    /// The session id, for correlation.
-    pub session_id: String,
+    result: Option<String>,
+    agent_id: String,
+    session_id: String,
+}
+
+impl TaskCompletedPayload {
+    /// Construct a successful task-completed payload with a result.
+    #[must_use]
+    pub fn success(
+        task_id: usize,
+        duration_ms: u64,
+        orchestrator_id: impl Into<String>,
+        worker_id: impl Into<String>,
+        result: impl Into<String>,
+        agent_id: impl Into<String>,
+        session_id: impl Into<String>,
+    ) -> Self {
+        Self {
+            task_id,
+            success: true,
+            duration_ms,
+            orchestrator_id: orchestrator_id.into(),
+            worker_id: worker_id.into(),
+            result: Some(result.into()),
+            agent_id: agent_id.into(),
+            session_id: session_id.into(),
+        }
+    }
+
+    /// Construct a failed task-completed payload with no result.
+    #[must_use]
+    pub fn failure(
+        task_id: usize,
+        duration_ms: u64,
+        orchestrator_id: impl Into<String>,
+        worker_id: impl Into<String>,
+        agent_id: impl Into<String>,
+        session_id: impl Into<String>,
+    ) -> Self {
+        Self {
+            task_id,
+            success: false,
+            duration_ms,
+            orchestrator_id: orchestrator_id.into(),
+            worker_id: worker_id.into(),
+            result: None,
+            agent_id: agent_id.into(),
+            session_id: session_id.into(),
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -213,6 +421,10 @@ pub struct TaskCompletedPayload {
 /// The adapter checks `finish_reason == "length"` to detect context-length
 /// exhaustion. The mapping from the pin's `LoopStopReason` to this enum is
 /// in the observer module.
+///
+/// `ToolCalls` is absent (A5): the shim emits the finish-reason chunk only
+/// at `LoopComplete`, when the loop has stopped. A tool-calling iteration
+/// that continues the loop never reaches the finish-reason chunk.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub enum FinishReason {
     /// The model ended its turn (`EndTurn`, `MaxToolDepthReached`).
@@ -224,107 +436,131 @@ pub enum FinishReason {
     /// The provider's content filter blocked output (`ContentFilter`).
     #[serde(rename = "content_filter")]
     ContentFilter,
-    /// The model called a tool and the loop continued (`ToolUse`).
-    #[serde(rename = "tool_calls")]
-    ToolCalls,
 }
 
 /// The incremental content delta in a chat-completion chunk.
 ///
 /// `content` is `Some` for text-delta chunks and `None` for the final
-/// finish-reason chunk (which carries an empty delta). `role` is set only
-/// on the first chunk to identify the assistant role.
+/// finish-reason chunk (which carries an empty delta). `role` is never
+/// emitted by the shim (A1): the shim's data-only stream carries content
+/// deltas and a terminal finish-reason chunk, matching the real aura
+/// server's wire format. The `role` field is retained for serde fidelity
+/// with the OpenAI chunk shape but is always `None`.
 #[derive(Debug, Clone, Default, Serialize)]
 pub struct ChunkDelta {
-    /// The text content delta. Omitted when `None` (finish-reason chunk).
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub content: Option<String>,
-    /// The role, set only on the first chunk. Omitted when `None`.
+    content: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub role: Option<String>,
+    role: Option<String>,
+}
+
+impl ChunkDelta {
+    /// A text-content delta (no role — role is never emitted, see A1).
+    fn text(content: impl Into<String>) -> Self {
+        Self {
+            content: Some(content.into()),
+            role: None,
+        }
+    }
 }
 
 /// One choice in a chat-completion chunk.
 ///
 /// Forbidden invalid state: a `finish_reason` on a chunk that also carries
 /// content (the final chunk has an empty delta and a finish reason; all
-/// preceding chunks have content and `finish_reason: null`).
+/// preceding chunks have content and `finish_reason: null`). The private
+/// fields and the [`ChatCompletionChunk`] constructors enforce this: the
+/// `text_delta` constructor builds a content chunk with `finish_reason:
+/// None`; the `finish` constructor builds an empty-delta chunk with a
+/// finish reason.
 #[derive(Debug, Clone, Serialize)]
 pub struct ChunkChoice {
-    /// The choice index (always 0 for the shim's single-choice stream).
-    pub index: u32,
-    /// The content delta.
-    pub delta: ChunkDelta,
-    /// Why the model stopped, or `None` while streaming continues.
-    /// Serialized as `null` when `None`, matching the OpenAI format.
-    pub finish_reason: Option<FinishReason>,
+    index: u32,
+    delta: ChunkDelta,
+    finish_reason: Option<FinishReason>,
 }
 
 /// A chat-completion chunk, serialized as a data-only SSE line (no `event:`
 /// field) so standard OpenAI clients process it.
 ///
-/// Forbidden invalid state: an empty `choices` list; an `id` or `model`
-/// that is empty.
+/// Forbidden invalid state: an empty `id` or `model`; an empty `choices`
+/// list. The private fields and the [`text_delta`](Self::text_delta) /
+/// [`finish`](Self::finish) constructors enforce the empty `id`/`model`
+/// check via `Result`; the `choices` list always has exactly one element by
+/// construction.
 #[derive(Debug, Clone, Serialize)]
 pub struct ChatCompletionChunk {
-    /// The chunk id, stable across all chunks in one stream (e.g.
-    /// `"chatcmpl-<uuid>"`).
-    pub id: String,
-    /// Always `"chat.completion.chunk"`.
-    pub object: &'static str,
-    /// Unix timestamp of the first chunk.
-    pub created: u64,
-    /// The model name.
-    pub model: String,
-    /// The choices (exactly one for the shim's single-choice stream).
-    pub choices: Vec<ChunkChoice>,
+    id: String,
+    object: &'static str,
+    created: u64,
+    model: String,
+    choices: Vec<ChunkChoice>,
 }
 
 impl ChatCompletionChunk {
     /// Build a text-delta chunk (content, no finish reason).
-    #[must_use]
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ShimError::InvalidRequest`] when `id` or `model` is empty.
     pub fn text_delta(
         id: impl Into<String>,
         created: u64,
         model: impl Into<String>,
         content: impl Into<String>,
-    ) -> Self {
-        Self {
-            id: id.into(),
+    ) -> Result<Self, ShimError> {
+        let id = id.into();
+        let model = model.into();
+        if id.trim().is_empty() {
+            return Err(ShimError::InvalidRequest("chunk id is empty".to_owned()));
+        }
+        if model.trim().is_empty() {
+            return Err(ShimError::InvalidRequest("chunk model is empty".to_owned()));
+        }
+        Ok(Self {
+            id,
             object: CHAT_OBJECT,
             created,
-            model: model.into(),
+            model,
             choices: vec![ChunkChoice {
                 index: 0,
-                delta: ChunkDelta {
-                    content: Some(content.into()),
-                    role: None,
-                },
+                delta: ChunkDelta::text(content),
                 finish_reason: None,
             }],
-        }
+        })
     }
 
     /// Build the terminal finish-reason chunk (empty delta, finish reason
     /// set).
-    #[must_use]
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ShimError::InvalidRequest`] when `id` or `model` is empty.
     pub fn finish(
         id: impl Into<String>,
         created: u64,
         model: impl Into<String>,
         reason: FinishReason,
-    ) -> Self {
-        Self {
-            id: id.into(),
+    ) -> Result<Self, ShimError> {
+        let id = id.into();
+        let model = model.into();
+        if id.trim().is_empty() {
+            return Err(ShimError::InvalidRequest("chunk id is empty".to_owned()));
+        }
+        if model.trim().is_empty() {
+            return Err(ShimError::InvalidRequest("chunk model is empty".to_owned()));
+        }
+        Ok(Self {
+            id,
             object: CHAT_OBJECT,
             created,
-            model: model.into(),
+            model,
             choices: vec![ChunkChoice {
                 index: 0,
                 delta: ChunkDelta::default(),
                 finish_reason: Some(reason),
             }],
-        }
+        })
     }
 }
 
@@ -338,6 +574,12 @@ impl ChatCompletionChunk {
 /// converts each to an SSE frame. The enum is `#[non_exhaustive]` so future
 /// event types (e.g. `aura.reasoning`) can be added without breaking
 /// downstream matches.
+///
+/// `Done` is the terminal event. Ordering — `SessionInfo` first, `Done`
+/// last, `Usage` before the finish chunk — is a runtime convention owned by
+/// [`ShimObserver`](super::observer::ShimObserver), not a type-level
+/// guarantee (A9: typestate rejected; single ordered producer, complexity
+/// outweighs the risk).
 #[derive(Debug, Clone)]
 #[non_exhaustive]
 pub enum AuraEvent {

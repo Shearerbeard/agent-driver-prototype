@@ -9,19 +9,30 @@
 //! data-only chat-completion chunks, and a terminal `data: [DONE]`. OTEL
 //! spans carry `session.id` so the trace-receipt canary works.
 //!
+//! ## Per-request construction (C1/C2/C5)
+//!
+//! `ShimState` holds only truly shareable config (base provider, model,
+//! worker config, sidecar, artifact root). `build_request` constructs a
+//! per-request `UsageMeteringProvider` (C1), `ShimDagObserver` (C2),
+//! `ArtifactStore` (C5), `DagExecutor`, and `CoordinatorLoop`, then spawns
+//! the loop and returns the event receiver + join handle (C4).
+//!
 //! Phase 1 (this code) lands the type skeleton with `todo!()` bodies. A
 //! later phase implements the bodies. See `DESIGN.md` for the type
 //! inventory, visibility/seam table, and residual risks.
 
 mod cli;
+mod dag_lifecycle;
 mod error;
 mod events;
 mod observer;
 mod otel;
 mod server;
 mod session;
+mod usage_metering;
 
 pub use cli::{ShimCliArgs, ShimPort};
+pub use dag_lifecycle::ShimDagObserver;
 pub use error::ShimError;
 pub use events::{
     AuraEvent, ChatCompletionChunk, ChunkChoice, ChunkDelta, FinishReason, SessionInfoPayload,
@@ -34,6 +45,8 @@ pub use observer::ShimObserver;
 pub use otel::{OtelConfig, OtelEndpoint, OtelGuard};
 pub use server::{
     ChatCompletionsRequest, ChatMessage, ChatRole, ShimRequest, ShimState,
+    EVENT_CHANNEL_CAPACITY,
 };
 pub use server::{chat_completions, health, router};
 pub use session::{ShimSessionId, UsageAccumulator, shared_accumulator};
+pub use usage_metering::UsageMeteringProvider;

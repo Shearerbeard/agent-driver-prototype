@@ -2,47 +2,63 @@
 //! coordinator loop to [`AuraEvent`]s on the SSE stream.
 //!
 //! The observer is attached to the `CoordinatorLoop` via `with_observer`.
-//! It sees coordinator-level events: text deltas, tool calls, iteration
-//! completions, and loop completion. Worker-loop events (inside the
-//! `DagExecutor`) are invisible to this observer — see DESIGN.md residual
-//! risk R2 for the worker-usage and task-event seam.
+//! It sees coordinator-level events: text deltas, tool calls, and loop
+//! completion. Worker-loop events (inside the `DagExecutor`) flow through
+//! the separate `ShimDagObserver` (C2) — see DESIGN.md for the seam
+//! layout.
+//!
+//! ## Usage accounting (C1)
+//!
+//! The observer does NOT accumulate usage from `IterationComplete`. Token
+//! totals are metered by the [`UsageMeteringProvider`](super::usage_metering)
+//! decorator, which intercepts every `complete_stream` call. The observer
+//! reads the same `Arc<Mutex<UsageAccumulator>>` at `LoopComplete` to emit
+//! the terminal `aura.usage` event. This avoids the undercount from the
+//! pin's `IterationComplete` only firing on continuation responses.
+//!
+//! ## ThinkingDelta (C3)
+//!
+//! `ThinkingDelta` is dropped — it maps to no emitted event. Mapping it to
+//! `choices[0].delta.content` would corrupt the assistant answer and could
+//! leak reasoning tokens to the adapter. See DESIGN.md §C3.
 
 use std::sync::Arc;
 
 use agent_driver_rs::agent::{AgentEvent, AgentObserver, LoopStopReason};
-use agent_driver_rs::streaming::TokenUsage;
 use async_trait::async_trait;
-use tokio::sync::mpsc::UnboundedSender;
+use tokio::sync::mpsc::Sender;
 use tokio::sync::Mutex;
 
 use super::events::{
     AuraEvent, ChatCompletionChunk, FinishReason, ToolCompletePayload, ToolStartPayload,
+    UsagePayload,
 };
 use super::session::{ShimSessionId, UsageAccumulator};
 
 /// The agent id the coordinator's observer uses for its own tool events.
 const COORDINATOR_AGENT_ID: &str = "main";
 
-/// The `AgentObserver` that translates coordinator-loop events into
+/// The `AgentObserver` that maps coordinator-loop events into
 /// `aura.*` SSE events.
 ///
 /// One observer per `/v1/chat/completions` request. The observer holds:
 /// - the session id (for correlation in every event payload),
-/// - the model name (for `session_info` and chat chunks),
+/// - the configured model name (for `session_info` and chat chunks — C9:
+///   always the configured model, never the request's arbitrary model
+///   string),
 /// - a chat-completion id (stable across all chunks in the stream),
-/// - a shared usage accumulator (fed from `IterationComplete`),
-/// - an unbounded channel sender (events flow to the SSE stream handler).
-///
-/// Forbidden invalid state: an observer without a session id or model; a
-/// closed channel that silently drops events (the `send` result is logged,
-/// not swallowed — see `on_event`).
+/// - a shared usage accumulator (read at `LoopComplete` for `aura.usage`;
+///   written by the `UsageMeteringProvider` decorator, not by the
+///   observer — C1),
+/// - a bounded channel sender (events flow to the SSE stream handler —
+///   C10).
 pub struct ShimObserver {
     session_id: ShimSessionId,
     model: String,
     chat_completion_id: String,
     created: u64,
     usage: Arc<Mutex<UsageAccumulator>>,
-    event_tx: UnboundedSender<AuraEvent>,
+    event_tx: Sender<AuraEvent>,
 }
 
 impl ShimObserver {
@@ -52,6 +68,9 @@ impl ShimObserver {
     /// `"chatcmpl-<uuid>"`), stable across all chunks in the stream. The
     /// `created` timestamp is the Unix epoch seconds of the request start.
     /// The `event_tx` sender feeds the SSE stream handler.
+    /// The `usage` sink is shared with the `UsageMeteringProvider`
+    /// decorator (C1): the decorator writes token totals; the observer
+    /// reads them at `LoopComplete`.
     #[must_use]
     pub fn new(
         session_id: ShimSessionId,
@@ -59,7 +78,7 @@ impl ShimObserver {
         chat_completion_id: impl Into<String>,
         created: u64,
         usage: Arc<Mutex<UsageAccumulator>>,
-        event_tx: UnboundedSender<AuraEvent>,
+        event_tx: Sender<AuraEvent>,
     ) -> Self {
         Self {
             session_id,
@@ -71,9 +90,10 @@ impl ShimObserver {
         }
     }
 
-    /// Send an event to the SSE stream, logging if the channel is closed.
-    fn emit(&self, event: AuraEvent) {
-        if self.event_tx.send(event).is_err() {
+    /// Send an event to the SSE stream, logging if the channel is closed
+    /// (C10: bounded channel; disconnect is logged, not swallowed).
+    async fn emit(&self, event: AuraEvent) {
+        if self.event_tx.send(event).await.is_err() {
             tracing::warn!(
                 session_id = %self.session_id,
                 "SSE event channel closed; event dropped"
@@ -102,12 +122,13 @@ impl ShimObserver {
         id: &agent_driver_rs::ToolCallId,
         name: &agent_driver_rs::ToolName,
     ) -> ToolStartPayload {
-        ToolStartPayload {
-            tool_id: id.as_str().to_owned(),
-            tool_name: name.as_str().to_owned(),
-            agent_id: COORDINATOR_AGENT_ID.to_owned(),
-            session_id: self.session_id.as_str(),
-        }
+        ToolStartPayload::new(
+            id.as_str(),
+            name.as_str(),
+            COORDINATOR_AGENT_ID,
+            self.session_id.as_str(),
+        )
+        .expect("tool call id and name are non-empty by ToolCallId/ToolName construction")
     }
 
     /// Build a `ToolCompletePayload` from an `AgentEvent::ToolCallComplete`.
@@ -119,31 +140,28 @@ impl ShimObserver {
         is_error: bool,
     ) -> ToolCompletePayload {
         if is_error {
-            ToolCompletePayload {
-                tool_id: id.as_str().to_owned(),
-                tool_name: name.as_str().to_owned(),
-                duration_ms: 0,
-                success: false,
-                result: None,
-                error: Some(result.to_owned()),
-                agent_id: COORDINATOR_AGENT_ID.to_owned(),
-                session_id: self.session_id.as_str(),
-            }
+            ToolCompletePayload::failure(
+                id.as_str(),
+                name.as_str(),
+                0,
+                result,
+                COORDINATOR_AGENT_ID,
+                self.session_id.as_str(),
+            )
         } else {
-            ToolCompletePayload {
-                tool_id: id.as_str().to_owned(),
-                tool_name: name.as_str().to_owned(),
-                duration_ms: 0,
-                success: true,
-                result: Some(result.to_owned()),
-                error: None,
-                agent_id: COORDINATOR_AGENT_ID.to_owned(),
-                session_id: self.session_id.as_str(),
-            }
+            ToolCompletePayload::success(
+                id.as_str(),
+                name.as_str(),
+                0,
+                result,
+                COORDINATOR_AGENT_ID,
+                self.session_id.as_str(),
+            )
         }
     }
 
-    /// A text-delta chat-completion chunk.
+    /// A text-delta chat-completion chunk. Always uses the configured model
+    /// (C9), never the request's arbitrary model string.
     fn text_chunk(&self, text: &str) -> ChatCompletionChunk {
         ChatCompletionChunk::text_delta(
             &self.chat_completion_id,
@@ -151,13 +169,18 @@ impl ShimObserver {
             &self.model,
             text,
         )
+        .expect("chat_completion_id and model are non-empty by ShimState construction")
     }
 
-    /// Accumulate usage from an iteration's `CompletionMetadata`, if present.
-    async fn accumulate_usage(&self, usage: Option<TokenUsage>) {
-        if let Some(usage) = usage {
-            self.usage.lock().await.add(usage);
-        }
+    /// The terminal finish-reason chunk.
+    fn finish_chunk(&self, reason: FinishReason) -> ChatCompletionChunk {
+        ChatCompletionChunk::finish(
+            &self.chat_completion_id,
+            self.created,
+            &self.model,
+            reason,
+        )
+        .expect("chat_completion_id and model are non-empty by ShimState construction")
     }
 }
 
@@ -166,16 +189,16 @@ impl AgentObserver for ShimObserver {
     async fn on_event(&self, event: &AgentEvent) {
         match event {
             AgentEvent::TextDelta { text } => {
-                self.emit(AuraEvent::ChatChunk(self.text_chunk(text)));
+                self.emit(AuraEvent::ChatChunk(self.text_chunk(text))).await;
             }
-            AgentEvent::ThinkingDelta { thinking } => {
-                // The adapter does not read thinking content; emit it as a
-                // data-only text chunk so it is visible in the raw stream
-                // without confusing the marker-event parser.
-                self.emit(AuraEvent::ChatChunk(self.text_chunk(thinking)));
+            AgentEvent::ThinkingDelta { .. } => {
+                // C3: ThinkingDelta is dropped. Mapping it to
+                // choices[0].delta.content would corrupt the assistant
+                // answer and could leak reasoning tokens to the adapter.
             }
             AgentEvent::ToolCallStart { id, name, .. } => {
-                self.emit(AuraEvent::ToolStart(self.tool_start_payload(id, name)));
+                self.emit(AuraEvent::ToolStart(self.tool_start_payload(id, name)))
+                    .await;
             }
             AgentEvent::ToolCallComplete {
                 id,
@@ -183,35 +206,35 @@ impl AgentObserver for ShimObserver {
                 result,
                 is_error,
             } => {
-                self.emit(AuraEvent::ToolComplete(self.tool_complete_payload(
-                    id, name, result, *is_error,
-                )));
+                self.emit(AuraEvent::ToolComplete(
+                    self.tool_complete_payload(id, name, result, *is_error),
+                ))
+                .await;
             }
-            AgentEvent::IterationComplete { response, .. } => {
-                self.accumulate_usage(response.metadata.usage).await;
+            AgentEvent::IterationComplete { .. } => {
+                // C1: Usage is metered by the UsageMeteringProvider
+                // decorator, not by the observer. IterationComplete is a
+                // no-op here; the decorator captures every provider call's
+                // usage regardless of which loop path the pin takes.
             }
             AgentEvent::LoopComplete { reason, .. } => {
-                // Emit the final aura.usage event from the accumulated totals.
+                // Emit the final aura.usage event from the accumulator that
+                // the UsageMeteringProvider decorator fed (C1).
                 let usage = self.usage.lock().await;
-                self.emit(AuraEvent::Usage(
-                    super::events::UsagePayload::from_totals(
-                        usage.prompt_tokens(),
-                        usage.completion_tokens(),
-                        self.session_id.as_str(),
-                    ),
-                ));
+                self.emit(AuraEvent::Usage(UsagePayload::from_totals(
+                    usage.prompt_tokens(),
+                    usage.completion_tokens(),
+                    self.session_id.as_str(),
+                )))
+                .await;
                 drop(usage);
 
                 // Emit the terminal finish-reason chunk.
-                self.emit(AuraEvent::ChatChunk(ChatCompletionChunk::finish(
-                    &self.chat_completion_id,
-                    self.created,
-                    &self.model,
-                    Self::finish_reason(reason),
-                )));
+                self.emit(AuraEvent::ChatChunk(self.finish_chunk(Self::finish_reason(reason))))
+                    .await;
 
                 // Emit the terminal [DONE] sentinel.
-                self.emit(AuraEvent::Done);
+                self.emit(AuraEvent::Done).await;
             }
             // IterationStart is an internal lifecycle marker; no SSE event.
             AgentEvent::IterationStart { .. } => {}
@@ -229,12 +252,21 @@ impl AgentObserver for ShimObserver {
 /// and then `[DONE]`, so the client sees a clean termination rather than a
 /// dropped stream.
 ///
-/// Returns the events to emit (finish chunk + done).
+/// Returns the events to emit (finish chunk + done). The parameters carry
+/// the observer state the function needs (C4/A4): the chat-completion id,
+/// timestamp, configured model, and session id.
 #[allow(dead_code, reason = "type skeleton; called by the stream handler in the implementation phase")]
 #[must_use]
-pub fn error_termination_events() -> Vec<AuraEvent> {
-    // The implementation phase will build these from the observer's state.
-    // For the skeleton, the signature is here so the stream handler can
-    // call it; the body is deferred.
-    todo!()
+pub fn error_termination_events(
+    chat_completion_id: &str,
+    created: u64,
+    model: &str,
+    session_id: &super::session::ShimSessionId,
+) -> Vec<AuraEvent> {
+    // The implementation phase builds a finish-reason chunk with Stop
+    // and then [DONE] from the parameters above. For the skeleton, the
+    // signature is here so the stream handler can call it; the body is
+    // deferred.
+    let _ = (chat_completion_id, created, model, session_id);
+    todo!("build finish chunk with Stop + [DONE]")
 }

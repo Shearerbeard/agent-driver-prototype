@@ -11,9 +11,11 @@
 //! Phase 1 declares the types; the execution body lands in Phase 2.
 
 mod executor;
+mod lifecycle;
 mod tools;
 mod worker;
 
 pub use executor::DagExecutor;
+pub use lifecycle::DagLifecycleObserver;
 pub use tools::{CapturePaneArgs, CapturePaneTool, KeystrokesArgs, KeystrokesTool, ReadArtifactArgs, ReadArtifactTool};
 pub use worker::{WorkerLoop, WorkerLoopConfig, WorkerOutcome};

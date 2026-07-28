@@ -150,6 +150,7 @@ async fn coordinator(
         test_sections(),
         runs.clone(),
         InlineThreshold::DEFAULT,
+        None,
     ));
     CoordinatorLoop::new(CoordinatorLoopConfig {
         provider: Arc::new(MockProvider::new(responses)),

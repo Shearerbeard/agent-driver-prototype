@@ -8,9 +8,10 @@
 //!   `aura.*` vocabulary, data-only chat-completion chunks, and a terminal
 //!   `data: [DONE]`.
 //!
-//! One `CoordinatorLoop` is built per request from the shared [`ShimState`].
-//! The observer feeds `aura.*` events through a channel; the SSE response
-//! reads from the channel receiver.
+//! One `CoordinatorLoop` is built and spawned per request from the shared
+//! [`ShimState`]. The observer feeds `aura.*` events through a bounded
+//! channel; the SSE response reads from the channel receiver. See
+//! DESIGN.md §C5 for the per-request construction shape.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -20,9 +21,10 @@ use axum::extract::{Json, State};
 use axum::response::sse::{Event, Sse};
 use axum::response::IntoResponse;
 use serde::Deserialize;
-use tokio::sync::mpsc::UnboundedReceiver;
+use tokio::sync::mpsc::Receiver;
+use tokio::task::JoinHandle;
 
-use crate::artifacts::{ArtifactStore, InlineThreshold};
+use crate::artifacts::InlineThreshold;
 use crate::coordinator_loop::{LoopBudget, WorkerSections};
 use crate::dag_executor::WorkerLoopConfig;
 use crate::mcp_client::SidecarClient;
@@ -30,6 +32,14 @@ use crate::mcp_client::SidecarClient;
 use super::error::ShimError;
 use super::events::AuraEvent;
 use super::session::ShimSessionId;
+
+/// The bounded event-channel capacity (C10).
+///
+/// Backpressure: if the SSE consumer stalls beyond this many queued events,
+/// the observer's `send` awaits (cooperative backpressure). When the
+/// consumer disconnects, the receiver is dropped and `send` returns an
+/// error, which the observer logs.
+pub const EVENT_CHANNEL_CAPACITY: usize = 256;
 
 // ---------------------------------------------------------------------------
 // Request types
@@ -72,12 +82,14 @@ pub struct ChatMessage {
 ///
 /// Forbidden invalid state: an empty `messages` list (no instruction to
 /// run); `stream: false` (the shim only supports streaming). Validation is
-/// in the handler.
+/// in the handler. The `model` field is the request's arbitrary model
+/// string; the shim always emits the *configured* model in events and
+/// chunks (C9), never this field.
 #[derive(Debug, Clone, Deserialize)]
 pub struct ChatCompletionsRequest {
-    /// The model name. The shim uses this for `aura.session_info` and
-    /// chat-completion chunks; the actual model the coordinator runs is
-    /// from the shim's config, not this field.
+    /// The model name from the request. The shim uses the *configured*
+    /// model (`ShimState::model`) for events and chunks, not this field
+    /// (C9).
     pub model: String,
     /// The conversation messages. The shim extracts the last `user` message
     /// as the coordinator's query.
@@ -93,24 +105,30 @@ pub struct ChatCompletionsRequest {
 /// Shared server state: everything needed to build one `CoordinatorLoop`
 /// per request.
 ///
-/// The provider, model, prompts, budget, sidecar, artifacts, worker config,
-/// and worker sections are shared across requests (they are cheaply
-/// cloneable handles or `Arc`). Per-request state (RunStore, session id,
-/// usage accumulator, event channel) is created fresh in
+/// Per the C5 coherent shape, `ShimState` holds only truly shareable
+/// config: the base provider (wrapped per-request by
+/// [`UsageMeteringProvider`](super::usage_metering)), the configured model,
+/// prompts, budgets, the sidecar handle, and the artifact *root* (not a
+/// per-run `ArtifactStore`). Per-request state — a fresh `RunStore`, session
+/// id, usage accumulator, event channel, `ArtifactStore` at a per-request
+/// run dir, `DagExecutor`, and `CoordinatorLoop` — is constructed fresh in
 /// [`build_request`](Self::build_request).
 ///
-/// Forbidden invalid state: a state without a provider, model, or sidecar;
-/// a state where the coordinator and worker budgets or prompts are
+/// Forbidden invalid state: a state without a base provider, model, or
+/// sidecar; a state where the coordinator and worker budgets or prompts are
 /// inconsistent with the config they were built from. The constructor takes
 /// all parts, so a missing piece cannot be discovered mid-request.
 #[allow(dead_code, reason = "type skeleton; fields are read by build_request in the implementation phase")]
 pub struct ShimState {
-    provider: Arc<dyn Provider>,
+    base_provider: Arc<dyn Provider>,
     model: ModelId,
     coordinator_prompt: SystemPrompt,
     budget: LoopBudget,
     sidecar: SidecarClient,
-    artifacts: ArtifactStore,
+    /// The root directory for per-request artifact stores. Each request
+    /// builds its own `ArtifactStore` at `artifact_root.join(session_id)`
+    /// so concurrent requests cannot overwrite each other's artifacts (C5).
+    artifact_root: PathBuf,
     worker_config: WorkerLoopConfig,
     worker_sections: WorkerSections,
     inline_threshold: InlineThreshold,
@@ -120,29 +138,34 @@ pub struct ShimState {
 
 impl ShimState {
     /// Construct the shared server state from its typed parts.
+    ///
+    /// The `base_provider` is the real provider, shared across requests.
+    /// Each request wraps it in a `UsageMeteringProvider` for per-request
+    /// usage metering (C1). The `artifact_root` is the root directory for
+    /// per-request artifact stores (C5).
     #[allow(
         clippy::too_many_arguments,
         reason = "constructor takes every typed part the shim needs; a builder would add a type for no behavioral gain"
     )]
     pub fn from_parts(
-        provider: Arc<dyn Provider>,
+        base_provider: Arc<dyn Provider>,
         model: ModelId,
         coordinator_prompt: SystemPrompt,
         budget: LoopBudget,
         sidecar: SidecarClient,
-        artifacts: ArtifactStore,
+        artifact_root: PathBuf,
         worker_config: WorkerLoopConfig,
         worker_sections: WorkerSections,
         inline_threshold: InlineThreshold,
         config_path: PathBuf,
     ) -> Self {
         Self {
-            provider,
+            base_provider,
             model,
             coordinator_prompt,
             budget,
             sidecar,
-            artifacts,
+            artifact_root,
             worker_config,
             worker_sections,
             inline_threshold,
@@ -160,14 +183,18 @@ impl ShimState {
         &self.config_path
     }
 
-    /// Build per-request state: a fresh session id, event channel,
-    /// `RunStore`, `DagExecutor`, and `CoordinatorLoop` with the shim
-    /// observer attached.
+    /// Build per-request state: a fresh session id, bounded event channel
+    /// (C10), `RunStore`, per-request `UsageAccumulator` + metered provider
+    /// (C1), per-request `ArtifactStore` at a per-request run dir (C5),
+    /// per-request `DagExecutor` with a `ShimDagObserver` (C2),
+    /// `CoordinatorLoop` with the `ShimObserver` attached, and a spawned
+    /// task running the loop (C4).
     ///
     /// The `query` is the last user message from the chat-completions
     /// request, converted to a `PinnedGoal` by the handler. The method
-    /// returns the event receiver (for the SSE stream) and the coordinator
-    /// loop (to run to completion).
+    /// returns the event receiver (for the SSE stream), the session id
+    /// (for the OTEL span attribute), and a `JoinHandle` for the spawned
+    /// loop task (so the handler can await or abort it).
     ///
     /// # Errors
     ///
@@ -182,24 +209,32 @@ impl ShimState {
         _query: &str,
     ) -> Result<ShimRequest, ShimError> {
         todo!(
-            "create RunStore, ShimSessionId, UsageAccumulator, event channel, \
-             DagExecutor, CoordinatorLoopConfig, CoordinatorLoop, ShimObserver"
+            "create RunStore, ShimSessionId, UsageAccumulator + metered provider, \
+             bounded event channel, per-request ArtifactStore, DagExecutor with \
+             ShimDagObserver, CoordinatorLoopConfig, CoordinatorLoop, ShimObserver; \
+             spawn loop task; return ShimRequest"
         )
     }
 }
 
-/// Per-request state: the event receiver and session id.
+/// Per-request state: the event receiver, session id, and loop join handle
+/// (C4).
 ///
-/// The coordinator loop is consumed by `run()`, so it is not held here.
-/// The handler spawns a task that runs the loop; the event receiver feeds
-/// the SSE stream.
+/// `build_request` spawns the `CoordinatorLoop` run in a tokio task and
+/// returns this struct. The SSE stream handler reads `event_rx` until the
+/// observer's sender is dropped (on loop completion or error). The
+/// `join_handle` lets the handler await or abort the loop.
 pub struct ShimRequest {
-    /// The session id for this request.
+    /// The session id for this request (for OTEL span attributes).
     pub session_id: ShimSessionId,
-    /// The receiver end of the event channel. The SSE stream reads
-    /// `AuraEvent`s from this until the sender is dropped (on loop
+    /// The receiver end of the bounded event channel (C10). The SSE stream
+    /// reads `AuraEvent`s from this until the sender is dropped (on loop
     /// completion).
-    pub event_rx: UnboundedReceiver<AuraEvent>,
+    pub event_rx: Receiver<AuraEvent>,
+    /// The join handle for the spawned coordinator-loop task (C4). The
+    /// handler can await this to detect loop completion or abort it on
+    /// client disconnect.
+    pub join_handle: JoinHandle<()>,
 }
 
 // ---------------------------------------------------------------------------
@@ -219,8 +254,9 @@ pub async fn health() -> impl IntoResponse {
 /// 2. Extracts the last user message as the query.
 /// 3. Calls `ShimState::build_request` to create the coordinator loop and
 ///    event channel.
-/// 4. Spawns a task that runs the loop to completion.
-/// 5. Returns an `Sse` response reading from the event channel receiver.
+/// 4. Returns an `Sse` response reading from the event channel receiver.
+///    The spawned loop task (owned by `ShimRequest::join_handle`) runs
+///    concurrently.
 ///
 /// # Panics
 ///
