@@ -340,8 +340,8 @@ async fn serve_with_shutdown(
             tracing::warn!(
                 drain_window_ms = u64::try_from(drain.as_millis()).unwrap_or(u64::MAX),
                 "shutdown drain window elapsed with connections still open; \
-                 giving up on them so queued spans still flush. Their tasks stay \
-                 detached until the runtime tears down at process exit"
+                 giving up on them so queued spans still flush. Their tasks may \
+                 remain detached until process exit"
             );
         }
     }
@@ -377,11 +377,15 @@ async fn drain_deadline(signal: impl Future<Output = ()>, window: Duration) {
 
 /// The registered shutdown signal handlers.
 ///
-/// Handlers are installed before the server starts rather than lazily inside
-/// the shutdown future, so a handler that cannot be registered is a startup
-/// error. Installing lazily let an install failure complete the shutdown
-/// future immediately, which with a drain bound in place would tear the server
-/// down one drain window after startup instead of degrading quietly.
+/// On unix, handlers are installed before the server starts rather than lazily
+/// inside the shutdown future, so a handler that cannot be registered is a
+/// startup error. Installing lazily let an install failure complete the
+/// shutdown future immediately, which with a drain bound in place would tear
+/// the server down one drain window after startup instead of degrading quietly.
+///
+/// The eager fail-loud guarantee is unix-only, which is where this program
+/// runs the shim. The non-unix arm below cannot offer it and says what it does
+/// instead.
 #[cfg(unix)]
 struct ShutdownSignals {
     terminate: tokio::signal::unix::Signal,
@@ -426,6 +430,11 @@ struct ShutdownSignals;
 impl ShutdownSignals {
     /// Ctrl-C is registered on first await off unix, so there is nothing to
     /// install up front and nothing that can fail here.
+    ///
+    /// This arm therefore has no eager fail-loud guarantee: it always
+    /// succeeds, and a registration that fails later in `recv` leaves the shim
+    /// serving on its port with no way to shut down on a signal. Correcting
+    /// that needs an eager probe this program has no host to test it on.
     fn install() -> Result<Self, ShimError> {
         Ok(Self)
     }
@@ -433,7 +442,8 @@ impl ShutdownSignals {
     /// Complete when Ctrl-C arrives.
     ///
     /// A handler that fails to register leaves this pending rather than
-    /// completing, so a failed install cannot pass for a shutdown request.
+    /// completing, so a failed install cannot pass for a shutdown request. The
+    /// shim keeps serving and shuts down only when the process is killed.
     async fn recv(self) {
         if let Err(error) = tokio::signal::ctrl_c().await {
             tracing::error!(%error, "ctrl_c handler install failed; the shim will not shut down on Ctrl-C");
@@ -792,9 +802,14 @@ mod tests {
             .local_addr()
             .expect("the blackhole collector has an address")
             .port();
+        // Counted so the assertions can tell a flush that stalled on the
+        // blackhole from one that never dialled it at all.
+        let dialled = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let accepted = Arc::clone(&dialled);
         tokio::spawn(async move {
             let mut held = Vec::new();
             while let Ok((connection, _)) = blackhole.accept().await {
+                accepted.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 held.push(connection);
             }
         });
@@ -875,10 +890,21 @@ mod tests {
             shutdown < Duration::from_secs(5),
             "drain plus flush took {shutdown:?}, past the adapter's five-second SIGKILL"
         );
+        // Both bounds have to be spent, or the run proves less than it looks:
+        // stopping at the drain would mean the flush returned without trying,
+        // and stopping before it would mean the connection was never held.
+        // The epsilon absorbs timer granularity, nothing more.
+        let both_windows = DRAIN_WINDOW + OtelGuard::FLUSH_WINDOW - Duration::from_millis(100);
         assert!(
-            shutdown >= DRAIN_WINDOW,
-            "shutdown finished in {shutdown:?}, short of the drain window, so the \
-             connection was not actually held open and this proved nothing"
+            shutdown >= both_windows,
+            "shutdown finished in {shutdown:?}, short of the drain ({DRAIN_WINDOW:?}) plus \
+             flush ({:?}) this is meant to spend, so one of the two bounds went unexercised",
+            OtelGuard::FLUSH_WINDOW
+        );
+        assert!(
+            dialled.load(std::sync::atomic::Ordering::Relaxed) > 0,
+            "the exporter never opened a connection to the blackhole, so the flush \
+             stalled on something other than an unanswering collector"
         );
     }
 

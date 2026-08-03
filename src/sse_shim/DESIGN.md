@@ -205,6 +205,14 @@ shutdown future, would let an install failure complete that future
 immediately, and with a drain bound in place that tears the server down one
 drain window after startup.
 
+That eager fail-loud guarantee is unix-only, which is where this program runs
+the shim. Off unix there is nothing to install up front: `install()` always
+succeeds, and a Ctrl-C registration that fails later leaves the shim serving
+on its port with no signal path, shutting down only when the process is
+killed. The arm stays pending on that failure rather than completing, so a
+failed registration cannot pass for a shutdown request and trip the drain
+bound. Closing the gap needs an eager probe and a host to test it on.
+
 Graceful shutdown alone waits on every open connection with no deadline, and
 that wait is what the S75 run lost its spans to. The adapter sends SIGTERM and
 SIGKILLs five seconds later, so any connection that does not close on its own
@@ -218,8 +226,9 @@ So `serve` races the server against `drain_deadline`, which completes one
 elapses the server future is dropped and the shim proceeds to the flush
 without waiting for connections that are still open. Dropping that future
 stops the accept loop and stops the wait; it does not close those connections,
-whose tasks axum has already spawned and which stay detached until the runtime
-tears down at process exit. That trade is deliberate: the cost is the tail of a
+whose tasks axum has already spawned. Those tasks may finish on their own, and
+any that do not may remain detached until the process exits. That trade is
+deliberate: the cost is the tail of a
 response the client had already stopped reading, and the alternative is losing
 the trace for the whole run. The deadline stays pending until the signal lands,
 so it cannot fire while the shim is serving normally.
