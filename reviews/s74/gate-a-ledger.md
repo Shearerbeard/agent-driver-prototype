@@ -79,7 +79,18 @@ Architecture leg (K3), numbered as returned:
 
 ## Round 2
 
-Fix round dispatched to the Opus executor over the accepted set.
-Range extends over the fix commit; a fresh K2.7 re-review covers the
-extended range per the fix-commit re-review duty. Result recorded
-below when it lands.
+The Opus executor implemented the accepted set in spike `1a7c7a0`
+(the batch also carries the executor-discovered coordinator-budget
+cast, accepted by the board owner as the same class as finding 6,
+and the vale prose repairs on the three DESIGN files). The board
+owner re-verified directly: 281 tests green, goldens byte-identical,
+the 4 pre-existing clippy warnings only, fmt and vale clean. Fresh
+K2.7 re-review over the full extended range `d9ec3ed..1a7c7a0`
+(staged post-fix snapshots after a first attempt died on an
+auto-rejected out-of-directory read - a failed delegation, not a
+verdict): the reviewer walked the ledger and confirmed each accepted
+repair in the post-fix sources. It also reviewed the round-2 code as
+new code and probed the rejected dispositions without demonstrating
+any defect. VERDICT: PASS, zero findings. Gate A closed 2026-08-03;
+reviewer `baseten/moonshotai/Kimi-K2.7-Code`, authors Claude Opus
+and Claude Fable - the invariant holds.

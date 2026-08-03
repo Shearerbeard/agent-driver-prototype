@@ -32,6 +32,7 @@ Board owner: Fable (Claude Code). Repair executor: Opus subagent.
 | 1 (`smoke-run1-failed.sse`) | `d9ec3ed` | Full vocabulary, real usage, `[DONE]`; worker task `success:false` at 11.2s, no keystrokes landed. |
 | 2 (not frozen) | stale `d9ec3ed` | Invalid: a missed kill left the old shim on the port; the new binary died on bind. Procedure now verifies the `lsof` listener pid first. |
 | 3 (`smoke-run3-clean.sse`) | `6a33841` | Two-worker DAG (operator writes, verifier reads back), both tasks `success:true`; file contains exactly `S74_SMOKE_OK`; usage 27285 prompt / 1471 completion; `[DONE]`; empty stderr; no parse errors. |
+| 4 (`smoke-run4-gatem-clean.sse`) | `1a7c7a0` | Gate M exercise on the final tree (after the Gate A round-2 fixes). Both tasks `success:true` across 12 vocabulary events; the file content is exact; `[DONE]` terminates the stream and stderr stays empty. |
 
 ## Defects fixed between run 1 and run 3 (spike `6a33841`)
 
