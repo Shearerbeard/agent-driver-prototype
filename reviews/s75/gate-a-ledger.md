@@ -72,3 +72,43 @@ into `ShimCanaryError` in the canary path; no CLI option to persist
 artifacts on success; `_patch_mcp_url` supports double-quoted TOML
 strings only (the template uses double quotes). VERDICT: PASS.
 Gate A closed 2026-08-03.
+
+## Drain-fix review series (rep-1 stop-loss repair; codex, user routing)
+
+Rep 1 tripped the Phoenix stop-loss and the user directed that Opus
+author the fix with the codex CLI reviewing. Claude Opus wrote spike
+`7122187`, `432d028`, `d0bb27b`, and the final wording commit, and
+codex is a GPT-family model, which satisfies the
+reviewer-differs-from-author invariant. A transport deviation is on
+record here. Two codex dispatches stalled silently, one for 17
+minutes and one for 10, each at ~0.1s CPU with an empty output file.
+The cause was prompts naming files in a staging directory outside a
+trusted git repo. An echo pre-vet had passed minutes before and
+after each stall, so reachability was never the failing dimension. The working shape -
+cwd at the repo under review, repo-native paths, foreground under a
+caller-owned deadline - delivered every subsequent round in minutes.
+Filed upstream as boardkit feedback
+(claude-skills `feedback/2026-08-03-claude-code-adversarial-review-transport-contracts/`).
+
+- Round 1 FAIL, 2 BLOCKING + 2 MINOR, all accepted: the guard's bare
+  `shutdown()` hid an internal 5s bound starting after the 2s drain
+  (fixed with `shutdown_with_timeout` at a 2s `FLUSH_WINDOW`; budget
+  provably 4s inside the adapter's 5s SIGKILL); the drain tests
+  bypassed the production topology (fixed with an integration-style
+  test over real axum, a non-draining client, and a blackhole OTLP
+  endpoint, verified failing pre-fix); a silent signal-install
+  failure armed an immediate 2s shutdown (handlers now install
+  eagerly before the port binds, failure refuses startup); warn text
+  overclaimed connection abandonment.
+- Round 2 FAIL, 0 BLOCKING + 3 MINOR, all accepted: the test's lower
+  bound could pass on an instant flush (raised to drain plus flush
+  minus epsilon, plus a dialled-connection assertion, verified biting
+  against a refused port); the fail-loud claim was unix-only
+  (doc-scoped; this program runs the shim on unix hosts only); one
+  more wording precision.
+- Round 3 FAIL, 1 MINOR: the non-unix degradation note overstated
+  what fails. Repair applied using the reviewer's own prescribed
+  wording at both named sites plus one adjacent log message carrying
+  the identical claim. Round 4 skipped by board-owner disposition:
+  re-reviewing two sentences the reviewer itself dictated buys no
+  assurance; skip recorded here per the deviation rule.
