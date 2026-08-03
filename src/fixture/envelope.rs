@@ -16,7 +16,7 @@ use crate::config_builders::{build_coordinator_preamble, build_worker_preamble};
 use crate::message::{Message, ToolDefinition};
 use crate::persistence::ToolTraceEntry;
 use crate::producers::{
-    build_continuation_wrapper, build_planning_wrapper, build_task_context,
+    ToolInventory, build_continuation_wrapper, build_planning_wrapper, build_task_context,
     build_worker_prompt_sections, compact_decision_turn,
 };
 use crate::templates::{
@@ -161,6 +161,10 @@ pub(crate) fn coordinator_envelope(
         scenario.roster().config(),
         ToolListLimit::new(scenario.roster().config().max_tools_per_worker),
         scenario.roster().vector_catalog(),
+        // The corpus is MCP-less: aura's `get_all_tool_names` answered with
+        // an empty vector for every scenario these envelopes were captured
+        // from.
+        &ToolInventory::empty(),
     );
 
     let planning_wrapper = build_planning_wrapper(

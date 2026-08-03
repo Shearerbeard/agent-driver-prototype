@@ -62,7 +62,7 @@ forbids.
 | `WorkerLoopConfig` | Everything a worker inner loop needs is supplied before its first provider call; `Clone` so the executor can override the system prompt per task | A worker loop that discovers a missing provider, model, or budget mid-run |
 | `WorkerLoop` | One loop drives one task, over a submission slot that belongs to it alone, with the sidecar and artifact handles it needs to build its four-tool set | A second write to the same submission slot; detected at runtime via `AlreadyRecorded`, and the `DagExecutor` mints one fresh slot per task so production cannot share |
 | `WorkerOutcome` | A worker run's outcome is the join of the stop reason with the submission slot | A non-submission outcome collapsed into `None`, hiding the failure class the executor needs |
-| `WorkerSpec` | One worker's renderable specification: role, description, resolved tools, and preamble | A worker spec without a valid role; the constructor delegates to `WorkerRole` |
+| `WorkerSpec` | One worker's renderable specification: role, description, resolved tools, preamble, and its own turn-depth budget when configured | A worker spec without a valid role; the constructor delegates to `WorkerRole`. A configured turn depth of zero is rejected at the parse, so a spec's budget is a depth the worker can spend |
 | `WorkerTool` | A tool a worker can access, with its description when the Full visibility mode provides it | Nothing beyond the wrapper; the tool name is a raw string |
 | `KeystrokesArgs` | The `keystrokes` tool takes a non-optional, non-empty keystrokes string | A keystrokes call with no `keystrokes` field or an empty string; the schema marks it required with `minLength: 1` |
 | `KeystrokesTool` | The keystrokes tool forwards through the sidecar client | A keystrokes call that bypasses the sidecar and reaches the terminal directly |
@@ -156,6 +156,23 @@ produces. Phase 2 may widen the error if the panel asks.
 `resolve_preamble` looks up the assigned worker's preamble from the typed
 roster and falls back to `WorkerLoopConfig::system_prompt` when the worker
 is unassigned or the preamble is empty.
+
+A configured preamble is the `%%WORKER_SYSTEM_PROMPT%%` substitution into
+the shared worker template, not a replacement for it. The template carries
+the mandatory `submit_result` contract, and `WorkerOutcome::Submitted` is
+the only channel a worker has to report a result, so a worker that never
+sees the template cannot succeed. The S70 golden corpus pins this
+composition (`worker_role_frame_*` snapshots, where the role preamble
+appears under the `# Worker Agent` header).
+
+**R9 - Resolved: the turn-depth budget resolves per worker.**
+`WorkerSpec` carries `budget: Option<LoopBudget>`, captured from
+`WorkerConfig.turn_depth`. `DagExecutor::resolve_budget` mirrors
+`resolve_preamble`: the assigned worker's own depth wins, and an
+unassigned task, a worker the roster does not carry, or a worker that
+configured no depth falls back to `WorkerLoopConfig::budget`. A single
+roster-wide budget would give a verifier the debugger's depth and cap a
+24-turn operator at the coordinator's own depth.
 
 **R5 - Resolved: `WorkerLoop::run_task` takes `&Task`.**
 The signature changed from `&Plan` to `&Task`. The executor passes the

@@ -11,8 +11,9 @@
 use crate::bounding::ToolListLimit;
 use crate::config::{OrchestrationConfig, ToolVisibility, VectorStoreConfig};
 use crate::context::WorkerRole;
-use crate::producers::{get_all_tool_descriptions, resolve_worker_tools};
+use crate::producers::{ToolInventory, get_all_tool_descriptions, resolve_worker_tools};
 
+use super::budget::LoopBudget;
 use super::error::CoordinatorLoopError;
 
 /// A tool a worker can access, with its description when the Full visibility
@@ -44,13 +45,16 @@ impl WorkerTool {
 /// can render the roster section from the typed roster alone.
 ///
 /// Forbidden invalid state: a worker spec without a valid role; the
-/// constructor delegates to [`WorkerRole`].
+/// constructor delegates to [`WorkerRole`]. A configured turn depth of zero
+/// is rejected at construction too, so a spec's budget is a depth the worker
+/// can actually spend.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WorkerSpec {
     role: WorkerRole,
     description: String,
     tools: Vec<WorkerTool>,
     preamble: String,
+    budget: Option<LoopBudget>,
 }
 
 impl WorkerSpec {
@@ -74,6 +78,17 @@ impl WorkerSpec {
     /// (R4).
     pub fn preamble(&self) -> &str {
         &self.preamble
+    }
+
+    /// The worker's own turn-depth budget, when its configuration set one.
+    ///
+    /// Carried from `WorkerConfig::turn_depth` for the same reason as
+    /// [`preamble`](Self::preamble): the executor resolves a worker's depth
+    /// per task from the typed roster. `None` means the configuration named
+    /// no depth for this worker, and the executor falls back to the
+    /// run-wide default.
+    pub fn budget(&self) -> Option<LoopBudget> {
+        self.budget
     }
 }
 
@@ -118,45 +133,61 @@ impl WorkerRoster {
     /// This is the parse step that captures everything the roster section
     /// renders: per-worker role, description, and resolved tool list (with
     /// descriptions for the Full visibility path), plus the visibility mode
-    /// and tool-list limit.
+    /// and tool-list limit. It also captures each worker's own turn depth,
+    /// which the executor resolves per task.
+    ///
+    /// Each worker's `mcp_filter` selects from `inventory`, so what the
+    /// roster advertises is what the runtime can actually execute. Pass
+    /// [`ToolInventory::empty`] for a runtime with no MCP backend.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CoordinatorLoopError::ZeroTurnBudget`] when a worker's
+    /// configured `turn_depth` is zero, which would build a worker that can
+    /// take no turn at all.
     pub fn from_config(
         config: &OrchestrationConfig,
         tool_list_limit: ToolListLimit,
         vector_stores: &[VectorStoreConfig],
-    ) -> Self {
-        let worker_tools = resolve_worker_tools(config);
+        inventory: &ToolInventory,
+    ) -> Result<Self, CoordinatorLoopError> {
+        let worker_tools = resolve_worker_tools(config, inventory);
         let tool_descriptions = get_all_tool_descriptions(vector_stores);
 
         let workers: Vec<WorkerSpec> = config
             .workers
             .iter()
-            .filter_map(|(name, wc)| {
-                WorkerRole::new(name).ok().map(|role| {
-                    let tools: Vec<WorkerTool> = worker_tools
-                        .get(name)
-                        .cloned()
-                        .unwrap_or_default()
-                        .into_iter()
-                        .map(|tool_name| WorkerTool {
-                            description: tool_descriptions.get(&tool_name).cloned(),
-                            name: tool_name,
-                        })
-                        .collect();
-                    WorkerSpec {
-                        role,
-                        description: wc.description.clone(),
-                        tools,
-                        preamble: wc.preamble.clone(),
-                    }
+            .filter_map(|(name, wc)| WorkerRole::new(name).ok().map(|role| (name, role, wc)))
+            .map(|(name, role, wc)| {
+                let tools: Vec<WorkerTool> = worker_tools
+                    .get(name)
+                    .cloned()
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|tool_name| WorkerTool {
+                        description: tool_descriptions.get(&tool_name).cloned(),
+                        name: tool_name,
+                    })
+                    .collect();
+                let budget = wc
+                    .turn_depth
+                    .map(|depth| LoopBudget::new(u32::try_from(depth).unwrap_or(u32::MAX)))
+                    .transpose()?;
+                Ok(WorkerSpec {
+                    role,
+                    description: wc.description.clone(),
+                    tools,
+                    preamble: wc.preamble.clone(),
+                    budget,
                 })
             })
-            .collect();
+            .collect::<Result<_, CoordinatorLoopError>>()?;
 
-        Self {
+        Ok(Self {
             workers,
             tool_visibility: config.tools_in_planning,
             tool_list_limit,
-        }
+        })
     }
 
     /// A run with no workers configured.

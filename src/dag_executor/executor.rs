@@ -14,8 +14,8 @@ use crate::context::{
     ArtifactRef, CorrelationLabel, ErrorPreview, EvidenceEntry, TaskId, WorkerRole,
 };
 use crate::coordinator_loop::{
-    Attempt, ExecutionObservation, PlanExecutor, RunStore, TaskObservation, TaskRecord,
-    TerminalSlot, WorkerSections, WorkerSubmission,
+    Attempt, ExecutionObservation, LoopBudget, PlanExecutor, RunStore, TaskObservation, TaskRecord,
+    TerminalSlot, WorkerSections, WorkerSpec, WorkerSubmission,
 };
 use crate::mcp_client::SidecarClient;
 use crate::types::{FailureCategory, Plan, Task, TaskState};
@@ -90,26 +90,53 @@ impl DagExecutor {
         }
     }
 
+    /// The roster spec for a task's assigned worker, when the task names one
+    /// the roster carries.
+    fn spec_for(&self, task: &Task) -> Option<&WorkerSpec> {
+        let worker_name = task.worker.as_deref()?;
+        self.worker_sections
+            .roster()
+            .workers()
+            .iter()
+            .find(|spec| spec.role().as_str() == worker_name)
+    }
+
     /// Resolve the system prompt for a task's assigned worker (R4).
     ///
-    /// If the task has a worker assigned and the roster carries a non-empty
-    /// preamble for that worker, use it. Otherwise fall back to the default
-    /// system prompt from [`WorkerLoopConfig`].
+    /// A worker's configured preamble is the `%%WORKER_SYSTEM_PROMPT%%`
+    /// substitution into the shared worker template, not a replacement for
+    /// it: the template is where the mandatory `submit_result` contract, the
+    /// single-task scope, and the `read_artifact` guidance live, and a worker
+    /// that never sees them cannot report a result through the only channel
+    /// [`WorkerOutcome::Submitted`](super::worker::WorkerOutcome::Submitted)
+    /// has. The S70 golden corpus pins this composition
+    /// (`worker_role_frame_*` snapshots).
+    ///
+    /// Falls back to the default system prompt from [`WorkerLoopConfig`]
+    /// when the task names no worker the roster carries, or when that
+    /// worker's configured preamble is empty.
     fn resolve_preamble(&self, task: &Task) -> SystemPrompt {
-        if let Some(worker_name) = &task.worker
-            && let Some(spec) = self
-                .worker_sections
-                .roster()
-                .workers()
-                .iter()
-                .find(|spec| spec.role().as_str() == worker_name)
-        {
-            let preamble = spec.preamble();
-            if !preamble.is_empty() {
-                return SystemPrompt::new(preamble);
-            }
+        match self.spec_for(task).map(WorkerSpec::preamble) {
+            Some(preamble) if !preamble.is_empty() => SystemPrompt::new(
+                crate::templates::render_worker_preamble(&crate::templates::WorkerPreambleVars {
+                    worker_system_prompt: preamble,
+                }),
+            ),
+            _ => self.worker_config.system_prompt.clone(),
         }
-        self.worker_config.system_prompt.clone()
+    }
+
+    /// Resolve the turn-depth budget for a task's assigned worker.
+    ///
+    /// Same per-task resolution as [`resolve_preamble`](Self::resolve_preamble):
+    /// a worker that configured its own `turn_depth` spends that, and
+    /// everything else falls back to the run-wide budget from
+    /// [`WorkerLoopConfig`]. A roster-wide budget would give a verifier the
+    /// debugger's depth and vice versa.
+    fn resolve_budget(&self, task: &Task) -> LoopBudget {
+        self.spec_for(task)
+            .and_then(WorkerSpec::budget)
+            .unwrap_or(self.worker_config.budget)
     }
 
     fn correlation_label(task: &Task) -> CorrelationLabel {
@@ -187,7 +214,7 @@ impl PlanExecutor for DagExecutor {
                 let config = WorkerLoopConfig {
                     provider: Arc::clone(&self.worker_config.provider),
                     model: self.worker_config.model.clone(),
-                    budget: self.worker_config.budget,
+                    budget: self.resolve_budget(&work_plan.tasks[index]),
                     system_prompt: self.resolve_preamble(&work_plan.tasks[index]),
                 };
 
@@ -457,5 +484,155 @@ fn fail_descendants_of(plan: &mut Plan, failed_task_id: usize) {
 impl From<DagExecutor> for Arc<dyn PlanExecutor> {
     fn from(executor: DagExecutor) -> Self {
         Arc::new(executor)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+
+    use agent_driver_rs::ModelId;
+    use agent_driver_rs::provider::mock::MockProvider;
+
+    use crate::artifacts::ArtifactStore;
+    use crate::bounding::ToolListLimit;
+    use crate::config::{OrchestrationConfig, WorkerConfig};
+    use crate::coordinator_loop::WorkerRoster;
+    use crate::producers::ToolInventory;
+
+    use super::*;
+
+    const RUN_WIDE_TURNS: u32 = 6;
+
+    fn worker(preamble: &str, turn_depth: Option<usize>) -> WorkerConfig {
+        WorkerConfig {
+            description: "Terminal work".to_owned(),
+            preamble: preamble.to_owned(),
+            mcp_filter: Vec::new(),
+            vector_stores: Vec::new(),
+            turn_depth,
+            llm: None,
+            scratchpad: None,
+            skills: None,
+        }
+    }
+
+    /// An executor over a roster of two workers: `operator` carries a
+    /// configured preamble and its own turn depth, `analyst` carries
+    /// neither.
+    fn executor() -> DagExecutor {
+        let mut workers = HashMap::new();
+        workers.insert(
+            "operator".to_owned(),
+            worker("You are a Terminal Operator.", Some(24)),
+        );
+        workers.insert("analyst".to_owned(), worker("", None));
+        let config = OrchestrationConfig {
+            enabled: true,
+            workers,
+            ..Default::default()
+        };
+        let roster = WorkerRoster::from_config(
+            &config,
+            ToolListLimit::new(10),
+            &[],
+            &ToolInventory::empty(),
+        )
+        .expect("24 is a spendable turn depth");
+
+        DagExecutor::new(
+            crate::mcp_client::SidecarClient::disconnected(),
+            ArtifactStore::new(std::path::PathBuf::from(
+                "/tmp/agent-driver-prototype-unused",
+            )),
+            WorkerLoopConfig {
+                provider: Arc::new(MockProvider::new(Vec::new())),
+                model: ModelId::new("mock-model").expect("valid model id"),
+                budget: LoopBudget::new(RUN_WIDE_TURNS).expect("non-zero budget"),
+                system_prompt: SystemPrompt::new("run-wide worker prompt"),
+            },
+            WorkerSections::from_roster(roster),
+            RunStore::new(),
+            InlineThreshold::DEFAULT,
+            None,
+        )
+    }
+
+    fn task_for(worker: Option<&str>) -> Task {
+        let mut task = Task::new(0, "Create the file", "Create /tmp/s74_hello.txt");
+        task.worker = worker.map(str::to_owned);
+        task
+    }
+
+    /// A configured worker preamble is composed into the shared worker
+    /// template rather than replacing it, so the mandatory `submit_result`
+    /// contract still reaches the worker. The S70 golden corpus pins this
+    /// composition; replacing the template is what left the live shim's
+    /// operator with no way to report a result.
+    #[test]
+    fn configured_preamble_composes_into_the_worker_template() {
+        let prompt = executor().resolve_preamble(&task_for(Some("operator")));
+        let text = prompt.as_str();
+
+        assert!(
+            text.contains("You are a Terminal Operator."),
+            "the configured preamble is the template's system-prompt slot"
+        );
+        assert!(
+            text.starts_with("# Worker Agent"),
+            "the composed prompt opens with the worker template header, got: {text}"
+        );
+        assert!(
+            text.contains("You MUST call the `submit_result` tool"),
+            "the mandatory submit_result contract survives composition"
+        );
+    }
+
+    /// A task naming a worker with no configured preamble, and a task naming
+    /// no worker at all, both fall back to the run-wide system prompt.
+    #[test]
+    fn absent_preamble_falls_back_to_the_run_wide_prompt() {
+        let executor = executor();
+        assert_eq!(
+            executor
+                .resolve_preamble(&task_for(Some("analyst")))
+                .as_str(),
+            "run-wide worker prompt"
+        );
+        assert_eq!(
+            executor.resolve_preamble(&task_for(None)).as_str(),
+            "run-wide worker prompt"
+        );
+    }
+
+    /// A worker spends its own configured turn depth; a worker without one
+    /// spends the run-wide budget. Before this resolution every worker ran
+    /// at the top-level `[agent].turn_depth`, so a 24-turn operator was
+    /// capped at the coordinator's 6.
+    #[test]
+    fn budget_resolves_per_worker_with_a_run_wide_fallback() {
+        let executor = executor();
+        assert_eq!(
+            executor.resolve_budget(&task_for(Some("operator"))).turns(),
+            24,
+            "the worker's own turn depth wins"
+        );
+        assert_eq!(
+            executor.resolve_budget(&task_for(Some("analyst"))).turns(),
+            RUN_WIDE_TURNS,
+            "a worker with no configured depth spends the run-wide budget"
+        );
+        assert_eq!(
+            executor.resolve_budget(&task_for(None)).turns(),
+            RUN_WIDE_TURNS,
+            "an unassigned task spends the run-wide budget"
+        );
+        assert_eq!(
+            executor
+                .resolve_budget(&task_for(Some("not-in-roster")))
+                .turns(),
+            RUN_WIDE_TURNS,
+            "a worker the roster does not carry spends the run-wide budget"
+        );
     }
 }

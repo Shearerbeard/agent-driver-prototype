@@ -22,6 +22,7 @@ use agent_driver_prototype::coordinator_loop::{
 };
 use agent_driver_prototype::dag_executor::{DagExecutor, WorkerLoopConfig};
 use agent_driver_prototype::mcp_client::SidecarClient;
+use agent_driver_prototype::producers::ToolInventory;
 use agent_driver_prototype::types::{FailureCategory, StepInput};
 
 // ---------------------------------------------------------------------------
@@ -52,11 +53,15 @@ fn test_sections() -> WorkerSections {
         workers,
         ..Default::default()
     };
-    WorkerSections::from_roster(WorkerRoster::from_config(
-        &config,
-        ToolListLimit::new(10),
-        &[],
-    ))
+    WorkerSections::from_roster(
+        WorkerRoster::from_config(
+            &config,
+            ToolListLimit::new(10),
+            &[],
+            &ToolInventory::empty(),
+        )
+        .expect("no worker configures a turn depth"),
+    )
 }
 
 /// The plan arguments for a two-task sequential workflow.
@@ -406,6 +411,115 @@ async fn budget_exhausted_maps_to_depth_exhausted() {
         *category,
         FailureCategory::DepthExhausted,
         "BudgetExhausted maps to DepthExhausted"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Per-worker turn depth: the worker loop runs at the section's depth
+// ---------------------------------------------------------------------------
+
+/// A one-worker roster whose worker carries its own `turn_depth`.
+fn sections_with_worker_depth(turn_depth: usize) -> WorkerSections {
+    let mut workers = HashMap::new();
+    workers.insert(
+        "operations".to_owned(),
+        WorkerConfig {
+            description: "Logs, pipelines and metrics".to_owned(),
+            preamble: String::new(),
+            mcp_filter: Vec::new(),
+            vector_stores: Vec::new(),
+            turn_depth: Some(turn_depth),
+            llm: None,
+            scratchpad: None,
+            skills: None,
+        },
+    );
+    let config = OrchestrationConfig {
+        enabled: true,
+        workers,
+        ..Default::default()
+    };
+    WorkerSections::from_roster(
+        WorkerRoster::from_config(
+            &config,
+            ToolListLimit::new(10),
+            &[],
+            &ToolInventory::empty(),
+        )
+        .expect("a non-zero worker turn depth"),
+    )
+}
+
+/// The worker loop runs at its own configured `turn_depth`, not the run-wide
+/// budget from [`WorkerLoopConfig`].
+///
+/// The mock arithmetic is the proof. The worker's section depth is 1 while
+/// the run-wide budget is 8, and exactly 2 responses are queued: the worker
+/// calls `submit_result` with a blank summary (which the tool rejects), then
+/// the second round hits the depth-1 ceiling before executing. A run that
+/// ignored the section depth would issue a third provider call and panic the
+/// mock on an exhausted queue, so reaching the assertions proves the loop ran
+/// at depth 1.
+#[tokio::test]
+async fn worker_loop_runs_at_the_section_turn_depth_not_the_run_wide_budget() {
+    let runs = RunStore::new();
+    let sections = sections_with_worker_depth(1);
+    let args = CreatePlanArgs {
+        goal: "Per-worker depth test".to_owned(),
+        steps: vec![StepInput::LeafTask {
+            task: "Do the work".to_owned(),
+            worker: Some("operations".to_owned()),
+        }],
+        planning_rationale: "One task".to_owned(),
+    };
+    let plan = args
+        .to_plan(&sections.roster().clone())
+        .expect("valid plan");
+    let _plan_id = runs.record_plan(&args, plan.clone());
+
+    let responses = vec![
+        mock_tool_call_response(
+            "w0",
+            "submit_result",
+            &submit_result_json("  ", "result", "high"),
+        ),
+        mock_tool_call_response(
+            "w1",
+            "submit_result",
+            &submit_result_json("  ", "result", "high"),
+        ),
+    ];
+
+    let config = WorkerLoopConfig {
+        provider: Arc::new(MockProvider::new(responses)),
+        model: model(),
+        budget: LoopBudget::new(8).expect("non-zero budget"),
+        system_prompt: SystemPrompt::new("You are a worker."),
+    };
+
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    let executor = DagExecutor::new(
+        SidecarClient::disconnected(),
+        ArtifactStore::new(dir.path().to_path_buf()),
+        config,
+        sections,
+        runs,
+        InlineThreshold::DEFAULT,
+        None,
+    );
+
+    let observation = executor.execute(&plan, &ctx()).await;
+
+    let ExecutionObservation::Completed { tasks } = &observation else {
+        panic!("expected completed execution, got {observation:?}");
+    };
+    let TaskObservation::Failed { category, .. } = &tasks.as_slice()[0] else {
+        panic!("expected task 0 failed, got {:?}", tasks.as_slice()[0]);
+    };
+    assert_eq!(
+        *category,
+        FailureCategory::DepthExhausted,
+        "the depth-1 section budget stopped the worker, not the run-wide 8"
     );
 }
 

@@ -30,6 +30,7 @@ use agent_driver_prototype::coordinator_loop::{
 };
 use agent_driver_prototype::dag_executor::WorkerLoopConfig;
 use agent_driver_prototype::mcp_client::SidecarClient;
+use agent_driver_prototype::producers::ToolInventory;
 use agent_driver_prototype::sse_shim::{ShimState, router};
 use agent_driver_prototype::types::StepInput;
 
@@ -65,11 +66,15 @@ fn test_sections() -> WorkerSections {
         workers,
         ..Default::default()
     };
-    WorkerSections::from_roster(WorkerRoster::from_config(
-        &config,
-        ToolListLimit::new(10),
-        &[],
-    ))
+    WorkerSections::from_roster(
+        WorkerRoster::from_config(
+            &config,
+            ToolListLimit::new(10),
+            &[],
+            &ToolInventory::empty(),
+        )
+        .expect("no worker configures a turn depth"),
+    )
 }
 
 /// A one-task plan: a single `LeafTask` assigned to the "operations" worker.

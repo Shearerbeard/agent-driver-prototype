@@ -91,7 +91,8 @@ invariant at construction (C8).
 
 `CorrelationId`, `TokenUsage` from `agent_driver_rs`; `SidecarUrl`,
 `SidecarClient` from `crate::mcp_client`; `LoopBudget`, `WorkerSections`,
-`RunStore` from `crate::coordinator_loop`; `WorkerLoopConfig`,
+`RunStore`, `WorkerRoster` from `crate::coordinator_loop`; `ToolInventory`
+from `crate::producers`; `WorkerLoopConfig`,
 `DagLifecycleObserver` from `crate::dag_executor`; `ArtifactStore`,
 `InlineThreshold` from `crate::artifacts`; `Provider`, `ModelId`,
 `SystemPrompt` from `agent_driver_rs`; `AgentEvent`, `AgentObserver`,
@@ -155,11 +156,33 @@ If the loop errors before `LoopComplete`, the channel closes without
 `Done`; the stream handler calls `error_termination_events` to emit a
 clean termination (C4/A4).
 
+## 3a. Startup seam: the sidecar handshake feeds the roster
+
+`build_state` completes the MCP handshake before it builds anything that
+depends on the sidecar. `SidecarClient::connect` only opens the SSE stream
+and resolves the messages URL; the 2024-11-05 spec requires an `initialize`
+plus the `notifications/initialized` notification before any further
+request, and a sidecar that receives `tools/call` first answers
+`Received request before initialization was complete` and drops the
+session. `build_state` therefore calls `initialize`, then `tools/list`.
+
+That `tools/list` answer is also the roster's input. `WorkerRoster::from_config`
+takes a `producers::ToolInventory`, and each worker's `mcp_filter` selects
+from it, so what the coordinator sees when it plans is what the sidecar can
+actually execute. The corpus path keeps `ToolInventory::empty()`, which is
+what aura's MCP-less `get_all_tool_names` returned, so the S70 golden frames
+are unaffected by the seam.
+
+The roster also captures each worker section's `turn_depth`. The
+`[agent].turn_depth`-derived budget stays as `WorkerLoopConfig::budget`,
+which is now the fallback the `DagExecutor` resolves against per task rather
+than the depth every worker runs at.
+
 ## 4. Serve topology (C7/C11)
 
 The binary:
 1. Parses CLI args, inits OTEL (guard lives for the function's scope).
-2. Builds `ShimState`.
+2. Builds `ShimState` (including the sidecar handshake, section 3a).
 3. Binds the TCP listener to obtain the actual port.
 4. If the requested port was 0, prints `SHIM_PORT=<bound_port>` and flushes
    stdout (C11: only when ephemeral; the adapter always passes a concrete

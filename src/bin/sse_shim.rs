@@ -35,6 +35,7 @@ use agent_driver_prototype::config_builders::{build_coordinator_preamble, build_
 use agent_driver_prototype::coordinator_loop::{LoopBudget, WorkerRoster, WorkerSections};
 use agent_driver_prototype::dag_executor::WorkerLoopConfig;
 use agent_driver_prototype::mcp_client::SidecarClient;
+use agent_driver_prototype::producers::ToolInventory;
 use agent_driver_prototype::sse_shim::{OtelConfig, ShimCliArgs, ShimError, ShimPort, ShimState};
 
 use agent_driver_rs::config::ProviderConfig;
@@ -93,10 +94,33 @@ async fn build_state(args: &ShimCliArgs) -> Result<ShimState, ShimError> {
     let config = load_shim_config(args.config_path())?;
 
     // Connect the sidecar (a network call to the local MCP sidecar, not a
-    // provider call).
+    // provider call), then complete the MCP handshake. `connect` only opens
+    // the SSE stream and resolves the messages URL; until `initialize` runs,
+    // the sidecar answers every request with `Received request before
+    // initialization was complete` and drops the session, so the first
+    // `keystrokes` a worker sends would be the first sign of the omission.
     let sidecar = SidecarClient::connect(args.sidecar_url().clone())
         .await
         .map_err(|e| ShimError::Server(format!("sidecar connect failed: {e}")))?;
+    let server_info = sidecar
+        .initialize()
+        .await
+        .map_err(|e| ShimError::Server(format!("sidecar initialize failed: {e}")))?;
+
+    // The handshake's `tools/list` is also the roster's tool inventory: what
+    // the sidecar advertises here is what each worker's `mcp_filter` selects
+    // from, and therefore what the coordinator sees when it plans.
+    let advertised = sidecar
+        .list_tools()
+        .await
+        .map_err(|e| ShimError::Server(format!("sidecar tools/list failed: {e}")))?;
+    let inventory = ToolInventory::from_names(advertised.iter().map(|tool| tool.name().as_str()));
+    tracing::info!(
+        server = %server_info.server_name,
+        version = %server_info.server_version,
+        tools = ?inventory.names(),
+        "sidecar handshake complete"
+    );
 
     // Provider + model from env (the shim is Bedrock-backed per DESIGN.md).
     let provider_config = ProviderConfig::from_env()
@@ -114,17 +138,25 @@ async fn build_state(args: &ShimCliArgs) -> Result<ShimState, ShimError> {
         false,
     ));
 
-    // Worker sections from the typed roster.
+    // Worker sections from the typed roster, resolved against what the
+    // sidecar advertises.
     let tool_list_limit = ToolListLimit::new(config.orchestration.max_tools_per_worker);
-    let roster = WorkerRoster::from_config(&config.orchestration_config, tool_list_limit, &[]);
+    let roster = WorkerRoster::from_config(
+        &config.orchestration_config,
+        tool_list_limit,
+        &[],
+        &inventory,
+    )
+    .map_err(|e| ShimError::Server(e.to_string()))?;
     let worker_sections = WorkerSections::from_roster(roster);
 
-    // Worker preamble + budget.
+    // Worker preamble + the run-wide budget the executor falls back to when
+    // a worker section names no turn depth of its own.
     let worker_preamble = SystemPrompt::new(build_worker_preamble(&config.orchestration_config));
     let worker_budget = config
         .agent
         .turn_depth
-        .map(|t| LoopBudget::new(t as u32))
+        .map(|t| LoopBudget::new(u32::try_from(t).unwrap_or(u32::MAX)))
         .transpose()
         .map_err(|e| ShimError::Server(e.to_string()))?
         .unwrap_or(LoopBudget::CANONICAL);

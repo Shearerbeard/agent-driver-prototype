@@ -6,10 +6,14 @@
 //! Only the escape-hatch pin is runtime-checkable; the other two are
 //! structural properties of the port and hold by construction:
 //!
-//! - MCP-less: `producers::resolve_worker_tools` binds `all_tools` to an
-//!   empty vec (the exact value aura's `get_all_tool_names` returns when
-//!   `mcp_manager` is `None`), and `producers::get_all_tool_descriptions`
-//!   omits the MCP manager block entirely.
+//! - MCP-less: the corpus composes every envelope against
+//!   `producers::ToolInventory::empty` (the exact value aura's
+//!   `get_all_tool_names` returns when `mcp_manager` is `None`), and
+//!   `producers::get_all_tool_descriptions` omits the MCP manager block
+//!   entirely. The inventory is a parameter rather than a binding inside
+//!   `resolve_worker_tools`, so a runtime that does have an MCP backend
+//!   (the SSE shim) resolves against what it advertises without moving the
+//!   corpus off its empty one.
 //! - Persistence-disabled: `src/persistence.rs` carries data types only;
 //!   no file IO exists in the crate.
 

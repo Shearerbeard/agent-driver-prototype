@@ -31,7 +31,7 @@ use agent_driver_prototype::coordinator_loop::{
 };
 use agent_driver_prototype::dag_executor::{DagExecutor, WorkerLoopConfig};
 use agent_driver_prototype::mcp_client::SidecarClient;
-use agent_driver_prototype::producers::build_worker_prompt_sections;
+use agent_driver_prototype::producers::{ToolInventory, build_worker_prompt_sections};
 use agent_driver_prototype::templates::{PlanningLoopVars, render_planning_loop_prompt};
 use agent_driver_prototype::tools::submit_result::Confidence;
 use agent_driver_prototype::types::{FailureCategory, StepInput};
@@ -87,11 +87,15 @@ fn test_sections() -> WorkerSections {
         workers,
         ..Default::default()
     };
-    WorkerSections::from_roster(WorkerRoster::from_config(
-        &config,
-        ToolListLimit::new(10),
-        &[],
-    ))
+    WorkerSections::from_roster(
+        WorkerRoster::from_config(
+            &config,
+            ToolListLimit::new(10),
+            &[],
+            &ToolInventory::empty(),
+        )
+        .expect("no worker configures a turn depth"),
+    )
 }
 
 fn goal() -> PinnedGoal {
@@ -842,41 +846,178 @@ fn parity_vector_stores() -> Vec<VectorStoreConfig> {
 /// produces the same three strings as the old `build_worker_prompt_sections`
 /// oracle. Both paths read the same `config.workers` HashMap within one
 /// process, so the iteration order is identical and the comparison is exact.
-/// All three visibility modes are exercised.
+/// All three visibility modes are exercised, against both an MCP-less
+/// inventory (the corpus path) and a populated one (the shim path), so the
+/// two derivations cannot drift on either.
 #[test]
 fn from_roster_matches_the_producer_oracle_byte_for_byte() {
     let limit = ToolListLimit::new(10);
     let stores = parity_vector_stores();
+    let inventories = [
+        ToolInventory::empty(),
+        ToolInventory::from_names(["mezmo_logs", "mezmo_pipelines", "keystrokes"]),
+    ];
 
-    for visibility in [
-        ToolVisibility::None,
-        ToolVisibility::Summary,
-        ToolVisibility::Full,
-    ] {
-        let config = parity_config(visibility);
+    for inventory in &inventories {
+        for visibility in [
+            ToolVisibility::None,
+            ToolVisibility::Summary,
+            ToolVisibility::Full,
+        ] {
+            let config = parity_config(visibility);
 
-        let (oracle_section, oracle_field, oracle_guidelines) =
-            build_worker_prompt_sections(&config, limit, &stores);
+            let (oracle_section, oracle_field, oracle_guidelines) =
+                build_worker_prompt_sections(&config, limit, &stores, inventory);
 
-        let sections =
-            WorkerSections::from_roster(WorkerRoster::from_config(&config, limit, &stores));
+            let sections = WorkerSections::from_roster(
+                WorkerRoster::from_config(&config, limit, &stores, inventory)
+                    .expect("no parity worker configures a turn depth"),
+            );
 
-        assert_eq!(
-            sections.roster_section(),
-            oracle_section,
-            "roster_section diverges for {visibility:?}"
-        );
-        assert_eq!(
-            sections.worker_field(),
-            oracle_field,
-            "worker_field diverges for {visibility:?}"
-        );
-        assert_eq!(
-            sections.guidelines(),
-            oracle_guidelines,
-            "guidelines diverge for {visibility:?}"
-        );
+            assert_eq!(
+                sections.roster_section(),
+                oracle_section,
+                "roster_section diverges for {visibility:?} over {inventory:?}"
+            );
+            assert_eq!(
+                sections.worker_field(),
+                oracle_field,
+                "worker_field diverges for {visibility:?} over {inventory:?}"
+            );
+            assert_eq!(
+                sections.guidelines(),
+                oracle_guidelines,
+                "guidelines diverge for {visibility:?} over {inventory:?}"
+            );
+        }
     }
+}
+
+/// A populated inventory reaches each worker's `WorkerSpec::tools` through
+/// `mcp_filter`, and an MCP-less one leaves every worker with nothing.
+///
+/// This is the S74 defect at the roster seam: the shim's coordinator planned
+/// against a roster that advertised zero tools for every worker, so it
+/// reported a tool gap instead of dispatching terminal work.
+#[test]
+fn roster_resolves_worker_tools_from_the_advertised_inventory() {
+    let limit = ToolListLimit::new(10);
+    let stores = parity_vector_stores();
+    let config = parity_config(ToolVisibility::Summary);
+    let inventory = ToolInventory::from_names(["mezmo_logs", "mezmo_pipelines", "keystrokes"]);
+
+    let roster = WorkerRoster::from_config(&config, limit, &stores, &inventory)
+        .expect("no parity worker configures a turn depth");
+    let tool_names = |role: &str| -> Vec<String> {
+        roster
+            .workers()
+            .iter()
+            .find(|spec| spec.role().as_str() == role)
+            .unwrap_or_else(|| panic!("{role} is configured"))
+            .tools()
+            .iter()
+            .map(|tool| tool.name().to_owned())
+            .collect()
+    };
+
+    // `operations` filters on `mezmo_*` and owns the `runbooks` store.
+    assert_eq!(
+        tool_names("operations"),
+        vec![
+            "mezmo_logs".to_owned(),
+            "mezmo_pipelines".to_owned(),
+            "vector_search_runbooks".to_owned(),
+        ],
+        "the mezmo_* filter selects both advertised mezmo tools, and the \
+         configured vector store is appended"
+    );
+    // `analyst` has an empty filter, which means every advertised tool.
+    assert_eq!(
+        tool_names("analyst"),
+        inventory.names(),
+        "an empty mcp_filter resolves the whole advertised inventory"
+    );
+
+    let mcp_less = WorkerRoster::from_config(&config, limit, &stores, &ToolInventory::empty())
+        .expect("no parity worker configures a turn depth");
+    let mcp_less_names: Vec<&str> = mcp_less
+        .workers()
+        .iter()
+        .find(|spec| spec.role().as_str() == "analyst")
+        .expect("analyst is configured")
+        .tools()
+        .iter()
+        .map(|tool| tool.name())
+        .collect();
+    assert!(
+        mcp_less_names.is_empty(),
+        "the MCP-less inventory leaves the corpus path resolving nothing"
+    );
+}
+
+/// A worker's configured `turn_depth` reaches its `WorkerSpec` as a budget,
+/// a worker without one carries `None` for the executor to fall back on, and
+/// a zero depth is rejected at the parse rather than reaching a worker that
+/// could take no turn.
+#[test]
+fn roster_carries_per_worker_turn_depth_and_rejects_zero() {
+    let limit = ToolListLimit::new(10);
+
+    let spec_with_depth = |depth: Option<usize>| WorkerConfig {
+        description: "Verification".to_owned(),
+        preamble: String::new(),
+        mcp_filter: Vec::new(),
+        vector_stores: Vec::new(),
+        turn_depth: depth,
+        llm: None,
+        scratchpad: None,
+        skills: None,
+    };
+
+    let mut workers = HashMap::new();
+    workers.insert("verifier".to_owned(), spec_with_depth(Some(16)));
+    workers.insert("analyst".to_owned(), spec_with_depth(None));
+    let config = OrchestrationConfig {
+        enabled: true,
+        workers,
+        ..Default::default()
+    };
+
+    let roster = WorkerRoster::from_config(&config, limit, &[], &ToolInventory::empty())
+        .expect("16 is a spendable turn depth");
+    let budget = |role: &str| {
+        roster
+            .workers()
+            .iter()
+            .find(|spec| spec.role().as_str() == role)
+            .unwrap_or_else(|| panic!("{role} is configured"))
+            .budget()
+    };
+    assert_eq!(
+        budget("verifier").map(|b| b.turns()),
+        Some(16),
+        "the configured depth reaches the spec"
+    );
+    assert_eq!(
+        budget("analyst"),
+        None,
+        "a worker with no configured depth defers to the run-wide budget"
+    );
+
+    let mut zero_workers = HashMap::new();
+    zero_workers.insert("verifier".to_owned(), spec_with_depth(Some(0)));
+    let zero_config = OrchestrationConfig {
+        enabled: true,
+        workers: zero_workers,
+        ..Default::default()
+    };
+    assert!(
+        matches!(
+            WorkerRoster::from_config(&zero_config, limit, &[], &ToolInventory::empty()),
+            Err(CoordinatorLoopError::ZeroTurnBudget)
+        ),
+        "a zero turn depth is rejected at the roster parse"
+    );
 }
 
 /// An empty roster renders three empty strings, matching the oracle's
@@ -886,8 +1027,11 @@ fn from_roster_with_no_workers_renders_empty_sections() {
     let config = OrchestrationConfig::default();
     let limit = ToolListLimit::new(10);
     let (oracle_section, oracle_field, oracle_guidelines) =
-        build_worker_prompt_sections(&config, limit, &[]);
-    let sections = WorkerSections::from_roster(WorkerRoster::from_config(&config, limit, &[]));
+        build_worker_prompt_sections(&config, limit, &[], &ToolInventory::empty());
+    let sections = WorkerSections::from_roster(
+        WorkerRoster::from_config(&config, limit, &[], &ToolInventory::empty())
+            .expect("an empty config configures no turn depth"),
+    );
     assert_eq!(sections.roster_section(), oracle_section);
     assert_eq!(sections.worker_field(), oracle_field);
     assert_eq!(sections.guidelines(), oracle_guidelines);

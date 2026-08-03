@@ -229,6 +229,7 @@ pub fn build_worker_prompt_sections(
     config: &OrchestrationConfig,
     tool_list_limit: ToolListLimit,
     vector_stores: &[VectorStoreConfig],
+    inventory: &ToolInventory,
 ) -> (String, String, String) {
     use crate::config::ToolVisibility;
 
@@ -247,10 +248,15 @@ pub fn build_worker_prompt_sections(
 
         let section = match &config.tools_in_planning {
             ToolVisibility::None => build_workers_section_no_tools(config),
-            ToolVisibility::Summary => build_workers_section_with_tools(config, tool_list_limit),
-            ToolVisibility::Full => {
-                build_workers_section_with_full_tools(config, tool_list_limit, vector_stores)
+            ToolVisibility::Summary => {
+                build_workers_section_with_tools(config, tool_list_limit, inventory)
             }
+            ToolVisibility::Full => build_workers_section_with_full_tools(
+                config,
+                tool_list_limit,
+                vector_stores,
+                inventory,
+            ),
         };
 
         (section, field, guidelines)
@@ -273,8 +279,9 @@ pub fn build_workers_section_no_tools(config: &OrchestrationConfig) -> String {
 pub fn build_workers_section_with_tools(
     config: &OrchestrationConfig,
     tool_list_limit: ToolListLimit,
+    inventory: &ToolInventory,
 ) -> String {
-    let worker_tools = resolve_worker_tools(config);
+    let worker_tools = resolve_worker_tools(config, inventory);
     let max_tools = tool_list_limit.get();
     let sections: Vec<String> = config
         .workers
@@ -306,8 +313,9 @@ pub fn build_workers_section_with_full_tools(
     config: &OrchestrationConfig,
     tool_list_limit: ToolListLimit,
     vector_stores: &[VectorStoreConfig],
+    inventory: &ToolInventory,
 ) -> String {
-    let worker_tools = resolve_worker_tools(config);
+    let worker_tools = resolve_worker_tools(config, inventory);
     let tool_descriptions = get_all_tool_descriptions(vector_stores);
     let max_tools = tool_list_limit.get();
     let sections: Vec<String> = config
@@ -356,8 +364,54 @@ pub fn build_workers_section_with_full_tools(
 }
 
 // ============================================================================
-// Tool Resolution (MCP-less: config mirror only)
+// Tool Resolution
 // ============================================================================
+
+/// The tool names a runtime MCP backend advertises, which each worker's
+/// `mcp_filter` selects from.
+///
+/// The source reads this list from its MCP manager
+/// (`Orchestrator::get_all_tool_names`, orchestrator.rs:2048-2051), which
+/// answers with an empty vector when `mcp_manager` is `None`. Carrying it as
+/// a parameter rather than a binding inside [`resolve_worker_tools`] is what
+/// lets one build serve both runtimes this crate has: the ported corpus,
+/// which ran MCP-less and therefore resolves against [`ToolInventory::empty`],
+/// and the SSE shim, whose inventory is whatever the sidecar's `tools/list`
+/// answered at startup.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ToolInventory(Vec<String>);
+
+impl ToolInventory {
+    /// The inventory of a runtime with no MCP backend attached: no worker
+    /// resolves an MCP tool, whatever its `mcp_filter` says.
+    ///
+    /// This is the corpus path. The golden frames are composed against it,
+    /// so they stay byte-identical to the MCP-less aura corpus they were
+    /// captured from.
+    pub const fn empty() -> Self {
+        Self(Vec::new())
+    }
+
+    /// Read an inventory from the tool names a backend advertises, in the
+    /// order it advertised them.
+    ///
+    /// Order is carried through to the rendered roster, where
+    /// [`ToolListLimit`] truncates the tail, so an inventory that reorders
+    /// its names changes which tools the coordinator sees under a tight
+    /// limit.
+    pub fn from_names<I, S>(names: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        Self(names.into_iter().map(Into::into).collect())
+    }
+
+    /// The advertised tool names, in advertisement order.
+    pub fn names(&self) -> &[String] {
+        &self.0
+    }
+}
 
 /// Resolve which tools each worker can access based on their mcp_filter.
 ///
@@ -370,25 +424,28 @@ pub fn build_workers_section_with_full_tools(
 /// - operations: mcp_filter = ["mezmo_*"]
 /// - knowledge: mcp_filter = ["ListKnowledgeBases", "QueryKnowledgeBases"]
 ///
-/// And tools: mezmo_logs, mezmo_pipelines, ListKnowledgeBases, QueryKnowledgeBases
+/// And an inventory of: mezmo_logs, mezmo_pipelines, ListKnowledgeBases,
+/// QueryKnowledgeBases
 ///
 /// Returns:
 /// - "operations" -> ["mezmo_logs", "mezmo_pipelines"]
 /// - "knowledge" -> ["ListKnowledgeBases", "QueryKnowledgeBases"]
 ///
-/// MCP-less substitution: the source calls `self.get_all_tool_names()` which
-/// returns `Vec::new()` when no MCP manager is present (orchestrator.rs:2048-2051).
-/// The corpus is MCP-less, so `all_tools` is always empty here. Only
 /// `vector_search_{store}` tools from `worker_config.vector_stores` are
-/// added. Source anchor: orchestrator.rs:2141-2171.
-pub fn resolve_worker_tools(config: &OrchestrationConfig) -> HashMap<String, Vec<String>> {
-    let all_tools: Vec<String> = Vec::new();
+/// appended to every worker's list regardless of the inventory: they are
+/// config-mirror tools, not MCP tools. Source anchor:
+/// orchestrator.rs:2141-2171.
+pub fn resolve_worker_tools(
+    config: &OrchestrationConfig,
+    inventory: &ToolInventory,
+) -> HashMap<String, Vec<String>> {
+    let all_tools = inventory.names();
     let mut worker_tools = HashMap::new();
 
     for (worker_name, worker_config) in &config.workers {
         // Match MCP tools via mcp_filter (empty = all MCP tools for backwards compatibility)
         let mut matching_tools: Vec<String> = if worker_config.mcp_filter.is_empty() {
-            all_tools.clone()
+            all_tools.to_vec()
         } else {
             all_tools
                 .iter()
@@ -438,9 +495,12 @@ pub fn format_tool_list(tools: &[String], max: usize) -> String {
 ///
 /// MCP-less substitution: the source collects descriptions from the MCP
 /// manager (streamable HTTP, SSE, STDIO tools) when `self.mcp_manager` is
-/// `Some` (orchestrator.rs:2177-2208). The corpus is MCP-less, so that block
-/// is omitted entirely. Only vector store descriptions from the config mirror
-/// are collected. Source anchor: orchestrator.rs:2177-2222.
+/// `Some` (orchestrator.rs:2177-2208). That block is omitted here, so only
+/// vector store descriptions from the config mirror are collected and an MCP
+/// tool renders under `ToolVisibility::Full` as a bare name. The
+/// [`ToolInventory`] carries names only; wiring descriptions through it is
+/// the follow-up that closes this gap. Source anchor:
+/// orchestrator.rs:2177-2222.
 pub fn get_all_tool_descriptions(vector_stores: &[VectorStoreConfig]) -> HashMap<String, String> {
     let mut descriptions = HashMap::new();
 
@@ -567,7 +627,7 @@ mod tests {
             },
         );
 
-        let worker_tools = resolve_worker_tools(&config);
+        let worker_tools = resolve_worker_tools(&config, &ToolInventory::empty());
 
         let doc_tools = worker_tools.get("documentation").unwrap();
         assert_eq!(doc_tools.len(), 1);
@@ -575,6 +635,91 @@ mod tests {
 
         let ops_tools = worker_tools.get("operations").unwrap();
         assert!(ops_tools.is_empty());
+    }
+
+    /// A worker's `mcp_filter` selects from the inventory the runtime
+    /// advertises, so a non-empty inventory reaches the roster while an
+    /// unmatched worker still resolves to nothing.
+    ///
+    /// This is the S74 defect in miniature: the shim's sidecar advertises
+    /// `keystrokes` and `capture-pane`, and before the inventory became an
+    /// input every worker resolved to an empty tool list no matter what its
+    /// filter said.
+    #[test]
+    fn resolve_worker_tools_filters_a_non_empty_inventory() {
+        use crate::config::{OrchestrationConfig, WorkerConfig};
+
+        let worker = |mcp_filter: Vec<String>| WorkerConfig {
+            description: "worker".to_string(),
+            preamble: String::new(),
+            mcp_filter,
+            vector_stores: vec![],
+            turn_depth: None,
+            llm: None,
+            scratchpad: None,
+            skills: None,
+        };
+
+        let mut config = OrchestrationConfig::default();
+        config.workers.insert(
+            "operator".to_string(),
+            worker(vec!["keystrokes".to_string(), "capture-pane".to_string()]),
+        );
+        config
+            .workers
+            .insert("globbed".to_string(), worker(vec!["mezmo_*".to_string()]));
+        config
+            .workers
+            .insert("unfiltered".to_string(), worker(vec![]));
+
+        let inventory = ToolInventory::from_names([
+            "keystrokes",
+            "capture-pane",
+            "mezmo_logs",
+            "mezmo_pipelines",
+        ]);
+        let worker_tools = resolve_worker_tools(&config, &inventory);
+
+        assert_eq!(
+            worker_tools.get("operator").unwrap(),
+            &vec!["keystrokes".to_string(), "capture-pane".to_string()],
+            "an exact-name filter resolves exactly its two advertised tools"
+        );
+        assert_eq!(
+            worker_tools.get("globbed").unwrap(),
+            &vec!["mezmo_logs".to_string(), "mezmo_pipelines".to_string()],
+            "a glob filter resolves every advertised tool it matches"
+        );
+        assert_eq!(
+            worker_tools.get("unfiltered").unwrap(),
+            inventory.names(),
+            "an empty filter means every advertised tool, in advertisement order"
+        );
+    }
+
+    /// The empty inventory is what keeps the MCP-less corpus byte-identical:
+    /// every worker resolves to no MCP tool whatever its filter says.
+    #[test]
+    fn empty_inventory_resolves_no_mcp_tools_whatever_the_filter() {
+        use crate::config::{OrchestrationConfig, WorkerConfig};
+
+        let mut config = OrchestrationConfig::default();
+        config.workers.insert(
+            "operator".to_string(),
+            WorkerConfig {
+                description: "worker".to_string(),
+                preamble: String::new(),
+                mcp_filter: vec!["keystrokes".to_string()],
+                vector_stores: vec![],
+                turn_depth: None,
+                llm: None,
+                scratchpad: None,
+                skills: None,
+            },
+        );
+
+        let worker_tools = resolve_worker_tools(&config, &ToolInventory::empty());
+        assert!(worker_tools.get("operator").unwrap().is_empty());
     }
 
     #[test]
