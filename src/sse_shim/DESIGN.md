@@ -191,7 +191,9 @@ The binary:
 6. Awaits full server termination (in-flight requests complete).
 7. Returns; `OtelGuard` drops, calling `shutdown()` and flushing spans.
 
-Per-request OTEL spans carry `session.id` from `ShimRequest::session_id`.
+Per-request OTEL spans carry `session.id` as `ShimSessionId::as_str()`, the
+full hyphenated UUID the `aura.session_info` payload also carries, not the
+abbreviated `Display` form the pin renders for human logs.
 
 ## 5. Residual risks
 

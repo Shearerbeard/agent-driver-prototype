@@ -302,7 +302,10 @@ impl ShimState {
         //     (C7/DESIGN.md §4). The span is created here — where the session
         //     id is generated — because the handler only learns the id after
         //     this call returns, by which point the loop is already running.
-        let span = tracing::info_span!("chat.completions", session.id = %session_id);
+        //     The attribute takes `as_str()`, not Display: the exported value
+        //     has to be the same hyphenated UUID the SSE payloads carry, and
+        //     `ShimSessionId`'s Display abbreviates for human logs.
+        let span = tracing::info_span!("chat.completions", session.id = session_id.as_str());
         let join_handle = tokio::spawn(
             async move {
                 if let Err(error) = loop_run.run(&goal).await {
@@ -578,6 +581,79 @@ mod tests {
         };
         let result = chat_completions(State(state), Json(req)).await;
         assert!(matches!(result, Err(ShimError::InvalidRequest(_))));
+    }
+
+    /// The OTEL span attribute the trace-receipt canary matches on.
+    const SESSION_ID_FIELD: &str = "session.id";
+
+    /// Captures the `session.id` value a span records at creation, which is
+    /// the value the OTEL exporter forwards to Phoenix. `record_debug` is
+    /// implemented alongside `record_str` so a `%`-formatted (Display) value
+    /// is captured too, rather than read as an absent attribute.
+    struct SessionIdVisitor(Option<String>);
+
+    impl tracing::field::Visit for SessionIdVisitor {
+        fn record_str(&mut self, field: &tracing::field::Field, value: &str) {
+            if field.name() == SESSION_ID_FIELD {
+                self.0 = Some(value.to_owned());
+            }
+        }
+
+        fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+            if field.name() == SESSION_ID_FIELD {
+                self.0 = Some(format!("{value:?}"));
+            }
+        }
+    }
+
+    struct SessionIdLayer(Arc<std::sync::Mutex<Option<String>>>);
+
+    impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for SessionIdLayer {
+        fn on_new_span(
+            &self,
+            attrs: &tracing::span::Attributes<'_>,
+            _id: &tracing::span::Id,
+            _ctx: tracing_subscriber::layer::Context<'_, S>,
+        ) {
+            let mut visitor = SessionIdVisitor(None);
+            attrs.record(&mut visitor);
+            if let Some(value) = visitor.0 {
+                *self
+                    .0
+                    .lock()
+                    .expect("the visitor never panics under the lock") = Some(value);
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn request_span_records_the_full_session_id() {
+        use tracing_subscriber::layer::SubscriberExt as _;
+
+        let captured = Arc::new(std::sync::Mutex::new(None));
+        let subscriber = tracing_subscriber::registry().with(SessionIdLayer(Arc::clone(&captured)));
+        let _default = tracing::subscriber::set_default(subscriber);
+
+        let state = test_state();
+        let request = state
+            .build_request("summarize the incident")
+            .await
+            .expect("a mock provider and a disconnected sidecar build a request");
+        // The span records its fields at creation, so the spawned loop never
+        // has to be driven; aborting keeps the empty mock queue out of play.
+        request.join_handle.abort();
+
+        let recorded = captured
+            .lock()
+            .expect("the visitor never panics under the lock")
+            .clone()
+            .expect("the chat.completions span records session.id");
+        assert_eq!(recorded, request.session_id.as_str());
+        assert_eq!(
+            recorded.len(),
+            36,
+            "Phoenix matches the hyphenated UUID, not CorrelationId's 8-char Display"
+        );
     }
 
     #[tokio::test]
