@@ -41,7 +41,9 @@ use agent_driver_prototype::coordinator_loop::{LoopBudget, WorkerRoster, WorkerS
 use agent_driver_prototype::dag_executor::WorkerLoopConfig;
 use agent_driver_prototype::mcp_client::SidecarClient;
 use agent_driver_prototype::producers::{ToolInventory, resolve_worker_tools};
-use agent_driver_prototype::sse_shim::{OtelConfig, ShimCliArgs, ShimError, ShimPort, ShimState};
+use agent_driver_prototype::sse_shim::{
+    OtelConfig, OtelGuard, ShimCliArgs, ShimError, ShimPort, ShimState,
+};
 
 use agent_driver_rs::config::ProviderConfig;
 use agent_driver_rs::provider::BedrockProvider;
@@ -82,8 +84,8 @@ async fn run() -> Result<(), ShimError> {
     Ok(())
 }
 
-/// OTEL init wrapper — separated so the guard's lifetime is clear.
-async fn otel_config_init() -> Result<agent_driver_prototype::sse_shim::OtelGuard, ShimError> {
+/// OTEL init wrapper, separated so the guard's lifetime is clear.
+async fn otel_config_init() -> Result<OtelGuard, ShimError> {
     let otel_config = OtelConfig::from_env()?;
     otel_config.init()
 }
@@ -287,6 +289,9 @@ fn check_tool_wiring(
 /// (C7), and await server termination or the [`DRAIN_WINDOW`], whichever
 /// comes first.
 async fn serve(state: Arc<ShimState>, port: ShimPort) -> Result<(), ShimError> {
+    // Before the port is claimed: a shim that cannot hear SIGTERM cannot flush
+    // its spans, and the adapter reads an early exit as a failed startup.
+    let signals = ShutdownSignals::install()?;
     let listener = tokio::net::TcpListener::bind(format!("127.0.0.1:{}", port.get()))
         .await
         .map_err(|e| ShimError::Server(format!("TCP bind to port {} failed: {e}", port.get())))?;
@@ -302,12 +307,27 @@ async fn serve(state: Arc<ShimState>, port: ShimPort) -> Result<(), ShimError> {
             .map_err(|e| ShimError::Server(format!("stdout flush failed: {e}")))?;
     }
     let app = agent_driver_prototype::sse_shim::router(state);
+    serve_with_shutdown(listener, app, signals.recv(), DRAIN_WINDOW).await
+}
+
+/// Serve `app` on `listener` until `signal` fires, then wait at most `drain`
+/// for open connections before returning.
+///
+/// Split from [`serve`] so the drain bound can be tested against a real axum
+/// server and a real client, with the signal supplied directly instead of
+/// raised as a process signal.
+async fn serve_with_shutdown(
+    listener: tokio::net::TcpListener,
+    app: axum::Router,
+    signal: impl Future<Output = ()> + Send + 'static,
+    drain: Duration,
+) -> Result<(), ShimError> {
     // The drain bound and the server share one signal: the shutdown future
     // reports the signal onward, so the deadline starts at the signal rather
     // than at bind.
     let (signalled_tx, signalled_rx) = tokio::sync::oneshot::channel();
     let server = axum::serve(listener, app).with_graceful_shutdown(async move {
-        shutdown_signal().await;
+        signal.await;
         // The receiver lives in the select! arm below, which is still being
         // polled while this future runs.
         let _ = signalled_tx.send(());
@@ -316,11 +336,12 @@ async fn serve(state: Arc<ShimState>, port: ShimPort) -> Result<(), ShimError> {
         result = server => {
             result.map_err(|e| ShimError::Server(format!("server serve failed: {e}")))?;
         }
-        () = drain_deadline(async { let _ = signalled_rx.await; }, DRAIN_WINDOW) => {
+        () = drain_deadline(async { let _ = signalled_rx.await; }, drain) => {
             tracing::warn!(
-                drain_window_ms = u64::try_from(DRAIN_WINDOW.as_millis()).unwrap_or(u64::MAX),
+                drain_window_ms = u64::try_from(drain.as_millis()).unwrap_or(u64::MAX),
                 "shutdown drain window elapsed with connections still open; \
-                 abandoning them so queued spans still flush"
+                 giving up on them so queued spans still flush. Their tasks stay \
+                 detached until the runtime tears down at process exit"
             );
         }
     }
@@ -339,10 +360,10 @@ async fn serve(state: Arc<ShimState>, port: ShimPort) -> Result<(), ShimError> {
 /// batch queue with the process.
 ///
 /// Two seconds is long enough that a body still finishing wins the race
-/// normally and short enough to leave the flush three seconds of the adapter's
-/// budget. Abandoning a connection costs a client that is already leaving the
-/// tail of a response it stopped reading; losing the span costs the run its
-/// trace.
+/// normally, and pairs with [`OtelGuard::FLUSH_WINDOW`] to leave a second of
+/// the adapter's budget spare. Giving up on a connection costs a client that
+/// is already leaving the tail of a response it stopped reading; losing the
+/// span costs the run its trace.
 const DRAIN_WINDOW: Duration = Duration::from_secs(2);
 
 /// Complete one `window` after `signal` completes.
@@ -354,30 +375,70 @@ async fn drain_deadline(signal: impl Future<Output = ()>, window: Duration) {
     tokio::time::sleep(window).await;
 }
 
-/// Wait for Ctrl-C or a SIGTERM signal, then complete to trigger axum's
-/// graceful shutdown.
-async fn shutdown_signal() {
-    let ctrl_c = async {
-        if tokio::signal::ctrl_c().await.is_err() {
-            tracing::warn!("ctrl_c signal handler install failed; graceful shutdown degraded");
+/// The registered shutdown signal handlers.
+///
+/// Handlers are installed before the server starts rather than lazily inside
+/// the shutdown future, so a handler that cannot be registered is a startup
+/// error. Installing lazily let an install failure complete the shutdown
+/// future immediately, which with a drain bound in place would tear the server
+/// down one drain window after startup instead of degrading quietly.
+#[cfg(unix)]
+struct ShutdownSignals {
+    terminate: tokio::signal::unix::Signal,
+    interrupt: tokio::signal::unix::Signal,
+}
+
+#[cfg(unix)]
+impl ShutdownSignals {
+    /// Register the SIGTERM and SIGINT handlers.
+    ///
+    /// SIGINT stands in for `tokio::signal::ctrl_c`, which is the same signal
+    /// on unix but reports an install failure only once awaited, too late to
+    /// refuse the startup.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ShimError::Server`] when either handler cannot be registered.
+    fn install() -> Result<Self, ShimError> {
+        use tokio::signal::unix::{SignalKind, signal};
+
+        Ok(Self {
+            terminate: signal(SignalKind::terminate())
+                .map_err(|e| ShimError::Server(format!("SIGTERM handler install failed: {e}")))?,
+            interrupt: signal(SignalKind::interrupt())
+                .map_err(|e| ShimError::Server(format!("SIGINT handler install failed: {e}")))?,
+        })
+    }
+
+    /// Complete when either signal arrives.
+    async fn recv(mut self) {
+        tokio::select! {
+            _ = self.terminate.recv() => {},
+            _ = self.interrupt.recv() => {},
         }
-    };
-    #[cfg(unix)]
-    let terminate = async {
-        match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
-            Ok(mut stream) => {
-                stream.recv().await;
-            }
-            Err(error) => {
-                tracing::warn!(%error, "SIGTERM handler install failed; graceful shutdown degraded");
-            }
+    }
+}
+
+#[cfg(not(unix))]
+struct ShutdownSignals;
+
+#[cfg(not(unix))]
+impl ShutdownSignals {
+    /// Ctrl-C is registered on first await off unix, so there is nothing to
+    /// install up front and nothing that can fail here.
+    fn install() -> Result<Self, ShimError> {
+        Ok(Self)
+    }
+
+    /// Complete when Ctrl-C arrives.
+    ///
+    /// A handler that fails to register leaves this pending rather than
+    /// completing, so a failed install cannot pass for a shutdown request.
+    async fn recv(self) {
+        if let Err(error) = tokio::signal::ctrl_c().await {
+            tracing::error!(%error, "ctrl_c handler install failed; the shim will not shut down on Ctrl-C");
+            std::future::pending::<()>().await;
         }
-    };
-    #[cfg(not(unix))]
-    let terminate = std::future::pending::<()>();
-    tokio::select! {
-        _ = ctrl_c => {},
-        _ = terminate => {},
     }
 }
 
@@ -682,23 +743,142 @@ mod tests {
         );
     }
 
-    /// The window is coupled to a deadline in the adapter repo: the adapter
-    /// SIGKILLs the shim five seconds after SIGTERM, and `OtelGuard::drop`
-    /// has to flush inside the remainder. A window that eats the budget puts
-    /// the shim back where the S75 run found it, with the span dying in the
-    /// batch queue.
+    /// Both windows are coupled to a deadline in the adapter repo: it SIGKILLs
+    /// the shim five seconds after SIGTERM, and the drain and the span flush
+    /// run back to back inside that. This asserts against the bound
+    /// `OtelGuard::drop` really enforces, so raising either window past the
+    /// budget fails here rather than in a benchmark cell.
     #[test]
-    fn the_drain_window_leaves_the_span_flush_room_before_the_adapter_sigkills() {
+    fn the_drain_and_flush_windows_both_fit_inside_the_adapter_sigkill_deadline() {
         let adapter_sigkill_deadline = Duration::from_secs(5);
 
-        let flush_budget = adapter_sigkill_deadline
-            .checked_sub(DRAIN_WINDOW)
-            .expect("the drain window must not outlast the adapter's SIGKILL deadline");
+        let shutdown = DRAIN_WINDOW + OtelGuard::FLUSH_WINDOW;
+        let spare = adapter_sigkill_deadline
+            .checked_sub(shutdown)
+            .expect("drain plus flush must not outlast the adapter's SIGKILL deadline");
 
         assert!(
-            flush_budget >= Duration::from_secs(2),
-            "the drain window leaves the span flush only {flush_budget:?} of the \
-             adapter's {adapter_sigkill_deadline:?} budget"
+            spare >= Duration::from_secs(1),
+            "drain ({DRAIN_WINDOW:?}) plus flush ({:?}) leaves only {spare:?} of the \
+             adapter's {adapter_sigkill_deadline:?} budget",
+            OtelGuard::FLUSH_WINDOW
+        );
+    }
+
+    /// A client that stops reading at `[DONE]` without closing, which is what
+    /// the adapter's stream consumer does, must not hold the shim past the
+    /// adapter's SIGKILL deadline. That is how the S75 run lost five of six
+    /// spans: the drain never ended, `serve` never returned, and the guard
+    /// that flushes the closed span never dropped.
+    ///
+    /// Drives the real serve, signal and drain topology against a real axum
+    /// server and a real socket, with the exporter pointed at a listener that
+    /// accepts and then says nothing, so the flush has to spend its own bound
+    /// too. The span cannot land anywhere; what is under test is that the
+    /// whole shutdown still fits the budget.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_client_that_stops_reading_cannot_hold_the_shim_past_the_adapter_deadline() {
+        use futures::StreamExt as _;
+        use opentelemetry::trace::{Tracer as _, TracerProvider as _};
+        use opentelemetry_otlp::WithExportConfig as _;
+        use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+
+        // A collector that completes the TCP handshake and never speaks gRPC,
+        // so the exporter stalls instead of failing fast on a refused port.
+        let blackhole = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("the blackhole collector binds");
+        let blackhole_port = blackhole
+            .local_addr()
+            .expect("the blackhole collector has an address")
+            .port();
+        tokio::spawn(async move {
+            let mut held = Vec::new();
+            while let Ok((connection, _)) = blackhole.accept().await {
+                held.push(connection);
+            }
+        });
+
+        let exporter = opentelemetry_otlp::SpanExporter::builder()
+            .with_tonic()
+            .with_endpoint(format!("http://127.0.0.1:{blackhole_port}"))
+            .build()
+            .expect("the exporter builds against the blackhole endpoint");
+        let provider = opentelemetry_sdk::trace::SdkTracerProvider::builder()
+            .with_batch_exporter(exporter)
+            .build();
+        let tracer = provider.tracer("sse-shim-test");
+        // A closed span waiting in the batch queue: the thing the flush exists
+        // to save, and the reason the flush cannot be skipped.
+        tracer.in_span("chat.completions", |_| {});
+        let guard = OtelGuard::from_provider(provider);
+
+        // A response that emits [DONE] and then stays open, like the shim's SSE
+        // body while the coordinator task is still unwinding.
+        let app = axum::Router::new().route(
+            "/v1/chat/completions",
+            axum::routing::get(|| async {
+                let body = futures::stream::once(async {
+                    Ok::<_, std::convert::Infallible>(
+                        axum::response::sse::Event::default().data("[DONE]"),
+                    )
+                })
+                .chain(futures::stream::pending());
+                axum::response::sse::Sse::new(body)
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("the shim binds an ephemeral port");
+        let port = listener
+            .local_addr()
+            .expect("the shim has an address")
+            .port();
+
+        let (signal_tx, signal_rx) = tokio::sync::oneshot::channel::<()>();
+        let server = tokio::spawn(serve_with_shutdown(
+            listener,
+            app,
+            async move {
+                let _ = signal_rx.await;
+            },
+            DRAIN_WINDOW,
+        ));
+
+        let mut client = tokio::net::TcpStream::connect(("127.0.0.1", port))
+            .await
+            .expect("the client connects");
+        client
+            .write_all(b"GET /v1/chat/completions HTTP/1.1\r\nHost: localhost\r\n\r\n")
+            .await
+            .expect("the request writes");
+        let mut seen: Vec<u8> = Vec::new();
+        let mut chunk = [0_u8; 1024];
+        while !seen.windows(6).any(|window| window == b"[DONE]") {
+            let read = client.read(&mut chunk).await.expect("the client reads");
+            assert!(read > 0, "the server closed before sending [DONE]");
+            seen.extend_from_slice(&chunk[..read]);
+        }
+
+        // From here the client never reads and never closes, which is the state
+        // the adapter leaves the connection in when it breaks out of its loop.
+        let started = std::time::Instant::now();
+        let _ = signal_tx.send(());
+        server
+            .await
+            .expect("the serve task joins")
+            .expect("serve returns cleanly");
+        drop(guard);
+        let shutdown = started.elapsed();
+
+        assert!(
+            shutdown < Duration::from_secs(5),
+            "drain plus flush took {shutdown:?}, past the adapter's five-second SIGKILL"
+        );
+        assert!(
+            shutdown >= DRAIN_WINDOW,
+            "shutdown finished in {shutdown:?}, short of the drain window, so the \
+             connection was not actually held open and this proved nothing"
         );
     }
 

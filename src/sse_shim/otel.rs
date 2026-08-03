@@ -10,6 +10,7 @@
 //! feature; tower-http).
 
 use std::fmt;
+use std::time::Duration;
 
 // Brings `TracerProvider::shutdown` into scope for `SdkTracerProvider`.
 // The `as _` form is needed for method resolution only; the lint warns
@@ -164,12 +165,23 @@ impl OtelConfig {
 ///
 /// The guard stores `Option<SdkTracerProvider>`: `Some` when an OTLP
 /// endpoint is configured, `None` when tracing is a no-op. `Drop` calls
-/// `shutdown()` on the provider and logs flush failures (C6).
+/// `shutdown_with_timeout()` on the provider, bounded by [`Self::FLUSH_WINDOW`],
+/// and logs flush failures (C6).
 pub struct OtelGuard {
     provider: Option<opentelemetry_sdk::trace::SdkTracerProvider>,
 }
 
 impl OtelGuard {
+    /// How long [`Drop`] may spend flushing queued spans before it gives up.
+    ///
+    /// `SdkTracerProvider::shutdown` bounds itself at five seconds, which is
+    /// the adapter's entire SIGKILL budget and leaves nothing for the server's
+    /// drain ahead of it: a collector that has stopped answering would run the
+    /// flush to seven seconds past SIGTERM and lose the spans it was called to
+    /// save. Two seconds pairs with the binary's drain window to keep the whole
+    /// shutdown inside that budget whether or not the collector answers.
+    pub const FLUSH_WINDOW: Duration = Duration::from_secs(2);
+
     /// A no-op guard with no tracer provider (used when no endpoint is set).
     #[must_use]
     pub fn noop() -> Self {
@@ -188,7 +200,7 @@ impl OtelGuard {
 impl Drop for OtelGuard {
     fn drop(&mut self) {
         if let Some(provider) = self.provider.take()
-            && let Err(error) = provider.shutdown()
+            && let Err(error) = provider.shutdown_with_timeout(Self::FLUSH_WINDOW)
         {
             tracing::error!(
                 %error,

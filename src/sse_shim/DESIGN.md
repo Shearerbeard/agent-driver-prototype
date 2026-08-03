@@ -30,7 +30,7 @@ must exist to compile. Goldens stayed green throughout.
 | C3 BLOCKING | ACCEPTED | `ThinkingDelta` maps to no emitted event; documented in observer and DESIGN.md. |
 | C4 BLOCKING | ACCEPTED | `build_request` spawns the loop and returns `ShimRequest { session_id, event_rx, join_handle }`. Ownership documented below. |
 | C5 BLOCKING | ACCEPTED | `ShimState` holds `artifact_root: PathBuf`, not `ArtifactStore`. `build_request` constructs a per-request `ArtifactStore`, `DagExecutor`, metered provider, and `ShimDagObserver`. |
-| C6 BLOCKING | ACCEPTED | `OtelGuard` stores `Option<SdkTracerProvider>`; `Drop` calls `shutdown()` and logs failures. |
+| C6 BLOCKING | ACCEPTED | `OtelGuard` stores `Option<SdkTracerProvider>`; `Drop` calls `shutdown_with_timeout()` bounded by `FLUSH_WINDOW` and logs failures. |
 | C7 BLOCKING | ACCEPTED | Binary binds first, then serves with `with_graceful_shutdown` and awaits termination or the drain window before `OtelGuard` drops. Per-request span carries `session.id`. |
 | C8 BLOCKING | ACCEPTED | Payload fields private with validated constructors returning `Result`. Runtime-only rules reworded to claim no more than the types enforce. `ShimSessionId::from_correlation` doc notes id-reuse is a generation concern. |
 | C9 MINOR | ACCEPTED | Observer always emits the configured model (`self.model`), never the request's arbitrary `model` string. Documented. |
@@ -193,11 +193,17 @@ The binary:
 
 ### Signal path and drain bound
 
-`shutdown_signal()` selects over SIGTERM and Ctrl-C. On unix it registers a
-`tokio::signal::unix` stream for `SignalKind::terminate()` alongside
-`tokio::signal::ctrl_c()`; a handler that fails to install logs a warning and
-leaves that arm pending rather than shutting the server down. Either signal
-completes the future, which starts axum's graceful shutdown.
+`ShutdownSignals::install()` registers both handlers before the listener
+binds, and either signal starts axum's graceful shutdown. On unix it registers
+`tokio::signal::unix` streams for `SignalKind::terminate()` and
+`SignalKind::interrupt()`; SIGINT stands in for `tokio::signal::ctrl_c`, which
+is the same signal there but reports an install failure only once awaited, too
+late to refuse the startup. A handler that cannot be registered is a
+`ShimError` and the shim exits before claiming the port, which the adapter
+already reads as a failed startup. Installing lazily instead, inside the
+shutdown future, would let an install failure complete that future
+immediately, and with a drain bound in place that tears the server down one
+drain window after startup.
 
 Graceful shutdown alone waits on every open connection with no deadline, and
 that wait is what the S75 run lost its spans to. The adapter sends SIGTERM and
@@ -208,13 +214,23 @@ the process. A client that stops reading its SSE body at `[DONE]`, which is
 what the adapter's stream consumer does, is enough to trigger it.
 
 So `serve` races the server against `drain_deadline`, which completes one
-`DRAIN_WINDOW` after the signal lands. The window is two seconds, leaving
-the flush three seconds of the adapter's budget. When it elapses the server
-future is dropped, abandoning connections that were still open, and the shim
-proceeds to the flush. That trade is deliberate: the cost is the tail of a
+`DRAIN_WINDOW` after the signal lands. The window is two seconds. When it
+elapses the server future is dropped and the shim proceeds to the flush
+without waiting for connections that are still open. Dropping that future
+stops the accept loop and stops the wait; it does not close those connections,
+whose tasks axum has already spawned and which stay detached until the runtime
+tears down at process exit. That trade is deliberate: the cost is the tail of a
 response the client had already stopped reading, and the alternative is losing
 the trace for the whole run. The deadline stays pending until the signal lands,
 so it cannot fire while the shim is serving normally.
+
+The flush that follows is bounded too. `SdkTracerProvider::shutdown` defaults
+to a five-second bound, which is the adapter's entire budget and would let a
+stalled collector run the shutdown to seven seconds past SIGTERM, so
+`OtelGuard::drop` calls `shutdown_with_timeout` with `OtelGuard::FLUSH_WINDOW`
+instead. At two seconds each, the drain and the flush run back to back in four,
+a second inside the adapter's five. `the_drain_and_flush_windows_both_fit_inside_the_adapter_sigkill_deadline`
+asserts that arithmetic against the constants the code actually enforces.
 
 Per-request OTEL spans carry `session.id` as `ShimSessionId::as_str()`, the
 full hyphenated UUID the `aura.session_info` payload also carries, not the
@@ -235,10 +251,11 @@ started/completed events from the `DagExecutor` to the `ShimDagObserver`,
 which emits `aura.orchestrator.*` SSE events.
 
 **R3 - OTEL exporter lifecycle.**
-Resolved by C6. `OtelGuard` stores `Option<SdkTracerProvider>`; `Drop`
-calls `shutdown()` and logs failures. The serve topology (C7) ensures the
-guard outlives the server, and the drain bound in section 4 ensures the
-server actually terminates in time for the guard to run.
+Resolved by C6. `OtelGuard` stores `Option<SdkTracerProvider>`; `Drop` calls
+`shutdown_with_timeout()` and logs failures. The serve topology (C7) ensures
+the guard outlives the server, the drain bound in section 4 ensures the server
+terminates in time for the guard to run, and `FLUSH_WINDOW` ensures the guard
+itself cannot overrun what the drain left.
 
 **R4 - The `chat_completions` return type uses `Empty` as a placeholder
 stream.**
