@@ -432,9 +432,10 @@ impl ShutdownSignals {
     /// install up front and nothing that can fail here.
     ///
     /// This arm therefore has no eager fail-loud guarantee: it always
-    /// succeeds, and a registration that fails later in `recv` leaves the shim
-    /// serving on its port with no way to shut down on a signal. Correcting
-    /// that needs an eager probe this program has no host to test it on.
+    /// succeeds, and a registration that fails later in `recv` leaves graceful
+    /// signal handling and the span flush that depends on it no longer
+    /// guaranteed. Correcting that needs an eager probe this program has no
+    /// host to test it on.
     fn install() -> Result<Self, ShimError> {
         Ok(Self)
     }
@@ -442,11 +443,12 @@ impl ShutdownSignals {
     /// Complete when Ctrl-C arrives.
     ///
     /// A handler that fails to register leaves this pending rather than
-    /// completing, so a failed install cannot pass for a shutdown request. The
-    /// shim keeps serving and shuts down only when the process is killed.
+    /// completing, so a failed install cannot pass for a shutdown request.
+    /// Graceful shutdown through this path, and the span flush that follows
+    /// it, are then no longer guaranteed.
     async fn recv(self) {
         if let Err(error) = tokio::signal::ctrl_c().await {
-            tracing::error!(%error, "ctrl_c handler install failed; the shim will not shut down on Ctrl-C");
+            tracing::error!(%error, "ctrl_c handler install failed; graceful shutdown and the span flush that follows it are not guaranteed");
             std::future::pending::<()>().await;
         }
     }

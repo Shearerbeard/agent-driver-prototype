@@ -207,11 +207,11 @@ drain window after startup.
 
 That eager fail-loud guarantee is unix-only, which is where this program runs
 the shim. Off unix there is nothing to install up front: `install()` always
-succeeds, and a Ctrl-C registration that fails later leaves the shim serving
-on its port with no signal path, shutting down only when the process is
-killed. The arm stays pending on that failure rather than completing, so a
-failed registration cannot pass for a shutdown request and trip the drain
-bound. Closing the gap needs an eager probe and a host to test it on.
+succeeds, and a Ctrl-C registration that fails later leaves graceful signal
+handling, and the span flush that depends on it, no longer guaranteed. The arm
+stays pending on that failure rather than completing, so a failed registration
+cannot pass for a shutdown request and trip the drain bound. Closing the gap
+needs an eager probe and a host to test it on.
 
 Graceful shutdown alone waits on every open connection with no deadline, and
 that wait is what the S75 run lost its spans to. The adapter sends SIGTERM and
