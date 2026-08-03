@@ -1020,6 +1020,89 @@ fn roster_carries_per_worker_turn_depth_and_rejects_zero() {
     );
 }
 
+/// A configured turn depth wider than the budget's `u32` is rejected rather
+/// than saturated to `u32::MAX`.
+///
+/// Saturating turns a typo into a worker that runs four billion turns deep,
+/// and the config that caused it is nowhere near the eventual stop. The parse
+/// is the only place the original number is still in hand.
+#[test]
+fn roster_rejects_a_turn_depth_wider_than_the_budget() {
+    let out_of_range = usize::try_from(u32::MAX).expect("a 64-bit usize") + 1;
+    let mut workers = HashMap::new();
+    workers.insert(
+        "verifier".to_owned(),
+        WorkerConfig {
+            description: "Verification".to_owned(),
+            preamble: String::new(),
+            mcp_filter: Vec::new(),
+            vector_stores: Vec::new(),
+            turn_depth: Some(out_of_range),
+            llm: None,
+            scratchpad: None,
+            skills: None,
+        },
+    );
+    let config = OrchestrationConfig {
+        enabled: true,
+        workers,
+        ..Default::default()
+    };
+
+    assert_eq!(
+        WorkerRoster::from_config(
+            &config,
+            ToolListLimit::new(10),
+            &[],
+            &ToolInventory::empty()
+        ),
+        Err(CoordinatorLoopError::TurnDepthOutOfRange(out_of_range)),
+        "an out-of-range turn depth fails loud at the parse, carrying the \
+         configured number"
+    );
+}
+
+/// A worker whose name the role parse refuses fails the roster build rather
+/// than disappearing from it.
+///
+/// A dropped worker leaves the planning schema offering a shorter roster than
+/// the configuration named, and the only symptom is a coordinator that never
+/// assigns the missing worker any work.
+#[test]
+fn roster_rejects_a_worker_name_that_is_not_a_role() {
+    let mut workers = HashMap::new();
+    workers.insert(
+        "   ".to_owned(),
+        WorkerConfig {
+            description: "Nameless".to_owned(),
+            preamble: String::new(),
+            mcp_filter: Vec::new(),
+            vector_stores: Vec::new(),
+            turn_depth: None,
+            llm: None,
+            scratchpad: None,
+            skills: None,
+        },
+    );
+    let config = OrchestrationConfig {
+        enabled: true,
+        workers,
+        ..Default::default()
+    };
+
+    let error = WorkerRoster::from_config(
+        &config,
+        ToolListLimit::new(10),
+        &[],
+        &ToolInventory::empty(),
+    )
+    .expect_err("a whitespace-only worker name is not a role");
+    assert!(
+        matches!(error, CoordinatorLoopError::UnusableWorkerName(_)),
+        "the rejection travels through the roster's own error channel, got: {error}"
+    );
+}
+
 /// An empty roster renders three empty strings, matching the oracle's
 /// no-workers path.
 #[test]

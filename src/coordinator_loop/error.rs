@@ -17,6 +17,17 @@ pub enum CoordinatorLoopError {
     /// tool call, so the run could never produce an answer.
     #[error("loop budget must allow at least one turn")]
     ZeroTurnBudget,
+    /// A configured turn depth wider than the budget's `u32`. Saturating it
+    /// would run the worker at a depth the configuration never named, which
+    /// only shows up as an unexplained stop far from the config that caused
+    /// it.
+    #[error("configured turn depth {0} does not fit a 32-bit turn budget")]
+    TurnDepthOutOfRange(usize),
+    /// A configured worker name the role parse refused. Dropping it would
+    /// leave the planner a roster shorter than the configuration, with no
+    /// signal that a worker went missing.
+    #[error("configured worker name is not a usable role: {0}")]
+    UnusableWorkerName(ContextError),
     /// An empty final answer is indistinguishable from no answer, which the
     /// outcome already represents as its own case.
     #[error("final response text is empty")]

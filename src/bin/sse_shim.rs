@@ -35,7 +35,7 @@ use agent_driver_prototype::config_builders::{build_coordinator_preamble, build_
 use agent_driver_prototype::coordinator_loop::{LoopBudget, WorkerRoster, WorkerSections};
 use agent_driver_prototype::dag_executor::WorkerLoopConfig;
 use agent_driver_prototype::mcp_client::SidecarClient;
-use agent_driver_prototype::producers::ToolInventory;
+use agent_driver_prototype::producers::{ToolInventory, resolve_worker_tools};
 use agent_driver_prototype::sse_shim::{OtelConfig, ShimCliArgs, ShimError, ShimPort, ShimState};
 
 use agent_driver_rs::config::ProviderConfig;
@@ -148,6 +148,7 @@ async fn build_state(args: &ShimCliArgs) -> Result<ShimState, ShimError> {
         &inventory,
     )
     .map_err(|e| ShimError::Server(e.to_string()))?;
+    check_tool_wiring(&config.orchestration_config, &inventory)?;
     let worker_sections = WorkerSections::from_roster(roster);
 
     // Worker preamble + the run-wide budget the executor falls back to when
@@ -156,9 +157,18 @@ async fn build_state(args: &ShimCliArgs) -> Result<ShimState, ShimError> {
     let worker_budget = config
         .agent
         .turn_depth
-        .map(|t| LoopBudget::new(u32::try_from(t).unwrap_or(u32::MAX)))
-        .transpose()
-        .map_err(|e| ShimError::Server(e.to_string()))?
+        .map(|turns| {
+            u32::try_from(turns)
+                .map_err(|_| {
+                    ShimError::Server(format!(
+                        "[agent].turn_depth {turns} does not fit a 32-bit turn budget"
+                    ))
+                })
+                .and_then(|turns| {
+                    LoopBudget::new(turns).map_err(|e| ShimError::Server(e.to_string()))
+                })
+        })
+        .transpose()?
         .unwrap_or(LoopBudget::CANONICAL);
     let worker_config = WorkerLoopConfig {
         provider: Arc::clone(&base_provider),
@@ -175,8 +185,7 @@ async fn build_state(args: &ShimCliArgs) -> Result<ShimState, ShimError> {
         .saturating_mul(2)
         .saturating_add(4)
         .max(1);
-    let budget =
-        LoopBudget::new(coordinator_turns as u32).map_err(|e| ShimError::Server(e.to_string()))?;
+    let budget = coordinator_budget(coordinator_turns)?;
 
     // Inline spill threshold.
     let inline_threshold = match config.orchestration.artifacts.result_artifact_threshold {
@@ -205,6 +214,66 @@ async fn build_state(args: &ShimCliArgs) -> Result<ShimState, ShimError> {
         inline_threshold,
         args.config_path().to_path_buf(),
     ))
+}
+
+/// Parse the coordinator's turn depth, derived from `max_planning_cycles`.
+///
+/// The derivation saturates, so a `max_planning_cycles` past `usize`'s range
+/// arrives here as a huge but finite number. An `as u32` cast would wrap it
+/// to whatever the low 32 bits held, which is how a config asking for an
+/// enormous depth becomes a coordinator that stops after a handful of turns.
+fn coordinator_budget(turns: usize) -> Result<LoopBudget, ShimError> {
+    let turns = u32::try_from(turns).map_err(|_| {
+        ShimError::Server(format!(
+            "[orchestration].max_planning_cycles derives a turn depth of {turns}, \
+             which does not fit a 32-bit turn budget"
+        ))
+    })?;
+    LoopBudget::new(turns).map_err(|e| ShimError::Server(e.to_string()))
+}
+
+/// Reject a startup whose tool wiring would hand a worker an empty tool list.
+///
+/// Both rejections reproduce one failure class the run-1 trace showed: a
+/// worker with no tools drives its turns without ever reaching the terminal,
+/// and the run ends `depth_exhausted` with nothing to show for it. Neither
+/// state is distinguishable at runtime from a worker that simply chose not to
+/// act, so the shim refuses to start instead.
+///
+/// This is the shim's rule, not the crate's. The corpus path resolves against
+/// [`ToolInventory::empty`] deliberately, so the same conditions there are the
+/// configured behaviour rather than a fault.
+fn check_tool_wiring(
+    config: &OrchestrationConfig,
+    inventory: &ToolInventory,
+) -> Result<(), ShimError> {
+    if inventory.names().is_empty() {
+        return Err(ShimError::Server(
+            "sidecar advertised no tools; every worker would resolve an empty tool list".to_owned(),
+        ));
+    }
+
+    let resolved = resolve_worker_tools(config, inventory);
+    let mut starved: Vec<String> = config
+        .workers
+        .iter()
+        .filter(|(name, worker)| {
+            !worker.mcp_filter.is_empty()
+                && resolved.get(*name).is_none_or(|tools| tools.is_empty())
+        })
+        .map(|(name, worker)| format!("'{name}' (mcp_filter {:?})", worker.mcp_filter))
+        .collect();
+    if starved.is_empty() {
+        return Ok(());
+    }
+    // The worker map is a HashMap, so the message is sorted to keep a
+    // multi-worker failure reproducible.
+    starved.sort();
+    Err(ShimError::Server(format!(
+        "no sidecar tool matches the mcp_filter of {}; advertised tools: {:?}",
+        starved.join(", "),
+        inventory.names()
+    )))
 }
 
 /// Bind the axum server to the configured port, print `SHIM_PORT=<n>` if
@@ -427,5 +496,117 @@ fn parse_tool_visibility(raw: &str) -> ToolVisibility {
         "none" => ToolVisibility::None,
         "full" => ToolVisibility::Full,
         _ => ToolVisibility::Summary,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn worker(mcp_filter: &[&str]) -> WorkerConfig {
+        WorkerConfig {
+            description: "Terminal work".to_owned(),
+            preamble: String::new(),
+            mcp_filter: mcp_filter.iter().map(|p| (*p).to_owned()).collect(),
+            vector_stores: Vec::new(),
+            turn_depth: None,
+            llm: None,
+            scratchpad: None,
+            skills: None,
+        }
+    }
+
+    fn config_with(workers: &[(&str, WorkerConfig)]) -> OrchestrationConfig {
+        let mut config = OrchestrationConfig {
+            enabled: true,
+            ..Default::default()
+        };
+        for (name, worker) in workers {
+            config.workers.insert((*name).to_owned(), worker.clone());
+        }
+        config
+    }
+
+    /// A sidecar that advertised nothing is not the corpus's deliberate
+    /// MCP-less run: every worker resolves an empty tool list, and the run
+    /// would reach `depth_exhausted` without a single terminal call.
+    #[test]
+    fn an_empty_sidecar_inventory_is_rejected() {
+        let config = config_with(&[("operator", worker(&["keystrokes"]))]);
+
+        let error = check_tool_wiring(&config, &ToolInventory::empty())
+            .expect_err("an empty inventory starves every worker");
+        assert!(
+            error.to_string().contains("sidecar advertised no tools"),
+            "the message names the empty inventory, got: {error}"
+        );
+    }
+
+    /// A filter matching nothing collapses to the same zero-tool worker as an
+    /// empty inventory, so it is rejected with the worker and filter named.
+    #[test]
+    fn a_filter_matching_no_advertised_tool_is_rejected() {
+        let config = config_with(&[
+            ("operator", worker(&["keystrokes"])),
+            ("analyst", worker(&["mezmo_*"])),
+        ]);
+        let inventory = ToolInventory::from_names(["keystrokes", "capture-pane"]);
+
+        let error = check_tool_wiring(&config, &inventory)
+            .expect_err("no advertised tool matches 'mezmo_*'");
+        let message = error.to_string();
+        assert!(
+            message.contains("'analyst'") && message.contains("mezmo_*"),
+            "the message names the starved worker and its filter, got: {message}"
+        );
+        assert!(
+            !message.contains("'operator'"),
+            "a worker whose filter did match is not reported, got: {message}"
+        );
+    }
+
+    /// A derived turn depth wider than the budget's `u32` is rejected rather
+    /// than wrapped.
+    ///
+    /// An `as u32` cast keeps the low 32 bits, so a depth just past the range
+    /// reads back as a coordinator that stops almost immediately - the
+    /// opposite of what the config asked for.
+    #[test]
+    fn a_coordinator_depth_wider_than_the_budget_is_rejected() {
+        let out_of_range = usize::try_from(u32::MAX).expect("a 64-bit usize") + 1;
+
+        let error = coordinator_budget(out_of_range).expect_err("the derived depth exceeds a u32");
+        assert!(
+            error.to_string().contains("max_planning_cycles"),
+            "the message names the config field the depth came from, got: {error}"
+        );
+    }
+
+    /// The four-cycle default derives the canonical twelve turns, the
+    /// derivation `LoopBudget::CANONICAL` documents.
+    #[test]
+    fn the_default_planning_cycles_derive_the_canonical_depth() {
+        let turns = default_max_planning_cycles()
+            .saturating_mul(2)
+            .saturating_add(4)
+            .max(1);
+
+        assert_eq!(
+            coordinator_budget(turns).expect("twelve is a spendable depth"),
+            LoopBudget::CANONICAL
+        );
+    }
+
+    /// Every worker resolving at least one tool passes, including one that
+    /// filters nothing and takes the whole inventory.
+    #[test]
+    fn a_matched_filter_and_an_absent_filter_both_pass() {
+        let config = config_with(&[
+            ("operator", worker(&["keystrokes", "capture-pane"])),
+            ("analyst", worker(&[])),
+        ]);
+        let inventory = ToolInventory::from_names(["keystrokes", "capture-pane"]);
+
+        assert_eq!(check_tool_wiring(&config, &inventory), Ok(()));
     }
 }

@@ -5,9 +5,17 @@
 //! queued number of provider calls.
 
 use std::collections::HashMap;
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
+use agent_driver_rs::error::ProviderError;
 use agent_driver_rs::provider::mock::{MockProvider, mock_text_response, mock_tool_call_response};
+use agent_driver_rs::provider::{
+    CompletionRequest, ModelInfo, Provider, ProviderContext, ProviderInfo,
+};
+use agent_driver_rs::streaming::StreamHandle;
 use agent_driver_rs::tool::ToolContext;
 use agent_driver_rs::types::{ModelId, SystemPrompt};
 use tokio_util::sync::CancellationToken;
@@ -450,16 +458,66 @@ fn sections_with_worker_depth(turn_depth: usize) -> WorkerSections {
     )
 }
 
+/// A provider that counts the completions it serves before delegating.
+///
+/// `MockProvider` panics on an exhausted queue but exposes no count, so a
+/// queue of N responses only bounds the turns taken from above. Counting the
+/// calls turns that bound into the exact figure a depth assertion needs.
+struct CountingProvider {
+    inner: MockProvider,
+    calls: Arc<std::sync::atomic::AtomicUsize>,
+}
+
+impl CountingProvider {
+    fn new(responses: Vec<Vec<agent_driver_rs::StreamEvent>>) -> (Self, Arc<AtomicUsize>) {
+        let calls = Arc::new(AtomicUsize::new(0));
+        (
+            Self {
+                inner: MockProvider::new(responses),
+                calls: Arc::clone(&calls),
+            },
+            calls,
+        )
+    }
+}
+
+impl Provider for CountingProvider {
+    fn info(&self) -> &ProviderInfo {
+        self.inner.info()
+    }
+
+    fn complete_stream(
+        &self,
+        request: CompletionRequest,
+        ctx: ProviderContext,
+    ) -> Pin<Box<dyn Future<Output = Result<StreamHandle, ProviderError>> + Send + '_>> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        self.inner.complete_stream(request, ctx)
+    }
+
+    fn list_models(
+        &self,
+        ctx: ProviderContext,
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<ModelInfo>, ProviderError>> + Send + '_>> {
+        self.inner.list_models(ctx)
+    }
+}
+
 /// The worker loop runs at its own configured `turn_depth`, not the run-wide
 /// budget from [`WorkerLoopConfig`].
 ///
-/// The mock arithmetic is the proof. The worker's section depth is 1 while
-/// the run-wide budget is 8, and exactly 2 responses are queued: the worker
-/// calls `submit_result` with a blank summary (which the tool rejects), then
-/// the second round hits the depth-1 ceiling before executing. A run that
-/// ignored the section depth would issue a third provider call and panic the
-/// mock on an exhausted queue, so reaching the assertions proves the loop ran
-/// at depth 1.
+/// The provider-call count is the proof, and the queue is deliberately deeper
+/// than the run needs so the count is the only thing proving anything. The
+/// substrate spends one provider call opening the conversation and one more
+/// per tool round, so a depth of `d` costs exactly `d + 1` calls: the section
+/// depth of 1 is two calls, and the run-wide 8 would be nine. Every response
+/// the worker calls `submit_result` with a blank summary, which the tool
+/// rejects, so nothing but the depth ceiling can stop the loop.
+///
+/// Sizing the queue to the expected count instead would prove only that the
+/// depth was no larger — the mock's exhaustion panic, not the assertion,
+/// would be carrying the argument, and a depth of 2 reads the same as a depth
+/// of 1 until the queue runs dry.
 #[tokio::test]
 async fn worker_loop_runs_at_the_section_turn_depth_not_the_run_wide_budget() {
     let runs = RunStore::new();
@@ -477,21 +535,21 @@ async fn worker_loop_runs_at_the_section_turn_depth_not_the_run_wide_budget() {
         .expect("valid plan");
     let _plan_id = runs.record_plan(&args, plan.clone());
 
-    let responses = vec![
-        mock_tool_call_response(
-            "w0",
-            "submit_result",
-            &submit_result_json("  ", "result", "high"),
-        ),
-        mock_tool_call_response(
-            "w1",
-            "submit_result",
-            &submit_result_json("  ", "result", "high"),
-        ),
-    ];
+    // Nine responses: what the run-wide budget of 8 would consume if the
+    // section depth were ignored.
+    let responses: Vec<Vec<agent_driver_rs::StreamEvent>> = (0..9)
+        .map(|turn| {
+            mock_tool_call_response(
+                &format!("w{turn}"),
+                "submit_result",
+                &submit_result_json("  ", "result", "high"),
+            )
+        })
+        .collect();
 
+    let (provider, provider_calls) = CountingProvider::new(responses);
     let config = WorkerLoopConfig {
-        provider: Arc::new(MockProvider::new(responses)),
+        provider: Arc::new(provider),
         model: model(),
         budget: LoopBudget::new(8).expect("non-zero budget"),
         system_prompt: SystemPrompt::new("You are a worker."),
@@ -520,6 +578,13 @@ async fn worker_loop_runs_at_the_section_turn_depth_not_the_run_wide_budget() {
         *category,
         FailureCategory::DepthExhausted,
         "the depth-1 section budget stopped the worker, not the run-wide 8"
+    );
+    assert_eq!(
+        provider_calls.load(Ordering::SeqCst),
+        2,
+        "the worker took exactly the section's one tool round (one opening \
+         call plus one), leaving seven queued responses unconsumed; the \
+         run-wide 8 would have taken nine calls"
     );
 }
 

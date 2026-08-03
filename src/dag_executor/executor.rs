@@ -92,6 +92,13 @@ impl DagExecutor {
 
     /// The roster spec for a task's assigned worker, when the task names one
     /// the roster carries.
+    ///
+    /// A plan parses against the same roster the executor holds, so in
+    /// production a named worker is always found and the `None` case only
+    /// covers an unassigned task. The lookup stays total rather than
+    /// asserting, because the name it resolves originated in LLM-authored
+    /// plan arguments: defense in depth at that boundary, not a state the
+    /// rest of the system can reach.
     fn spec_for(&self, task: &Task) -> Option<&WorkerSpec> {
         let worker_name = task.worker.as_deref()?;
         self.worker_sections
@@ -627,6 +634,10 @@ mod tests {
             RUN_WIDE_TURNS,
             "an unassigned task spends the run-wide budget"
         );
+        // Unreachable in production: `to_plan` parses every worker name
+        // against this same roster. Pinned anyway because the name arrives
+        // from LLM-authored plan arguments, so this is the fallback at that
+        // boundary rather than a reachable state of the executor.
         assert_eq!(
             executor
                 .resolve_budget(&task_for(Some("not-in-roster")))

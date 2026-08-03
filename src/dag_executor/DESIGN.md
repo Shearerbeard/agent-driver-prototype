@@ -168,11 +168,23 @@ appears under the `# Worker Agent` header).
 **R9 - Resolved: the turn-depth budget resolves per worker.**
 `WorkerSpec` carries `budget: Option<LoopBudget>`, captured from
 `WorkerConfig.turn_depth`. `DagExecutor::resolve_budget` mirrors
-`resolve_preamble`: the assigned worker's own depth wins, and an
-unassigned task, a worker the roster does not carry, or a worker that
-configured no depth falls back to `WorkerLoopConfig::budget`. A single
+`resolve_preamble`: a worker that configured its own depth spends it, and
+everything else falls back to `WorkerLoopConfig::budget`. That fallback
+covers a task naming no worker at all, plus the defensive case of a name
+the roster does not carry, which a parsed plan cannot produce. A single
 roster-wide budget would give a verifier the debugger's depth and cap a
 24-turn operator at the coordinator's own depth.
+
+**R10 - The shared `SidecarClient` has never run concurrently.**
+`execute` awaits each ready task's worker inline, so the DAG is walked one
+task at a time and the single `SidecarClient` the executor holds is only ever
+touched by one worker at a time. Its concurrent-session behaviour is
+untested and unclaimed: the classic-SSE transport resolves one
+messages URL per session, and nothing establishes what two workers posting
+`tools/call` against that session at once would do. Dispatching a ready set
+in parallel is the change that would expose this, so it must be preceded by
+an audit of `SidecarClient`'s concurrent-session semantics - one client per
+worker, or a documented guarantee that sharing one is safe.
 
 **R5 - Resolved: `WorkerLoop::run_task` takes `&Task`.**
 The signature changed from `&Plan` to `&Task`. The executor passes the

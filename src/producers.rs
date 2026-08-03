@@ -399,12 +399,25 @@ impl ToolInventory {
     /// [`ToolListLimit`] truncates the tail, so an inventory that reorders
     /// its names changes which tools the coordinator sees under a tight
     /// limit.
+    ///
+    /// A repeated name is kept once, at its first position, and an empty name
+    /// is dropped. Both would otherwise survive into a worker's tool list: a
+    /// duplicate spends a [`ToolListLimit`] slot twice, and an empty name
+    /// names a tool no `tools/call` could reach. Neither is worth failing a
+    /// startup over, so this stays infallible.
     pub fn from_names<I, S>(names: I) -> Self
     where
         I: IntoIterator<Item = S>,
         S: Into<String>,
     {
-        Self(names.into_iter().map(Into::into).collect())
+        let mut kept: Vec<String> = Vec::new();
+        for name in names {
+            let name = name.into();
+            if !name.is_empty() && !kept.iter().any(|seen| seen == &name) {
+                kept.push(name);
+            }
+        }
+        Self(kept)
     }
 
     /// The advertised tool names, in advertisement order.
@@ -720,6 +733,26 @@ mod tests {
 
         let worker_tools = resolve_worker_tools(&config, &ToolInventory::empty());
         assert!(worker_tools.get("operator").unwrap().is_empty());
+    }
+
+    /// A repeated advertised name is kept once at its first position and an
+    /// empty name is dropped, so neither reaches a worker's tool list or
+    /// spends a `ToolListLimit` slot.
+    #[test]
+    fn from_names_deduplicates_in_first_seen_order_and_drops_empty_names() {
+        let inventory = ToolInventory::from_names([
+            "keystrokes",
+            "",
+            "capture-pane",
+            "keystrokes",
+            "capture-pane",
+        ]);
+
+        assert_eq!(
+            inventory.names(),
+            &["keystrokes".to_string(), "capture-pane".to_string()],
+            "first-seen order survives the deduplication"
+        );
     }
 
     #[test]

@@ -3,7 +3,7 @@
 Baseline: spike repo `agent-driver-prototype` on top of the S70 frame port
 and the S71/S72 coordinator-loop and DAG-executor types, against the
 `agent-driver-rs` pin at `674a093`. Scope: `src/sse_shim/` and
-`src/bin/sse_shim.rs` — the HTTP server that wraps the coordinator loop
+`src/bin/sse_shim.rs` - the HTTP server that wraps the coordinator loop
 behind an OpenAI-compatible `/v1/chat/completions` endpoint, emitting the
 full `aura.*` SSE event vocabulary.
 
@@ -31,8 +31,8 @@ must exist to compile. Goldens stayed green throughout.
 | C4 BLOCKING | ACCEPTED | `build_request` spawns the loop and returns `ShimRequest { session_id, event_rx, join_handle }`. Ownership documented below. |
 | C5 BLOCKING | ACCEPTED | `ShimState` holds `artifact_root: PathBuf`, not `ArtifactStore`. `build_request` constructs a per-request `ArtifactStore`, `DagExecutor`, metered provider, and `ShimDagObserver`. |
 | C6 BLOCKING | ACCEPTED | `OtelGuard` stores `Option<SdkTracerProvider>`; `Drop` calls `shutdown()` and logs failures. |
-| C7 BLOCKING | ACCEPTED | Binary binds first, serves with `with_graceful_shutdown`, awaits termination before `OtelGuard` drops. Per-request span carries `session.id`. |
-| C8 BLOCKING | ACCEPTED | Payload fields private with validated constructors returning `Result`. Runtime-only rules reworded honestly. `ShimSessionId::from_correlation` doc notes id-reuse is a generation concern. |
+| C7 BLOCKING | ACCEPTED | Binary binds first, then serves with `with_graceful_shutdown` and awaits full termination before `OtelGuard` drops. Per-request span carries `session.id`. |
+| C8 BLOCKING | ACCEPTED | Payload fields private with validated constructors returning `Result`. Runtime-only rules reworded to claim no more than the types enforce. `ShimSessionId::from_correlation` doc notes id-reuse is a generation concern. |
 | C9 MINOR | ACCEPTED | Observer always emits the configured model (`self.model`), never the request's arbitrary `model` string. Documented. |
 | C10 MINOR | ACCEPTED | Bounded channel (`EVENT_CHANNEL_CAPACITY = 256`); disconnect logged. |
 | C11 MINOR | ACCEPTED | `SHIM_PORT=<n>` printed only when requested port was 0, after bind, before serving. Adapter always passes a concrete port. |
@@ -43,7 +43,7 @@ must exist to compile. Goldens stayed green throughout.
 | A5 MINOR | ACCEPTED | `FinishReason::ToolCalls` removed. |
 | A6 MINOR | REJECTED | `LoopStopReason::ContentFilter` is not feature-gated; confirmed by grep (observer.rs:105 `#[non_exhaustive]`, line 118 `ContentFilter`, no `#[cfg]` on or near the variant). Wildcard arm maps unknowns to `Stop`. No code change. |
 | A7 MINOR | ACCEPTED | `ShimError` implements `IntoResponse`: `InvalidRequest` → 400, others → 500, JSON body. |
-| A8 | RETRACTED | No action. |
+| A8 | RETRACTED | Withdrawn by the reviewer, so nothing was changed for it. |
 | A9 MINOR | ACCEPTED (doc only) | Typestate rejected. DESIGN.md states `Done` ordering is a runtime convention owned by `ShimObserver`. |
 | A10 MINOR | REJECTED | `duration_ms: u64` stays (R5 owns real timestamps; 0ms is legitimate). DESIGN.md note suffices. |
 
@@ -58,8 +58,8 @@ invariant at construction (C8).
 | `ShimSessionId` | One session per `/v1/chat/completions` request; OTEL spans and `aura.session_info` both carry it | An empty or non-UUID session id (private inner field + constructors enforce this). Id reuse across requests is a generation-time concern, not type-level: `from_correlation` cannot prevent it; `generate` is the per-request path (C8) |
 | `UsageAccumulator` | Token totals accumulate across all provider calls in one request, feeding the terminal `aura.usage` event. Written by `UsageMeteringProvider` (C1); read by the observer at `LoopComplete` | Negative token counts (`u64` prevents this). Double-counting is structurally prevented: the observer no longer writes; the metered provider is the single writer (C1) |
 | `UsageMeteringProvider` | Per-request provider decorator that meters token usage from every `complete_stream` call, regardless of which loop path the pin takes (C1) | A metered provider without a sink (the constructor takes both inner and sink) |
-| `DagLifecycleObserver` | Trait: the `DagExecutor` calls `on_task_started`/`on_task_completed` around each task run (C2) | — (trait; implementations enforce their own invariants) |
-| `ShimDagObserver` | The shim's `DagLifecycleObserver` impl: emits `aura.orchestrator.task_started`/`task_completed` to the event channel (C2) | — (constructed by `build_request`; body is `todo!()`) |
+| `DagLifecycleObserver` | Trait: the `DagExecutor` calls `on_task_started`/`on_task_completed` around each task run (C2) | - (trait; implementations enforce their own invariants) |
+| `ShimDagObserver` | The shim's `DagLifecycleObserver` impl: emits `aura.orchestrator.task_started`/`task_completed` to the event channel (C2) | - (constructed by `build_request`; body is `todo!()`) |
 | `SessionInfoPayload` | `aura.session_info` carries the model, session id, and optional context limit at stream start | An empty `session_id` or `model`; a `model_context_limit` of zero. Private fields + `new` returning `Result` enforce this |
 | `UsagePayload` | `aura.usage` carries the accumulated token totals at stream end | `total_tokens != prompt_tokens + completion_tokens`. The `from_totals` constructor derives the sum (infallible) |
 | `ToolStartPayload` | `aura.tool_start` carries the tool call id, name, and agent identity when a tool begins | Empty `tool_id` or `tool_name`. Private fields + `new` returning `Result` |
@@ -75,17 +75,17 @@ invariant at construction (C8).
 | `OtelEndpoint` | The OTLP exporter endpoint URL, read from the standard `OTEL_EXPORTER_OTLP_ENDPOINT` env var | An empty endpoint URL reaching the exporter builder |
 | `OtelConfig` | OTEL configuration loaded from the environment; when no endpoint is set, tracing is a no-op | A config that mixes a set endpoint with a no-op provider; a config carrying an invalid endpoint past construction |
 | `OtelGuard` | Owns the `SdkTracerProvider` for the server's lifetime; on drop, calls `shutdown()` and logs flush failures (C6) | A tracer provider dropped before spans are exported. The guard stores `Option<SdkTracerProvider>`; `Drop` shuts it down |
-| `ShimPort` | The TCP port the shim listens on; `0` means ephemeral, reported as `SHIM_PORT=<n>` on stdout | None at the type level — `u16` prevents values outside `[0, 65535]` |
+| `ShimPort` | The TCP port the shim listens on; `0` means ephemeral, reported as `SHIM_PORT=<n>` on stdout | None at the type level - `u16` prevents values outside `[0, 65535]` |
 | `ShimCliArgs` | Parsed CLI args: `--port`, `--sidecar-url`, `--config` | A missing sidecar URL or config path reaching server startup; the constructor validates all three |
 | `ChatRole` | The role of a chat message, as the OpenAI wire format carries it | An unknown role string causing deserialization failure; `#[serde(other)]` maps unrecognized roles to `Other` |
 | `ChatMessage` | One message in a chat-completions request | Empty `content` (runtime-only; validation is in the handler, not at deserialization) |
 | `ChatCompletionsRequest` | The `POST /v1/chat/completions` request body matching the adapter's wire contract | An empty `messages` list; `stream: false` (runtime-only; validation is in the handler). The `model` field is the request's arbitrary string; the shim always emits the *configured* model (C9) |
 | `ShimState` | Shared server state holding only truly shareable config (C5) | A state without a base provider, model, or sidecar. The constructor takes all parts |
-| `ShimRequest` | Per-request state: event receiver, session id, and loop join handle (C4) | A receiver whose sender was dropped before the loop ran (the stream handler detects this and emits an error termination) |
+| `ShimRequest` | Per-request state: the event receiver and session id, plus the loop's join handle (C4) | A receiver whose sender was dropped before the loop ran (the stream handler detects this and emits an error termination) |
 | `ShimError` | A `ShimError` names the boundary that raised it; implements `IntoResponse` (A7) | A blanket error that reports every failure under one message; the variant set is closed so callers can match exhaustively |
-| `EVENT_CHANNEL_CAPACITY` | The bounded event-channel capacity (C10) | — (constant: 256) |
-| `health` | `GET /health` handler returning `200 OK` with a JSON status body | — (infallible) |
-| `shared_accumulator` | Convenience constructor for `Arc<Mutex<UsageAccumulator>>` | — (infallible) |
+| `EVENT_CHANNEL_CAPACITY` | The bounded event-channel capacity (C10) | - (constant: 256) |
+| `health` | `GET /health` handler returning `200 OK` with a JSON status body | - (infallible) |
+| `shared_accumulator` | Convenience constructor for `Arc<Mutex<UsageAccumulator>>` | - (infallible) |
 
 ### Types reused, not redefined
 
@@ -122,13 +122,13 @@ from `crate::producers`; `WorkerLoopConfig`,
 ## 3. Per-request construction shape (C1/C2/C4/C5)
 
 `ShimState` holds only truly shareable config:
-- `base_provider: Arc<dyn Provider>` — the real provider, shared
-- `model: ModelId` — the configured model (always emitted in events, C9)
+- `base_provider: Arc<dyn Provider>` - the real provider, shared
+- `model: ModelId` - the configured model (always emitted in events, C9)
 - `coordinator_prompt: SystemPrompt`
 - `budget: LoopBudget`
 - `sidecar: SidecarClient`
-- `artifact_root: PathBuf` — root for per-request artifact stores
-- `worker_config: WorkerLoopConfig` — with the base provider
+- `artifact_root: PathBuf` - root for per-request artifact stores
+- `worker_config: WorkerLoopConfig` - with the base provider
 - `worker_sections: WorkerSections`
 - `inline_threshold: InlineThreshold`
 - `config_path: PathBuf`
@@ -137,7 +137,7 @@ from `crate::producers`; `WorkerLoopConfig`,
 1. Fresh `ShimSessionId` via `generate()`
 2. Fresh `Arc<Mutex<UsageAccumulator>>` (the usage sink)
 3. `UsageMeteringProvider` wrapping `base_provider` + sink (C1)
-4. Bounded event channel with `EVENT_CHANNEL_CAPACITY` (C10); emit `aura.session_info` as the first event (model + session id; `model_context_limit`/`trace_id` omitted — `ShimState` carries no context window or trace id)
+4. Bounded event channel with `EVENT_CHANNEL_CAPACITY` (C10); emit `aura.session_info` as the first event (model + session id; `model_context_limit`/`trace_id` omitted - `ShimState` carries no context window or trace id)
 5. `ShimObserver` (session id, configured model, chat-completion id, usage sink, event sender)
 6. `ShimDagObserver` (session id, event sender) (C2)
 7. Fresh `ArtifactStore` at `artifact_root.join(session_id)` (C5)
@@ -164,7 +164,7 @@ and resolves the messages URL; the 2024-11-05 spec requires an `initialize`
 plus the `notifications/initialized` notification before any further
 request, and a sidecar that receives `tools/call` first answers
 `Received request before initialization was complete` and drops the
-session. `build_state` therefore calls `initialize`, then `tools/list`.
+session. So `build_state` calls `initialize`, then `tools/list`.
 
 That `tools/list` answer is also the roster's input. `WorkerRoster::from_config`
 takes a `producers::ToolInventory`, and each worker's `mcp_filter` selects
@@ -195,11 +195,11 @@ Per-request OTEL spans carry `session.id` from `ShimRequest::session_id`.
 
 ## 5. Residual risks
 
-**R1 — The CoordinatorLoop does not expose `session_id()`.**
+**R1 - The CoordinatorLoop does not expose `session_id()`.**
 Unchanged. The shim generates its own `ShimSessionId` via
 `CorrelationId::generate()`. Open question for the board owner.
 
-**R2 — Worker-loop usage and task events are invisible to the coordinator's
+**R2 - Worker-loop usage and task events are invisible to the coordinator's
 observer.**
 Resolved by C1 (usage) and C2 (lifecycle). The `UsageMeteringProvider`
 decorator intercepts usage at the provider level, covering coordinator and
@@ -207,29 +207,29 @@ worker loops. The `DagLifecycleObserver` seam (C2) carries task
 started/completed events from the `DagExecutor` to the `ShimDagObserver`,
 which emits `aura.orchestrator.*` SSE events.
 
-**R3 — OTEL exporter lifecycle.**
+**R3 - OTEL exporter lifecycle.**
 Resolved by C6. `OtelGuard` stores `Option<SdkTracerProvider>`; `Drop`
 calls `shutdown()` and logs failures. The serve topology (C7) ensures the
 guard outlives the server.
 
-**R4 — The `chat_completions` return type uses `Empty` as a placeholder
+**R4 - The `chat_completions` return type uses `Empty` as a placeholder
 stream.**
 Unchanged. The implementation phase replaces `Empty` with the real
 channel-backed stream.
 
-**R5 — `duration_ms` in `ToolCompletePayload` is always 0.**
+**R5 - `duration_ms` in `ToolCompletePayload` is always 0.**
 Unchanged (A10: `duration_ms: u64` stays; `Option<NonZeroU64>` rejected
 because a measured 0ms is legitimate and R5 owns real timestamp tracking).
 The implementation phase should timestamp tool calls and compute durations.
 
-**R6 — The `ChatCompletionsRequest` does not validate at deserialization.**
+**R6 - The `ChatCompletionsRequest` does not validate at deserialization.**
 Unchanged. Validation is in the handler.
 
-**R7 — The shim does not reproduce the ~1015-char `task_completed.result`
+**R7 - The shim does not reproduce the ~1015-char `task_completed.result`
 clamp.**
 Unchanged. This is an `aura-web-server` behavior, not a scoring factor.
 
-**R8 — Bounded channel backpressure (C10).**
+**R8 - Bounded channel backpressure (C10).**
 The event channel is bounded at `EVENT_CHANNEL_CAPACITY = 256`. If the SSE
 consumer stalls, the observer's `send` awaits (cooperative backpressure),
 pausing the coordinator loop. On disconnect, the receiver drops and `send`

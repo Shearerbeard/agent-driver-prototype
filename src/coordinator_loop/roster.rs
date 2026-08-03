@@ -142,9 +142,12 @@ impl WorkerRoster {
     ///
     /// # Errors
     ///
-    /// Returns [`CoordinatorLoopError::ZeroTurnBudget`] when a worker's
-    /// configured `turn_depth` is zero, which would build a worker that can
-    /// take no turn at all.
+    /// Returns [`CoordinatorLoopError::UnusableWorkerName`] when a configured
+    /// worker's name is not a parseable role,
+    /// [`CoordinatorLoopError::ZeroTurnBudget`] when a worker's configured
+    /// `turn_depth` is zero, which would build a worker that can take no turn
+    /// at all, and [`CoordinatorLoopError::TurnDepthOutOfRange`] when that
+    /// depth does not fit the budget's `u32`.
     pub fn from_config(
         config: &OrchestrationConfig,
         tool_list_limit: ToolListLimit,
@@ -157,8 +160,9 @@ impl WorkerRoster {
         let workers: Vec<WorkerSpec> = config
             .workers
             .iter()
-            .filter_map(|(name, wc)| WorkerRole::new(name).ok().map(|role| (name, role, wc)))
-            .map(|(name, role, wc)| {
+            .map(|(name, wc)| {
+                let role =
+                    WorkerRole::new(name).map_err(CoordinatorLoopError::UnusableWorkerName)?;
                 let tools: Vec<WorkerTool> = worker_tools
                     .get(name)
                     .cloned()
@@ -171,7 +175,11 @@ impl WorkerRoster {
                     .collect();
                 let budget = wc
                     .turn_depth
-                    .map(|depth| LoopBudget::new(u32::try_from(depth).unwrap_or(u32::MAX)))
+                    .map(|depth| {
+                        u32::try_from(depth)
+                            .map_err(|_| CoordinatorLoopError::TurnDepthOutOfRange(depth))
+                            .and_then(LoopBudget::new)
+                    })
                     .transpose()?;
                 Ok(WorkerSpec {
                     role,
