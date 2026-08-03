@@ -24,6 +24,7 @@ mod cli;
 mod dag_lifecycle;
 mod error;
 mod events;
+mod live_requests;
 mod observer;
 mod otel;
 mod server;
@@ -40,6 +41,7 @@ pub use events::{
     FinishReason, SSE_DONE, SessionInfoPayload,
 };
 pub use events::{TaskCompletedPayload, TaskStartedPayload, ToolCompletePayload, ToolStartPayload};
+pub use live_requests::{LiveRequests, ShutdownAbort};
 pub use observer::ShimObserver;
 pub use otel::{OtelConfig, OtelEndpoint, OtelGuard};
 pub use server::{
