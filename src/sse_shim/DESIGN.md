@@ -189,7 +189,8 @@ The binary:
    port and reads no stdout line).
 5. `axum::serve(listener, app).with_graceful_shutdown(shutdown_signal())`.
 6. Awaits server termination or the drain window, whichever comes first.
-7. Returns; `OtelGuard` drops, calling `shutdown()` and flushing spans.
+7. Aborts the coordinator tasks still running and waits for them to go.
+8. Returns; `OtelGuard` drops, calling `shutdown()` and flushing spans.
 
 ### Signal path and drain bound
 
@@ -222,24 +223,65 @@ the process. A client that stops reading its SSE body at `[DONE]`, which is
 what the adapter's stream consumer does, is enough to trigger it.
 
 So `serve` races the server against `drain_deadline`, which completes one
-`DRAIN_WINDOW` after the signal lands. The window is two seconds. When it
-elapses the server future is dropped and the shim proceeds to the flush
-without waiting for connections that are still open. Dropping that future
-stops the accept loop and stops the wait; it does not close those connections,
-whose tasks axum has already spawned. Those tasks may finish on their own, and
-any that do not may remain detached until the process exits. That trade is
-deliberate: the cost is the tail of a
-response the client had already stopped reading, and the alternative is losing
-the trace for the whole run. The deadline stays pending until the signal lands,
-so it cannot fire while the shim is serving normally.
+`DRAIN_WINDOW` after the signal lands. The window is a second and a half. When
+it elapses the server future is dropped and the shim stops waiting for
+connections that are still open. Dropping that future stops the accept loop and
+stops the wait; it does not close those connections, whose tasks axum has
+already spawned. That trade is deliberate. What it costs is the tail of a
+response the client had already walked away from. What it buys is the trace for
+the whole run. The deadline stays pending until the signal lands, so it cannot
+fire while the shim is serving normally.
 
-The flush that follows is bounded too. `SdkTracerProvider::shutdown` defaults
-to a five-second bound, which is the adapter's entire budget and would let a
-stalled collector run the shutdown to seven seconds past SIGTERM, so
-`OtelGuard::drop` calls `shutdown_with_timeout` with `OtelGuard::FLUSH_WINDOW`
-instead. At two seconds each, the drain and the flush run back to back in four,
-a second inside the adapter's five. `the_drain_and_flush_windows_both_fit_inside_the_adapter_sigkill_deadline`
-asserts that arithmetic against the constants the code actually enforces.
+### Aborting the coordinator tasks still running (S87)
+
+Draining connections does not by itself end the work behind them, and the S75
+rep-1 runs lost five of six task spans to the difference. A `chat.completions`
+span lives as long as the task it instruments. The SSE stream holds that task's
+only `JoinHandle`, and dropping a `JoinHandle` detaches the task rather than
+stopping it. So a client severed mid-stream - which is what the adapter's HTTP
+read timeout does on a long task - leaves the coordinator running with its span
+open. A span that has not closed was never handed to the span processor, so the
+flush has nothing of it to export and it dies with the process. Only the one
+session that reached `[DONE]` on its own was exported.
+
+`ShimState` keeps a `LiveRequests` registry of the `AbortHandle` of
+every coordinator task it spawns, pruned of finished handles on each
+registration. After the drain, and before returning to the guard,
+`serve_with_shutdown` aborts every handle still live and waits up to
+`ABORT_SETTLE_WINDOW` for the tasks to go. Tokio drops an aborted task's future
+before it marks the task finished, so a handle reporting finished is a span that
+has closed and reached the export queue. The abort runs on both outcomes of the
+drain race, because a task whose client left is attached to no connection and so
+is not what the drain was waiting on in the first place.
+
+The same step covers the harness-agent-timeout shape, where the client is still
+attached and the stream still mid-flight when SIGTERM arrives. That task is in
+the registry too, and the drain it holds open runs to its deadline before the
+abort reaches it. A task that cannot reach a yield point inside the settle
+window is logged rather than assumed closed. Its span really is still
+open at that point, and the log is the only warning anyone gets.
+
+### Shutdown budget
+
+The flush is bounded too. `SdkTracerProvider::shutdown` defaults to a
+five-second bound, which is the adapter's entire budget and would let a stalled
+collector run the shutdown past SIGKILL, so `OtelGuard::drop` calls
+`shutdown_with_timeout` with `OtelGuard::FLUSH_WINDOW` instead. The three waits
+run back to back inside the adapter's five seconds:
+
+```text
+  1.5s  DRAIN_WINDOW             connections finish
++ 0.5s  ABORT_SETTLE_WINDOW      aborted coordinator tasks drop their futures
++ 2.0s  OtelGuard::FLUSH_WINDOW  the exporter drains the span queue
+= 4.0s                           of the adapter's 5.0s, a second spare
+```
+
+`the_shutdown_windows_all_fit_inside_the_adapter_sigkill_deadline` asserts that
+arithmetic against the constants the code enforces, so raising any one of the
+three fails there rather than in a benchmark cell. The half second for the
+settle comes out of what used to be a two-second drain: a connection that has
+not closed in a second and a half is not going to close in two, and the abort
+needs the time more.
 
 Per-request OTEL spans carry `session.id` as `ShimSessionId::as_str()`, the
 full hyphenated UUID the `aura.session_info` payload also carries, not the
@@ -263,8 +305,9 @@ which emits `aura.orchestrator.*` SSE events.
 Resolved by C6. `OtelGuard` stores `Option<SdkTracerProvider>`; `Drop` calls
 `shutdown_with_timeout()` and logs failures. The serve topology (C7) ensures
 the guard outlives the server, the drain bound in section 4 ensures the server
-terminates in time for the guard to run, and `FLUSH_WINDOW` ensures the guard
-itself cannot overrun what the drain left.
+terminates in time for the guard to run, the shutdown abort ensures the spans
+of tasks still running are closed and queued before the guard runs at all, and
+`FLUSH_WINDOW` ensures the guard itself cannot overrun what the other two left.
 
 **R4 - The `chat_completions` return type uses `Empty` as a placeholder
 stream.**

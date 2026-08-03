@@ -43,6 +43,7 @@ use crate::mcp_client::SidecarClient;
 use super::dag_lifecycle::ShimDagObserver;
 use super::error::ShimError;
 use super::events::{AuraEvent, SessionInfoPayload};
+use super::live_requests::LiveRequests;
 use super::observer::{ShimObserver, error_termination_events};
 use super::session::{ShimSessionId, shared_accumulator};
 use super::usage_metering::UsageMeteringProvider;
@@ -147,6 +148,10 @@ pub struct ShimState {
     inline_threshold: InlineThreshold,
     /// The config file path, retained for diagnostics and re-load.
     config_path: PathBuf,
+    /// The coordinator tasks this server has started and not yet seen finish.
+    /// The shutdown path aborts them so their spans close in time for the
+    /// exporter flush.
+    live_requests: Arc<LiveRequests>,
 }
 
 impl ShimState {
@@ -183,6 +188,7 @@ impl ShimState {
             worker_sections,
             inline_threshold,
             config_path,
+            live_requests: Arc::new(LiveRequests::default()),
         }
     }
 
@@ -196,6 +202,11 @@ impl ShimState {
         &self.config_path
     }
 
+    /// The coordinator tasks still running, for the shutdown path to abort.
+    pub fn live_requests(&self) -> &Arc<LiveRequests> {
+        &self.live_requests
+    }
+
     /// Build per-request state: a fresh session id, bounded event channel
     /// (C10), `RunStore`, per-request `UsageAccumulator` + metered provider
     /// (C1), per-request `ArtifactStore` at a per-request run dir (C5),
@@ -207,7 +218,9 @@ impl ShimState {
     /// request, converted to a `PinnedGoal` by the handler. The method
     /// returns the event receiver (for the SSE stream), the session id
     /// (for the OTEL span attribute), and a `JoinHandle` for the spawned
-    /// loop task (so the handler can await or abort it).
+    /// loop task (so the handler can await or abort it). The task is also
+    /// registered with [`live_requests`](Self::live_requests), which is what
+    /// the shutdown path aborts once its `JoinHandle` is gone.
     ///
     /// # Errors
     ///
@@ -314,6 +327,11 @@ impl ShimState {
             }
             .instrument(span),
         );
+        // 13. Register the task so the shutdown path can end it. Without this
+        //     the span outlives every chance to export it: the SSE stream owns
+        //     the only `JoinHandle`, and a client that leaves mid-stream drops
+        //     that handle, which detaches the task rather than stopping it.
+        self.live_requests.register(join_handle.abort_handle());
         Ok(ShimRequest {
             session_id,
             event_rx,

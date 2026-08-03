@@ -21,8 +21,11 @@
 //! still flushes their spans. Each request handler creates an OTEL span
 //! carrying `session.id` from `ShimRequest::session_id`.
 //!
-//! SIGTERM and Ctrl-C both drive that shutdown, and the wait for connections
-//! to drain is bounded by [`DRAIN_WINDOW`] so the flush always happens inside
+//! SIGTERM and Ctrl-C both drive that shutdown. Draining connections is
+//! bounded by [`DRAIN_WINDOW`], and the coordinator tasks still running after
+//! it are aborted so their spans close before the flush: a detached task holds
+//! its span open, and an open span is never exported. [`ABORT_SETTLE_WINDOW`]
+//! bounds the wait for those aborts, and the three windows together fit inside
 //! the adapter's own SIGKILL deadline.
 //!
 //! Card S73, Phase 3: the shim bodies are implemented. The server startup,
@@ -42,7 +45,7 @@ use agent_driver_prototype::dag_executor::WorkerLoopConfig;
 use agent_driver_prototype::mcp_client::SidecarClient;
 use agent_driver_prototype::producers::{ToolInventory, resolve_worker_tools};
 use agent_driver_prototype::sse_shim::{
-    OtelConfig, OtelGuard, ShimCliArgs, ShimError, ShimPort, ShimState,
+    LiveRequests, OtelConfig, OtelGuard, ShimCliArgs, ShimError, ShimPort, ShimState, ShutdownAbort,
 };
 
 use agent_driver_rs::config::ProviderConfig;
@@ -306,14 +309,31 @@ async fn serve(state: Arc<ShimState>, port: ShimPort) -> Result<(), ShimError> {
             .flush()
             .map_err(|e| ShimError::Server(format!("stdout flush failed: {e}")))?;
     }
+    let live = Arc::clone(state.live_requests());
     let app = agent_driver_prototype::sse_shim::router(state);
-    serve_with_shutdown(listener, app, signals.recv(), DRAIN_WINDOW).await
+    serve_with_shutdown(
+        listener,
+        app,
+        signals.recv(),
+        DRAIN_WINDOW,
+        live,
+        ABORT_SETTLE_WINDOW,
+    )
+    .await?;
+    Ok(())
 }
 
-/// Serve `app` on `listener` until `signal` fires, then wait at most `drain`
-/// for open connections before returning.
+/// Serve `app` on `listener` until `signal` fires, wait at most `drain` for
+/// open connections, then abort whatever coordinator tasks are still running
+/// and give them at most `settle` to go.
 ///
-/// Split from [`serve`] so the drain bound can be tested against a real axum
+/// The abort is the whole reason this function outlives the server: a
+/// coordinator task holds its `chat.completions` span open for as long as it
+/// runs, an open span never reaches the exporter, and the caller's next move is
+/// the flush. Draining connections is not enough on its own, because the task
+/// whose client left is no longer attached to any connection.
+///
+/// Split from [`serve`] so both bounds can be tested against a real axum
 /// server and a real client, with the signal supplied directly instead of
 /// raised as a process signal.
 async fn serve_with_shutdown(
@@ -321,7 +341,9 @@ async fn serve_with_shutdown(
     app: axum::Router,
     signal: impl Future<Output = ()> + Send + 'static,
     drain: Duration,
-) -> Result<(), ShimError> {
+    live: Arc<LiveRequests>,
+    settle: Duration,
+) -> Result<ShutdownAbort, ShimError> {
     // The drain bound and the server share one signal: the shutdown future
     // reports the signal onward, so the deadline starts at the signal rather
     // than at bind.
@@ -340,12 +362,31 @@ async fn serve_with_shutdown(
             tracing::warn!(
                 drain_window_ms = u64::try_from(drain.as_millis()).unwrap_or(u64::MAX),
                 "shutdown drain window elapsed with connections still open; \
-                 giving up on them so queued spans still flush. Their tasks may \
-                 remain detached until process exit"
+                 giving up on them so queued spans still flush"
             );
         }
     }
-    Ok(())
+
+    let outcome = live.abort_and_settle(settle).await;
+    match outcome {
+        ShutdownAbort::NothingLive => {}
+        ShutdownAbort::Settled { aborted } => tracing::warn!(
+            aborted,
+            "shutdown aborted coordinator runs still in flight; their spans closed \
+             and are in the flush"
+        ),
+        ShutdownAbort::Unsettled {
+            aborted,
+            still_running,
+        } => tracing::error!(
+            aborted,
+            still_running,
+            settle_window_ms = u64::try_from(settle.as_millis()).unwrap_or(u64::MAX),
+            "shutdown abort did not take effect inside the settle window; the spans \
+             of the tasks still running will not be exported"
+        ),
+    }
+    Ok(outcome)
 }
 
 /// How long connections may drain after the shutdown signal before the server
@@ -359,12 +400,41 @@ async fn serve_with_shutdown(
 /// guard never drops, and the just-closed `chat.completions` span dies in the
 /// batch queue with the process.
 ///
-/// Two seconds is long enough that a body still finishing wins the race
-/// normally, and pairs with [`OtelGuard::FLUSH_WINDOW`] to leave a second of
-/// the adapter's budget spare. Giving up on a connection costs a client that
-/// is already leaving the tail of a response it stopped reading; losing the
-/// span costs the run its trace.
-const DRAIN_WINDOW: Duration = Duration::from_secs(2);
+/// A second and a half is long enough that a body still finishing wins the
+/// race normally: a well-behaved stream ends at `[DONE]`, its connection
+/// closes, and the server returns before the deadline is anywhere near.
+/// Giving up on a connection costs a client that is already leaving the tail of
+/// a response it stopped reading; losing the span costs the run its trace.
+///
+/// ## Shutdown budget
+///
+/// The adapter SIGKILLs the shim five seconds after SIGTERM, and three waits
+/// run back to back inside that:
+///
+/// ```text
+///   1.5s  DRAIN_WINDOW          connections finish
+/// + 0.5s  ABORT_SETTLE_WINDOW   aborted coordinator tasks drop their futures
+/// + 2.0s  OtelGuard::FLUSH_WINDOW  the exporter drains the span queue
+/// = 4.0s                        of the adapter's 5.0s, a second spare
+/// ```
+///
+/// `the_shutdown_windows_all_fit_inside_the_adapter_sigkill_deadline` holds the
+/// sum to that, so raising any one of the three fails there rather than in a
+/// benchmark cell.
+const DRAIN_WINDOW: Duration = Duration::from_millis(1500);
+
+/// How long the shutdown waits for the coordinator tasks it aborted to drop
+/// their futures, and with them their spans, before flushing anyway.
+///
+/// An abort takes effect at the task's next yield. A coordinator parked on a
+/// provider call yields immediately, so the realistic wait is a scheduler pass;
+/// the half second is headroom for a task that is mid-artifact-write or
+/// otherwise between await points when the abort lands. Waiting is not
+/// optional: a span that has not closed yet is not in the queue the flush
+/// drains, which is how the S75 runs lost five of six task spans.
+///
+/// Sized against the rest of the shutdown in [`DRAIN_WINDOW`]'s budget.
+const ABORT_SETTLE_WINDOW: Duration = Duration::from_millis(500);
 
 /// Complete one `window` after `signal` completes.
 ///
@@ -755,24 +825,26 @@ mod tests {
         );
     }
 
-    /// Both windows are coupled to a deadline in the adapter repo: it SIGKILLs
-    /// the shim five seconds after SIGTERM, and the drain and the span flush
-    /// run back to back inside that. This asserts against the bound
-    /// `OtelGuard::drop` really enforces, so raising either window past the
-    /// budget fails here rather than in a benchmark cell.
+    /// All three windows are coupled to a deadline in the adapter repo: it
+    /// SIGKILLs the shim five seconds after SIGTERM, and the drain, the abort
+    /// settle and the span flush run back to back inside that. This asserts
+    /// against the bounds `serve_with_shutdown` and `OtelGuard::drop` really
+    /// enforce, so raising any of the three past the budget fails here rather
+    /// than in a benchmark cell.
     #[test]
-    fn the_drain_and_flush_windows_both_fit_inside_the_adapter_sigkill_deadline() {
+    fn the_shutdown_windows_all_fit_inside_the_adapter_sigkill_deadline() {
         let adapter_sigkill_deadline = Duration::from_secs(5);
 
-        let shutdown = DRAIN_WINDOW + OtelGuard::FLUSH_WINDOW;
+        let shutdown = DRAIN_WINDOW + ABORT_SETTLE_WINDOW + OtelGuard::FLUSH_WINDOW;
         let spare = adapter_sigkill_deadline
             .checked_sub(shutdown)
-            .expect("drain plus flush must not outlast the adapter's SIGKILL deadline");
+            .expect("the shutdown must not outlast the adapter's SIGKILL deadline");
 
         assert!(
             spare >= Duration::from_secs(1),
-            "drain ({DRAIN_WINDOW:?}) plus flush ({:?}) leaves only {spare:?} of the \
-             adapter's {adapter_sigkill_deadline:?} budget",
+            "drain ({DRAIN_WINDOW:?}) plus settle ({ABORT_SETTLE_WINDOW:?}) plus flush \
+             ({:?}) leaves only {spare:?} of the adapter's {adapter_sigkill_deadline:?} \
+             budget",
             OtelGuard::FLUSH_WINDOW
         );
     }
@@ -853,6 +925,9 @@ mod tests {
             .port();
 
         let (signal_tx, signal_rx) = tokio::sync::oneshot::channel::<()>();
+        // A synthetic router runs no coordinator task, so the registry is empty
+        // and the settle costs nothing: what this measures is the drain and the
+        // flush, as it did before the abort step existed.
         let server = tokio::spawn(serve_with_shutdown(
             listener,
             app,
@@ -860,6 +935,8 @@ mod tests {
                 let _ = signal_rx.await;
             },
             DRAIN_WINDOW,
+            Arc::new(LiveRequests::default()),
+            ABORT_SETTLE_WINDOW,
         ));
 
         let mut client = tokio::net::TcpStream::connect(("127.0.0.1", port))
@@ -881,13 +958,18 @@ mod tests {
         // the adapter leaves the connection in when it breaks out of its loop.
         let started = std::time::Instant::now();
         let _ = signal_tx.send(());
-        server
+        let outcome = server
             .await
             .expect("the serve task joins")
             .expect("serve returns cleanly");
         drop(guard);
         let shutdown = started.elapsed();
 
+        assert_eq!(
+            outcome,
+            ShutdownAbort::NothingLive,
+            "a synthetic router starts no coordinator task to abort"
+        );
         assert!(
             shutdown < Duration::from_secs(5),
             "drain plus flush took {shutdown:?}, past the adapter's five-second SIGKILL"
@@ -907,6 +989,248 @@ mod tests {
             dialled.load(std::sync::atomic::Ordering::Relaxed) > 0,
             "the exporter never opened a connection to the blackhole, so the flush \
              stalled on something other than an unanswering collector"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // S87: a span still open when the signal lands
+    // -----------------------------------------------------------------------
+
+    use agent_driver_rs::mock::MockProvider;
+    use agent_driver_rs::provider::{CompletionRequest, ModelInfo, ProviderContext, ProviderInfo};
+    use agent_driver_rs::{ProviderError, StreamHandle};
+    use opentelemetry_sdk::error::OTelSdkResult;
+    use opentelemetry_sdk::trace::{SpanData, SpanExporter};
+    use std::pin::Pin;
+
+    /// The boxed future both [`Provider`] methods return.
+    type ProviderFuture<'a, T> =
+        Pin<Box<dyn Future<Output = Result<T, ProviderError>> + Send + 'a>>;
+
+    /// A provider whose completion never resolves.
+    ///
+    /// It parks the coordinator at its first turn, which is what holds that
+    /// request's `chat.completions` span open for the whole of a test. The
+    /// inner mock supplies a `ProviderInfo` and is never asked for a response.
+    struct StalledProvider(MockProvider);
+
+    impl Provider for StalledProvider {
+        fn info(&self) -> &ProviderInfo {
+            self.0.info()
+        }
+
+        fn complete_stream(
+            &self,
+            _request: CompletionRequest,
+            _ctx: ProviderContext,
+        ) -> ProviderFuture<'_, StreamHandle> {
+            Box::pin(std::future::pending())
+        }
+
+        fn list_models(&self, _ctx: ProviderContext) -> ProviderFuture<'_, Vec<ModelInfo>> {
+            Box::pin(std::future::pending())
+        }
+    }
+
+    /// A real [`ShimState`] whose provider never answers.
+    fn stalled_state(artifact_root: PathBuf) -> Arc<ShimState> {
+        let provider: Arc<dyn Provider> = Arc::new(StalledProvider(MockProvider::new(vec![])));
+        let model = ModelId::new("mock-model").expect("a valid model id");
+        let worker_config = WorkerLoopConfig {
+            provider: Arc::clone(&provider),
+            model: model.clone(),
+            budget: LoopBudget::CANONICAL,
+            system_prompt: SystemPrompt::empty(),
+        };
+        Arc::new(ShimState::from_parts(
+            provider,
+            model,
+            SystemPrompt::empty(),
+            LoopBudget::CANONICAL,
+            SidecarClient::disconnected(),
+            artifact_root,
+            worker_config,
+            WorkerSections::none(),
+            InlineThreshold::DEFAULT,
+            PathBuf::from("/tmp/sse-shim-s87-test.toml"),
+        ))
+    }
+
+    /// Collects the spans the SDK actually exports, so the assertions read
+    /// what left the pipeline rather than what merely closed.
+    #[derive(Debug, Clone)]
+    struct CapturingExporter(Arc<std::sync::Mutex<Vec<SpanData>>>);
+
+    impl SpanExporter for CapturingExporter {
+        async fn export(&self, batch: Vec<SpanData>) -> OTelSdkResult {
+            self.0
+                .lock()
+                .expect("the capture lock is only held for an extend")
+                .extend(batch);
+            Ok(())
+        }
+    }
+
+    /// The `session.id` of every exported `chat.completions` span.
+    fn exported_session_ids(captured: &std::sync::Mutex<Vec<SpanData>>) -> Vec<String> {
+        captured
+            .lock()
+            .expect("the capture lock is only held for an extend")
+            .iter()
+            .filter(|span| span.name == "chat.completions")
+            .filter_map(|span| {
+                span.attributes
+                    .iter()
+                    .find(|attribute| attribute.key.as_str() == "session.id")
+                    .map(|attribute| attribute.value.as_str().into_owned())
+            })
+            .collect()
+    }
+
+    /// The `session_id` the first `aura.session_info` frame announced, once the
+    /// whole hyphenated UUID has arrived.
+    fn announced_session_id(body: &[u8]) -> Option<String> {
+        const MARKER: &str = "\"session_id\":\"";
+
+        let text = String::from_utf8_lossy(body);
+        let start = text.find(MARKER)? + MARKER.len();
+        let rest = text.get(start..)?;
+        let id = &rest[..rest.find('"')?];
+        (id.len() == 36).then(|| id.to_owned())
+    }
+
+    /// POST a streaming chat request and read as far as `aura.session_info`,
+    /// returning the still-open connection and the session it announced.
+    ///
+    /// The stream never reaches `[DONE]`: the provider behind it never answers,
+    /// so the coordinator task and its span are live when the caller returns.
+    async fn open_chat(port: u16) -> (tokio::net::TcpStream, String) {
+        use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+
+        let body =
+            r#"{"model":"m","messages":[{"role":"user","content":"hold the line"}],"stream":true}"#;
+        let mut client = tokio::net::TcpStream::connect(("127.0.0.1", port))
+            .await
+            .expect("the client connects");
+        client
+            .write_all(
+                format!(
+                    "POST /v1/chat/completions HTTP/1.1\r\nHost: localhost\r\n\
+                     Content-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
+                    body.len()
+                )
+                .as_bytes(),
+            )
+            .await
+            .expect("the request writes");
+
+        let mut seen: Vec<u8> = Vec::new();
+        let mut chunk = [0_u8; 1024];
+        loop {
+            if let Some(session_id) = announced_session_id(&seen) {
+                return (client, session_id);
+            }
+            let read = client.read(&mut chunk).await.expect("the client reads");
+            assert!(read > 0, "the server closed before announcing the session");
+            seen.extend_from_slice(&chunk[..read]);
+        }
+    }
+
+    /// A chat still mid-stream when the signal lands must still export its
+    /// span.
+    ///
+    /// Both teardown shapes the S75 rep-1 runs produced are live at once. The
+    /// first client is severed mid-stream, the way the adapter's HTTP read
+    /// timeout severs one, which detaches the coordinator task: dropping a
+    /// `JoinHandle` does not stop the task, so it kept running with its span
+    /// open and the span died with the process. The second client is still
+    /// attached with the stream mid-flight, which is the shape a harness agent
+    /// timeout leaves behind. Neither span can be exported while its task
+    /// lives, so the shutdown has to end both tasks before the flush.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_chat_still_open_at_shutdown_exports_its_span() {
+        use opentelemetry::trace::TracerProvider as _;
+        use tracing_subscriber::layer::SubscriberExt as _;
+
+        let captured = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let provider = opentelemetry_sdk::trace::SdkTracerProvider::builder()
+            .with_batch_exporter(CapturingExporter(Arc::clone(&captured)))
+            .build();
+        let tracer = provider.tracer("sse-shim-test");
+        // Global rather than thread-local: the request span opens and closes on
+        // runtime worker threads, which a `set_default` subscriber never
+        // reaches.
+        tracing::subscriber::set_global_default(
+            tracing_subscriber::registry().with(tracing_opentelemetry::layer().with_tracer(tracer)),
+        )
+        .expect("no other test in this binary installs a subscriber");
+        let guard = OtelGuard::from_provider(provider);
+
+        let artifacts = tempfile::TempDir::new().expect("a temp artifact root");
+        let state = stalled_state(artifacts.path().to_path_buf());
+        let app = agent_driver_prototype::sse_shim::router(Arc::clone(&state));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("the shim binds an ephemeral port");
+        let port = listener
+            .local_addr()
+            .expect("the shim has an address")
+            .port();
+        let (signal_tx, signal_rx) = tokio::sync::oneshot::channel::<()>();
+        let server = tokio::spawn(serve_with_shutdown(
+            listener,
+            app,
+            async move {
+                let _ = signal_rx.await;
+            },
+            DRAIN_WINDOW,
+            Arc::clone(state.live_requests()),
+            ABORT_SETTLE_WINDOW,
+        ));
+
+        let (severed, detached_session) = open_chat(port).await;
+        drop(severed);
+        let (_attached, streaming_session) = open_chat(port).await;
+
+        let started = std::time::Instant::now();
+        let _ = signal_tx.send(());
+        let outcome = server
+            .await
+            .expect("the serve task joins")
+            .expect("serve returns cleanly");
+        drop(guard);
+        let shutdown = started.elapsed();
+
+        // Both runs have to have been live at the signal, or the export below
+        // proves nothing: a task that had already ended would have closed its
+        // span without the abort.
+        assert_eq!(
+            outcome,
+            ShutdownAbort::Settled { aborted: 2 },
+            "both coordinator runs must still be in flight when the signal lands"
+        );
+        assert!(
+            shutdown < Duration::from_secs(5),
+            "shutdown took {shutdown:?}, past the adapter's five-second SIGKILL"
+        );
+        // The attached client never closes, so the drain runs to its deadline:
+        // a shutdown quicker than that would mean the connection was released
+        // early and the harness-timeout shape went unexercised.
+        assert!(
+            shutdown >= DRAIN_WINDOW - Duration::from_millis(100),
+            "shutdown finished in {shutdown:?}, short of the drain window \
+             ({DRAIN_WINDOW:?}) the attached client is meant to hold open"
+        );
+        let exported = exported_session_ids(&captured);
+        assert!(
+            exported.contains(&detached_session),
+            "the detached session {detached_session} never exported its span; \
+             exported: {exported:?}"
+        );
+        assert!(
+            exported.contains(&streaming_session),
+            "the still-streaming session {streaming_session} never exported its span; \
+             exported: {exported:?}"
         );
     }
 
