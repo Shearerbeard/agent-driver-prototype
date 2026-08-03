@@ -15,11 +15,15 @@
 //! ## Serve topology (C7)
 //!
 //! The binary binds first, obtains the port, then calls
-//! `axum::serve(...).with_graceful_shutdown(...)` and awaits full server
+//! `axum::serve(...).with_graceful_shutdown(...)` and awaits server
 //! termination before the `OtelGuard` drops. This guarantees span flushing:
-//! the guard outlives the server, so Ctrl-C drops in-flight requests but
+//! the guard outlives the server, so a signal drops in-flight requests but
 //! still flushes their spans. Each request handler creates an OTEL span
 //! carrying `session.id` from `ShimRequest::session_id`.
+//!
+//! SIGTERM and Ctrl-C both drive that shutdown, and the wait for connections
+//! to drain is bounded by [`DRAIN_WINDOW`] so the flush always happens inside
+//! the adapter's own SIGKILL deadline.
 //!
 //! Card S73, Phase 3: the shim bodies are implemented. The server startup,
 //! config loading, OTEL init, and graceful shutdown are live below.
@@ -27,6 +31,7 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 
 use agent_driver_prototype::artifacts::InlineThreshold;
 use agent_driver_prototype::bounding::ToolListLimit;
@@ -55,9 +60,10 @@ async fn main() {
 /// Parse CLI args, init tracing/OTEL, build server state, start the server,
 /// and wait for shutdown.
 ///
-/// The `OtelGuard` lives until the end of this function — after `serve`
-/// returns (server fully terminated) — so `Drop` flushes spans after all
-/// in-flight requests complete (C7).
+/// The `OtelGuard` lives until the end of this function, past the point where
+/// `serve` returns, so `Drop` flushes spans once the server is done with them
+/// (C7). `serve` bounds its own wait, so reaching that drop does not depend on
+/// every client closing its connection.
 async fn run() -> Result<(), ShimError> {
     let args = ShimCliArgs::parse()?;
 
@@ -278,7 +284,8 @@ fn check_tool_wiring(
 
 /// Bind the axum server to the configured port, print `SHIM_PORT=<n>` if
 /// the requested port was ephemeral (C11), serve with graceful shutdown
-/// (C7), and await full server termination.
+/// (C7), and await server termination or the [`DRAIN_WINDOW`], whichever
+/// comes first.
 async fn serve(state: Arc<ShimState>, port: ShimPort) -> Result<(), ShimError> {
     let listener = tokio::net::TcpListener::bind(format!("127.0.0.1:{}", port.get()))
         .await
@@ -295,11 +302,56 @@ async fn serve(state: Arc<ShimState>, port: ShimPort) -> Result<(), ShimError> {
             .map_err(|e| ShimError::Server(format!("stdout flush failed: {e}")))?;
     }
     let app = agent_driver_prototype::sse_shim::router(state);
-    axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown_signal())
-        .await
-        .map_err(|e| ShimError::Server(format!("server serve failed: {e}")))?;
+    // The drain bound and the server share one signal: the shutdown future
+    // reports the signal onward, so the deadline starts at the signal rather
+    // than at bind.
+    let (signalled_tx, signalled_rx) = tokio::sync::oneshot::channel();
+    let server = axum::serve(listener, app).with_graceful_shutdown(async move {
+        shutdown_signal().await;
+        // The receiver lives in the select! arm below, which is still being
+        // polled while this future runs.
+        let _ = signalled_tx.send(());
+    });
+    tokio::select! {
+        result = server => {
+            result.map_err(|e| ShimError::Server(format!("server serve failed: {e}")))?;
+        }
+        () = drain_deadline(async { let _ = signalled_rx.await; }, DRAIN_WINDOW) => {
+            tracing::warn!(
+                drain_window_ms = u64::try_from(DRAIN_WINDOW.as_millis()).unwrap_or(u64::MAX),
+                "shutdown drain window elapsed with connections still open; \
+                 abandoning them so queued spans still flush"
+            );
+        }
+    }
     Ok(())
+}
+
+/// How long connections may drain after the shutdown signal before the server
+/// stops waiting for them.
+///
+/// `with_graceful_shutdown` alone waits on every open connection with no
+/// deadline. The adapter sends SIGTERM and SIGKILLs five seconds later, and
+/// the span flush in `OtelGuard::drop` has to fit in what is left, so an
+/// unbounded wait is the whole failure: a client that stopped reading its SSE
+/// body at `[DONE]` holds the server past the kill, `serve` never returns, the
+/// guard never drops, and the just-closed `chat.completions` span dies in the
+/// batch queue with the process.
+///
+/// Two seconds is long enough that a body still finishing wins the race
+/// normally and short enough to leave the flush three seconds of the adapter's
+/// budget. Abandoning a connection costs a client that is already leaving the
+/// tail of a response it stopped reading; losing the span costs the run its
+/// trace.
+const DRAIN_WINDOW: Duration = Duration::from_secs(2);
+
+/// Complete one `window` after `signal` completes.
+///
+/// Stays pending for as long as `signal` does, so the caller's `select!` arm
+/// cannot fire while the server is still serving normally.
+async fn drain_deadline(signal: impl Future<Output = ()>, window: Duration) {
+    signal.await;
+    tokio::time::sleep(window).await;
 }
 
 /// Wait for Ctrl-C or a SIGTERM signal, then complete to trigger axum's
@@ -594,6 +646,59 @@ mod tests {
         assert_eq!(
             coordinator_budget(turns).expect("twelve is a spendable depth"),
             LoopBudget::CANONICAL
+        );
+    }
+
+    /// The deadline cannot fire before a shutdown signal does, so a shim that
+    /// is still serving traffic never loses the `select!` race to its own
+    /// drain bound and hangs up on live requests.
+    #[tokio::test]
+    async fn the_drain_deadline_stays_pending_until_the_signal_lands() {
+        // A zero window isolates the signal: anything this future waits on is
+        // the signal, not the window.
+        let deadline = drain_deadline(std::future::pending::<()>(), Duration::ZERO);
+
+        let result = tokio::time::timeout(Duration::from_millis(50), deadline).await;
+
+        assert!(
+            result.is_err(),
+            "a deadline whose signal never lands must never complete"
+        );
+    }
+
+    /// Once the signal lands the deadline completes a window later: the bound
+    /// `serve` puts on connections that will not close on their own.
+    #[tokio::test]
+    async fn the_drain_deadline_completes_one_window_after_the_signal() {
+        let window = Duration::from_millis(60);
+        let start = std::time::Instant::now();
+
+        drain_deadline(std::future::ready(()), window).await;
+
+        let waited = start.elapsed();
+        assert!(
+            waited >= window,
+            "the deadline waited {waited:?}, short of the {window:?} drain window"
+        );
+    }
+
+    /// The window is coupled to a deadline in the adapter repo: the adapter
+    /// SIGKILLs the shim five seconds after SIGTERM, and `OtelGuard::drop`
+    /// has to flush inside the remainder. A window that eats the budget puts
+    /// the shim back where the S75 run found it, with the span dying in the
+    /// batch queue.
+    #[test]
+    fn the_drain_window_leaves_the_span_flush_room_before_the_adapter_sigkills() {
+        let adapter_sigkill_deadline = Duration::from_secs(5);
+
+        let flush_budget = adapter_sigkill_deadline
+            .checked_sub(DRAIN_WINDOW)
+            .expect("the drain window must not outlast the adapter's SIGKILL deadline");
+
+        assert!(
+            flush_budget >= Duration::from_secs(2),
+            "the drain window leaves the span flush only {flush_budget:?} of the \
+             adapter's {adapter_sigkill_deadline:?} budget"
         );
     }
 

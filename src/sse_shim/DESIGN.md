@@ -31,7 +31,7 @@ must exist to compile. Goldens stayed green throughout.
 | C4 BLOCKING | ACCEPTED | `build_request` spawns the loop and returns `ShimRequest { session_id, event_rx, join_handle }`. Ownership documented below. |
 | C5 BLOCKING | ACCEPTED | `ShimState` holds `artifact_root: PathBuf`, not `ArtifactStore`. `build_request` constructs a per-request `ArtifactStore`, `DagExecutor`, metered provider, and `ShimDagObserver`. |
 | C6 BLOCKING | ACCEPTED | `OtelGuard` stores `Option<SdkTracerProvider>`; `Drop` calls `shutdown()` and logs failures. |
-| C7 BLOCKING | ACCEPTED | Binary binds first, then serves with `with_graceful_shutdown` and awaits full termination before `OtelGuard` drops. Per-request span carries `session.id`. |
+| C7 BLOCKING | ACCEPTED | Binary binds first, then serves with `with_graceful_shutdown` and awaits termination or the drain window before `OtelGuard` drops. Per-request span carries `session.id`. |
 | C8 BLOCKING | ACCEPTED | Payload fields private with validated constructors returning `Result`. Runtime-only rules reworded to claim no more than the types enforce. `ShimSessionId::from_correlation` doc notes id-reuse is a generation concern. |
 | C9 MINOR | ACCEPTED | Observer always emits the configured model (`self.model`), never the request's arbitrary `model` string. Documented. |
 | C10 MINOR | ACCEPTED | Bounded channel (`EVENT_CHANNEL_CAPACITY = 256`); disconnect logged. |
@@ -188,8 +188,33 @@ The binary:
    stdout (C11: only when ephemeral; the adapter always passes a concrete
    port and reads no stdout line).
 5. `axum::serve(listener, app).with_graceful_shutdown(shutdown_signal())`.
-6. Awaits full server termination (in-flight requests complete).
+6. Awaits server termination or the drain window, whichever comes first.
 7. Returns; `OtelGuard` drops, calling `shutdown()` and flushing spans.
+
+### Signal path and drain bound
+
+`shutdown_signal()` selects over SIGTERM and Ctrl-C. On unix it registers a
+`tokio::signal::unix` stream for `SignalKind::terminate()` alongside
+`tokio::signal::ctrl_c()`; a handler that fails to install logs a warning and
+leaves that arm pending rather than shutting the server down. Either signal
+completes the future, which starts axum's graceful shutdown.
+
+Graceful shutdown alone waits on every open connection with no deadline, and
+that wait is what the S75 run lost its spans to. The adapter sends SIGTERM and
+SIGKILLs five seconds later, so any connection that does not close on its own
+holds the server past the kill: `serve` never returns, `OtelGuard::drop` never
+runs, and the just-closed `chat.completions` span dies in the batch queue with
+the process. A client that stops reading its SSE body at `[DONE]`, which is
+what the adapter's stream consumer does, is enough to trigger it.
+
+So `serve` races the server against `drain_deadline`, which completes one
+`DRAIN_WINDOW` after the signal lands. The window is two seconds, leaving
+the flush three seconds of the adapter's budget. When it elapses the server
+future is dropped, abandoning connections that were still open, and the shim
+proceeds to the flush. That trade is deliberate: the cost is the tail of a
+response the client had already stopped reading, and the alternative is losing
+the trace for the whole run. The deadline stays pending until the signal lands,
+so it cannot fire while the shim is serving normally.
 
 Per-request OTEL spans carry `session.id` as `ShimSessionId::as_str()`, the
 full hyphenated UUID the `aura.session_info` payload also carries, not the
@@ -212,7 +237,8 @@ which emits `aura.orchestrator.*` SSE events.
 **R3 - OTEL exporter lifecycle.**
 Resolved by C6. `OtelGuard` stores `Option<SdkTracerProvider>`; `Drop`
 calls `shutdown()` and logs failures. The serve topology (C7) ensures the
-guard outlives the server.
+guard outlives the server, and the drain bound in section 4 ensures the
+server actually terminates in time for the guard to run.
 
 **R4 - The `chat_completions` return type uses `Empty` as a placeholder
 stream.**
