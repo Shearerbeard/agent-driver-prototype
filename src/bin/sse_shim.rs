@@ -289,8 +289,11 @@ fn check_tool_wiring(
 
 /// Bind the axum server to the configured port, print `SHIM_PORT=<n>` if
 /// the requested port was ephemeral (C11), serve with graceful shutdown
-/// (C7), and await server termination or the [`DRAIN_WINDOW`], whichever
-/// comes first.
+/// (C7), and await the whole shutdown: server termination or the
+/// [`DRAIN_WINDOW`], whichever comes first, and then the abort of the
+/// coordinator tasks still running, bounded by [`ABORT_SETTLE_WINDOW`]. Both
+/// waits are inside this call, so the caller's `OtelGuard` drops with every
+/// span closed and queued.
 async fn serve(state: Arc<ShimState>, port: ShimPort) -> Result<(), ShimError> {
     // Before the port is claimed: a shim that cannot hear SIGTERM cannot flush
     // its spans, and the adapter reads an early exit as a failed startup.
@@ -354,9 +357,12 @@ async fn serve_with_shutdown(
         // polled while this future runs.
         let _ = signalled_tx.send(());
     });
-    tokio::select! {
+    // Held rather than propagated: a serve that failed leaves exactly the live
+    // tasks a clean shutdown does, and returning on the spot would carry their
+    // open spans straight into the caller's flush.
+    let served = tokio::select! {
         result = server => {
-            result.map_err(|e| ShimError::Server(format!("server serve failed: {e}")))?;
+            result.map_err(|e| ShimError::Server(format!("server serve failed: {e}")))
         }
         () = drain_deadline(async { let _ = signalled_rx.await; }, drain) => {
             tracing::warn!(
@@ -364,8 +370,9 @@ async fn serve_with_shutdown(
                 "shutdown drain window elapsed with connections still open; \
                  giving up on them so queued spans still flush"
             );
+            Ok(())
         }
-    }
+    };
 
     let outcome = live.abort_and_settle(settle).await;
     match outcome {
@@ -386,6 +393,7 @@ async fn serve_with_shutdown(
              of the tasks still running will not be exported"
         ),
     }
+    served?;
     Ok(outcome)
 }
 

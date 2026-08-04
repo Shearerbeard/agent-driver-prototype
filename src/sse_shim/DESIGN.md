@@ -249,10 +249,16 @@ every coordinator task it spawns, pruned of finished handles on each
 registration. After the drain, and before returning to the guard,
 `serve_with_shutdown` aborts every handle still live and waits up to
 `ABORT_SETTLE_WINDOW` for the tasks to go. Tokio drops an aborted task's future
-before it marks the task finished, so a handle reporting finished is a span that
-has closed and reached the export queue. The abort runs on both outcomes of the
-drain race, because a task whose client left is attached to no connection and so
-is not what the drain was waiting on in the first place.
+before the transition that makes the task observably complete, which is the bit
+`is_finished` reads; in tokio 1.53's task harness that drop runs in
+`drop_future_or_output`, ahead of the complete transition. So a handle
+reporting finished is a span that has closed and reached the export queue.
+
+The abort runs on every way out of the drain race - the deadline, a clean
+server return, and a serve error - because a task whose client left is attached
+to no connection and so is not what the drain was waiting on in the first place.
+Taking the registry also closes it, and a registration arriving after that is
+aborted where it stands rather than filed somewhere nothing reads again.
 
 The same step covers the harness-agent-timeout shape, where the client is still
 attached and the stream still mid-flight when SIGTERM arrives. That task is in

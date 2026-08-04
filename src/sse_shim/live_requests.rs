@@ -54,41 +54,68 @@ pub enum ShutdownAbort {
 /// yet seen finish.
 #[derive(Debug, Default)]
 pub struct LiveRequests {
-    handles: Mutex<Vec<AbortHandle>>,
+    state: Mutex<RegistryState>,
+}
+
+/// The handles, and whether the shutdown abort has already taken them.
+///
+/// Both live under one lock so a registration cannot land between reading the
+/// flag and pushing the handle.
+#[derive(Debug, Default)]
+struct RegistryState {
+    handles: Vec<AbortHandle>,
+    closed: bool,
 }
 
 impl LiveRequests {
-    /// Record `handle` as live.
+    /// Record `handle` as live, or abort it outright if the shutdown abort has
+    /// already been through.
     ///
     /// Handles of tasks that have since finished are dropped on the way past,
     /// which bounds the registry at what is actually in flight without a
     /// reaper of its own.
+    ///
+    /// Registering after the abort would otherwise be a silent hole: the
+    /// handle would join an emptied registry nobody reads again, and the task
+    /// would still be running with its span open when the exporter flushes. In
+    /// this server the accept loop is already down by then, so the only
+    /// registration that can arrive that late is one whose `build_request` was
+    /// mid-flight when the abort ran.
     pub fn register(&self, handle: AbortHandle) {
-        let mut handles = self
-            .handles
+        let mut state = self
+            .state
             .lock()
             .expect("the registry lock is only held for a push or a take");
-        handles.retain(|live| !live.is_finished());
-        handles.push(handle);
+        if state.closed {
+            handle.abort();
+            return;
+        }
+        state.handles.retain(|live| !live.is_finished());
+        state.handles.push(handle);
     }
 
     /// Abort every task still running and wait up to `window` for their futures
-    /// to be dropped.
+    /// to be dropped. Closes the registry: see [`register`](Self::register).
     ///
-    /// Tokio drops an aborted task's future before it marks the task finished,
-    /// so a handle reporting finished here is a span that has already closed
-    /// and reached the span processor. That is the whole point of waiting: the
-    /// caller's next move is the flush, and a span that has not closed yet is
-    /// not in the queue the flush drains.
+    /// Tokio drops an aborted task's future before the transition that makes
+    /// the task observably complete, which is the bit `is_finished` reads.
+    /// (Verified against tokio 1.53's task harness, where the drop runs in
+    /// `drop_future_or_output` ahead of the complete transition.) So a handle
+    /// reporting finished here is a span that has already closed and reached
+    /// the span processor. That is the whole point of waiting: the caller's
+    /// next move is the flush, and a span that has not closed yet is not in the
+    /// queue the flush drains.
     pub async fn abort_and_settle(&self, window: Duration) -> ShutdownAbort {
-        // The lock is released before the first await: it guards a `Vec`, never
-        // an await point.
-        let taken = std::mem::take(
-            &mut *self
-                .handles
+        // The lock is released before the first await: it guards a `Vec` and a
+        // flag, never an await point.
+        let taken = {
+            let mut state = self
+                .state
                 .lock()
-                .expect("the registry lock is only held for a push or a take"),
-        );
+                .expect("the registry lock is only held for a push or a take");
+            state.closed = true;
+            std::mem::take(&mut state.handles)
+        };
         let live: Vec<AbortHandle> = taken
             .into_iter()
             .filter(|handle| !handle.is_finished())
@@ -184,10 +211,39 @@ mod tests {
         );
     }
 
+    /// A task registered after the abort has run is aborted on arrival rather
+    /// than filed into a registry nobody reads again, which would leave it
+    /// running with its span open through the flush.
+    #[tokio::test]
+    async fn a_task_registered_after_the_abort_is_aborted_on_arrival() {
+        let live = LiveRequests::default();
+        assert_eq!(
+            live.abort_and_settle(Duration::from_millis(50)).await,
+            ShutdownAbort::NothingLive
+        );
+
+        let late = tokio::spawn(std::future::pending::<()>());
+        live.register(late.abort_handle());
+
+        let joined = tokio::time::timeout(Duration::from_secs(1), late)
+            .await
+            .expect("the late task is aborted rather than left running");
+        assert!(
+            joined
+                .expect_err("an aborted task joins with an error")
+                .is_cancelled(),
+            "the late task is cancelled, not panicked"
+        );
+    }
+
     /// A task that cannot reach a yield point inside the window is reported
     /// unsettled rather than silently treated as closed, because its span is
     /// still open when the flush runs.
-    #[tokio::test(flavor = "multi_thread")]
+    ///
+    /// Two workers, not the default: the blocked task parks one of them for the
+    /// whole test, and a single-worker runtime would have nothing left to run
+    /// the abort on.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_task_that_will_not_yield_is_reported_unsettled() {
         let live = LiveRequests::default();
         let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();

@@ -457,7 +457,8 @@ pub fn router(state: Arc<ShimState>) -> axum::Router {
 /// `LoopComplete`), the stream synthesizes a clean termination via
 /// [`error_termination_events`] before ending. After the channel closes the
 /// stream polls the loop's `JoinHandle` so a panicked task surfaces in the
-/// logs.
+/// logs; a task the shutdown abort cancelled is logged as the routine end it
+/// is.
 struct ShimSseStream {
     rx: Receiver<AuraEvent>,
     join: JoinHandle<()>,
@@ -513,11 +514,22 @@ impl Stream for ShimSseStream {
             match Pin::new(&mut this.join).poll(cx) {
                 Poll::Ready(join_result) => {
                     if let Err(error) = join_result {
-                        tracing::error!(
-                            session_id = %this.session_id,
-                            %error,
-                            "coordinator loop task panicked"
-                        );
+                        // A cancelled join is the ordinary end of a run the
+                        // shutdown abort cut short, not a fault: the abort
+                        // drops the future so the span closes, which closes
+                        // this channel and brings the stream here.
+                        if error.is_cancelled() {
+                            tracing::info!(
+                                session_id = %this.session_id,
+                                "coordinator loop task aborted before it finished"
+                            );
+                        } else {
+                            tracing::error!(
+                                session_id = %this.session_id,
+                                %error,
+                                "coordinator loop task panicked"
+                            );
+                        }
                     }
                     return Poll::Ready(None);
                 }
