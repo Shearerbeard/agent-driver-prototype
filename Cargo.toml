@@ -7,15 +7,17 @@ license = "MIT OR Apache-2.0"
 publish = false
 
 [dependencies]
-# Pinned worktree of agent-driver-rs at 674a093. The S70 frame port does
-# not call it yet; the loop wiring lands in S71. Present now so the crate
-# always compiles against the pin the flow depends on.
+# agent-driver-rs, pinned by git rev to the public repo (both here and in
+# dev-dependencies so features unify). Bump with `cargo update -p agent-driver-rs`
+# after changing `rev`. The S70 frame port does not call it yet; the loop
+# wiring lands in S71. Present so the crate always compiles against the pin
+# the flow depends on.
 # S73: the `bedrock` feature is enabled so the shim can construct a
 # Bedrock-backed `Provider` via `ProviderConfig::from_env()`. The `phoenix`
 # feature is deliberately NOT enabled: the shim wires OTEL directly through
 # its own `opentelemetry` deps rather than inheriting the pin's Phoenix
 # tracing pipeline. See `src/sse_shim/DESIGN.md` for the rationale.
-agent-driver-rs = { path = "../agent-driver-rs-pin", features = ["bedrock"] }
+agent-driver-rs = { git = "https://github.com/Shearerbeard/agent-driver-rs", rev = "82ee41f298513876bfe8f7735d4f3f48eb92651f", features = ["bedrock"] }
 async-trait = "0.1"
 # `Bytes` is the chunk type of the reqwest SSE response stream and is named in
 # the `dyn Stream<Item = Result<Bytes, reqwest::Error>>` field of `SseReader`.
@@ -83,7 +85,7 @@ toml = "0.8"
 [dev-dependencies]
 # The mock provider lives behind `test-support`; integration tests are a
 # separate crate where the library's own `cfg(test)` does not apply.
-agent-driver-rs = { path = "../agent-driver-rs-pin", features = ["test-support"] }
+agent-driver-rs = { git = "https://github.com/Shearerbeard/agent-driver-rs", rev = "82ee41f298513876bfe8f7735d4f3f48eb92651f", features = ["test-support"] }
 insta = { version = "1", features = ["json"] }
 tempfile = "3"
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }

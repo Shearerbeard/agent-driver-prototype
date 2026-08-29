@@ -2,7 +2,8 @@
 
 Baseline: spike repo `agent-driver-prototype` on top of the S70 frame port
 and the S71/S72 coordinator-loop and DAG-executor types, against the
-`agent-driver-rs` pin at `674a093`. Scope: `src/sse_shim/` and
+`agent-driver-rs` pin (originally `674a093`; the crate now depends on the
+public repo by git rev, see `Cargo.toml`). Scope: `src/sse_shim/` and
 `src/bin/sse_shim.rs` - the HTTP server that wraps the coordinator loop
 behind an OpenAI-compatible `/v1/chat/completions` endpoint, emitting the
 full `aura.*` SSE event vocabulary.
