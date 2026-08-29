@@ -1,7 +1,8 @@
 # S71 coordinator-loop type design record
 
 Baseline: spike repo `agent-driver-prototype` on top of the S70 frame port,
-against the `agent-driver-rs` pin at `674a093`. Scope: `src/coordinator_loop/`,
+against the `agent-driver-rs` pin at `674a093` (= `a9d45c7` in the
+rewritten public history; the crate now depends on that repo by git rev). Scope: `src/coordinator_loop/`,
 the continuous top-level ReAct loop the S38 ADR asks for, built on the pin's
 `AgentLoop` and `ToolRegistry`.
 

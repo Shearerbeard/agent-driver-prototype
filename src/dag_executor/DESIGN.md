@@ -1,7 +1,8 @@
 # S72 DAG executor and structured review packets - type design record
 
 Baseline: spike repo `agent-driver-prototype` on top of the S71 coordinator
-loop, against the `agent-driver-rs` pin at `674a093`. Scope: `src/mcp_client/`,
+loop, against the `agent-driver-rs` pin at `674a093` (= `a9d45c7` in the
+rewritten public history; the crate now depends on that repo by git rev). Scope: `src/mcp_client/`,
 `src/artifacts/`, `src/dag_executor/`, plus widening edits to
 `src/coordinator_loop/` and `src/templates.rs`.
 
