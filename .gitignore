@@ -1,2 +1,29 @@
 target/
 Cargo.lock
+
+# Environment files with secrets
+.env
+.env.*
+!.env.example
+.envrc
+.direnv/
+
+# Credential material
+*.pem
+*.key
+*.p12
+*.pfx
+credentials
+credentials.*
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# macOS
+.DS_Store
+
+# Claude Code local settings
+.claude/
