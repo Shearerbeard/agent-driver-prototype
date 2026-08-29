@@ -11,8 +11,8 @@ Reference design: `docs/redesign/2026-07-19-s39-continuous-seam-design.md`
 it. Section 5 lists every narrowing and why.
 
 Phase 1 landed the types with `todo!()` bodies. The type-design panel
-returned six blocking and eleven minor findings, dispositioned in
-`reviews/s71/panel-ledger.md`; Phase 2 applied the accepted repairs and
+returned six blocking and eleven minor findings, dispositioned in the S71
+panel ledger (kept in the private review archive, not in this repo); Phase 2 applied the accepted repairs and
 implemented the bodies. Where a repair changed a type, the inventory row
 below records the repaired shape.
 

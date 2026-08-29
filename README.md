@@ -20,7 +20,6 @@ client, and an SSE shim that serves the loop behind an OpenAI-compatible
 - `tests/` - integration tests for the loop, the executor and the shim.
 - `snapshots/` - [insta](https://insta.rs) snapshots of the golden corpus
   normalisation.
-- `reviews/` - the per-card review packets and handoffs (S70-S75).
 
 ## Build and test
 
