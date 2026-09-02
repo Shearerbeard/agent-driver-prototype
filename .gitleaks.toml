@@ -1,0 +1,18 @@
+# Gitleaks configuration for agent-driver-prototype.
+#
+# Extends the bundled default ruleset:
+# https://github.com/gitleaks/gitleaks/blob/master/config/gitleaks.toml
+#
+# This file exists so the repository's first-ever full-history scan
+# (`gitleaks git . --log-opts="--all"`) runs against a checked-in,
+# reviewable ruleset rather than whatever defaults the local gitleaks
+# build ships.
+#
+# Deliberately no allowlists. Every finding is reported and
+# dispositioned in the open; none is suppressed. If a future finding is
+# a proven false positive, add an allowlist entry here WITH a comment
+# naming the exact finding it suppresses (rule, commit, and secret
+# fragment), and say so in the commit message.
+
+[extend]
+useDefault = true
