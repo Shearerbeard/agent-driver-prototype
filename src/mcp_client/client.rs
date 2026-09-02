@@ -1,16 +1,18 @@
-//! The sidecar client: rmcp streamable-HTTP transport behind a plain-JSON
-//! boundary.
+//! The sidecar client: MCP transports behind a plain-JSON boundary.
 //!
 //! `SidecarClient` is the only type that touches the MCP transport. rmcp's
 //! types (`RunningService`, `Peer`, `Tool`, `CallToolResult`) stay private
 //! to this module; the public methods take and return plain JSON-shaped
 //! data, so no rmcp type ever crosses the seam and `producers.rs` and the
-//! worker path are insulated from the SDK.
+//! worker path are insulated from the SDK. Both transports — rmcp's
+//! streamable HTTP and the crate's legacy-SSE custom transport — end in
+//! the same rmcp session, so everything downstream of the handshake is
+//! transport-agnostic.
 //!
-//! [`SidecarClient::connect`] performs the full MCP handshake — rmcp's
+//! Both connect paths perform the full MCP handshake — rmcp's
 //! `serve_client` sends `initialize`, awaits the result, and delivers the
-//! `notifications/initialized` notification — so a client returned by
-//! `connect` is ready for `tools/list` and `tools/call` with no further
+//! `notifications/initialized` notification — so a client returned by a
+//! connect is ready for `tools/list` and `tools/call` with no further
 //! ceremony. [`SidecarClient::initialize`] reports the handshake result
 //! and keeps its place in the public surface so existing callers are
 //! unchanged.
@@ -23,6 +25,7 @@ use std::time::Duration;
 use reqwest::header::{HeaderName, HeaderValue};
 use tokio::time::timeout;
 
+use super::sse_transport::{SseTransport, SseTransportError};
 use super::wire::{
     SidecarContent, SidecarServerInfo, SidecarTool, SidecarToolArgs, SidecarToolName,
 };
@@ -254,6 +257,61 @@ impl SidecarClient {
         let service = rmcp::serve_client(client_info(), transport)
             .await
             .map_err(|e| SidecarError::Connect(format!("streamable HTTP handshake failed: {e}")))?;
+        Self::from_service(url, service)
+    }
+
+    /// Connect over the legacy (2024-11-05) HTTP+SSE transport and
+    /// complete the MCP handshake.
+    ///
+    /// The transport `GET`s the SSE endpoint, consumes the `endpoint`
+    /// discovery frame, then hands its byte pipe to rmcp: the initialize
+    /// handshake, every request/response match, and the notification
+    /// delivery run on rmcp's machinery, exactly as over streamable HTTP.
+    /// The static headers ride every request, the opening `GET` included.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::connect_streamable`]: [`SidecarError::InvalidUrl`] when
+    /// the URL does not parse, [`SidecarError::InvalidHeader`] when a
+    /// header name or value is not HTTP-valid, and
+    /// [`SidecarError::Connect`] when the transport cannot be established
+    /// or the handshake fails.
+    pub async fn connect_sse(
+        url: SidecarUrl,
+        headers: HashMap<String, String>,
+    ) -> Result<Self, SidecarError> {
+        let transport = SseTransport::connect(url.as_str(), &headers)
+            .await
+            .map_err(Self::sse_connect_error)?;
+        let service = rmcp::serve_client(client_info(), transport)
+            .await
+            .map_err(|e| SidecarError::Connect(format!("SSE handshake failed: {e}")))?;
+        Self::from_service(url, service)
+    }
+
+    /// Fold an SSE transport failure into the sidecar error surface.
+    ///
+    /// Header validation keeps its variant so both transports report it
+    /// the same way; everything else happened while connecting.
+    fn sse_connect_error(error: SseTransportError) -> SidecarError {
+        match error {
+            SseTransportError::InvalidHeader(message) => SidecarError::InvalidHeader(message),
+            other => SidecarError::Connect(format!("SSE connect failed: {other}")),
+        }
+    }
+
+    /// Record a served session's handshake behind the client's shared
+    /// state — the tail every connect path funnels through.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SidecarError::Connect`] when the service recorded no
+    /// server identity, and [`SidecarError::Protocol`] when the identity
+    /// is missing its implementation block.
+    fn from_service(
+        url: SidecarUrl,
+        service: rmcp::service::RunningService<rmcp::RoleClient, rmcp::model::ClientInfo>,
+    ) -> Result<Self, SidecarError> {
         let handshake = server_info(service.peer_info().as_deref().ok_or_else(|| {
             SidecarError::Connect("handshake recorded no server info".to_owned())
         })?)?;

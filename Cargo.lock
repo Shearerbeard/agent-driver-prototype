@@ -19,6 +19,7 @@ dependencies = [
  "rmcp",
  "serde",
  "serde_json",
+ "sse-stream",
  "strum",
  "tempfile",
  "thiserror 1.0.69",
@@ -28,6 +29,7 @@ dependencies = [
  "tracing",
  "tracing-opentelemetry",
  "tracing-subscriber",
+ "url",
 ]
 
 [[package]]

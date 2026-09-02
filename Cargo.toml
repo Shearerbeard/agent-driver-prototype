@@ -27,11 +27,18 @@ chrono = { version = "0.4", default-features = false, features = ["clock"] }
 # imply it (it gates `serve_client` and the client-side `Peer` methods);
 # defaults are off because the server side is mock-mcp-service's affair.
 # rmcp removed its legacy HTTP+SSE client transport (the 2024-11-05
-# `GET /sse` + `event: endpoint` protocol) in 0.11.0 and 3.2 ships none —
-# streamable HTTP is the only HTTP client transport. The agent-driver-rs
+# `GET /sse` + `event: endpoint` protocol) in 0.11.0 and 3.2 ships none,
+# so that protocol rides the crate's own `Transport<RoleClient>` impl
+# (`src/mcp_client/sse_transport.rs`) — the seam the trait designs for —
+# keeping rmcp the only JSON-RPC machinery. Only `client` and the
+# streamable-HTTP feature are needed from rmcp itself. The agent-driver-rs
 # pin's own optional `mcp` feature is NOT enabled here, so this is the
 # graph's only rmcp.
 rmcp = { version = "3.2", default-features = false, features = ["client", "transport-streamable-http-client-reqwest"] }
+# SSE frame parsing for the legacy-transport receive half — the same crate
+# rmcp's own streamable client parses its streams with, so the dependency
+# unifies to the copy already in the graph.
+sse-stream = "0.2"
 # `Stream`/`StreamExt` for the shim's SSE response bodies and their tests.
 futures = "0.3"
 # HTTP header types (`HeaderName`, `HeaderValue`) for rmcp's per-server
@@ -39,6 +46,9 @@ futures = "0.3"
 # so the re-exports are the exact types rmcp expects. Also the HTTP client
 # the sse_shim integration tests drive the shim with.
 reqwest = "0.12"
+# URL parsing and RFC 3986 join for the SSE endpoint frame resolution in
+# `src/mcp_client/sse_transport.rs`.
+url = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 strum = { version = "0.26", features = ["derive"] }
