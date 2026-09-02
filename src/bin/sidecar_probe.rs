@@ -1,13 +1,12 @@
-//! Live sidecar probe for card S72.
+//! Live MCP server probe (originally card S72's sidecar probe).
 //!
-//! Connects to a classic-SSE MCP sidecar, runs the full JSON-RPC sequence
-//! (initialize, tools/list, tools/call keystrokes, tools/call capture-pane),
-//! prints every JSON-RPC request and response verbatim to stdout so the board
-//! owner can freeze the transcript and diff it against the F3 capture, and
-//! asserts the wire shape: exactly `keystrokes` + `capture-pane` advertised,
-//! and the captured pane contains the probe token `S72_PROBE_OK_72`.
+//! Connects to an MCP server over rmcp streamable HTTP, runs the full
+//! sequence (initialize, tools/list, tools/call keystrokes, tools/call
+//! capture-pane), and asserts the wire shape the TerminalBench sidecar
+//! defines: exactly `keystrokes` + `capture-pane` advertised, and the
+//! captured pane contains the probe token `S72_PROBE_OK_72`.
 //!
-//! Usage: `sidecar_probe <sse-base-url>` (e.g. `http://localhost:8000/sse`).
+//! Usage: `sidecar_probe <mcp-url>` (e.g. `http://localhost:9992/mcp`).
 //! Exits non-zero with the error message on stderr if any step fails.
 
 use std::process::exit;
@@ -27,8 +26,8 @@ async fn main() {
     let args: Vec<String> = std::env::args().collect();
     if args.len() != 2 {
         let prog = args.first().map(String::as_str).unwrap_or("sidecar_probe");
-        eprintln!("usage: {prog} <sse-base-url>");
-        eprintln!("example: {prog} http://localhost:8000/sse");
+        eprintln!("usage: {prog} <mcp-url>");
+        eprintln!("example: {prog} http://localhost:9992/mcp");
         exit(2);
     }
     if let Err(error) = run(&args[1]).await {
@@ -39,23 +38,20 @@ async fn main() {
 
 async fn run(base_url: &str) -> Result<(), String> {
     let url = SidecarUrl::new(base_url).map_err(|e| e.to_string())?;
+    // connect completes the initialize handshake; initialize() reports it.
     let client = SidecarClient::connect(url)
         .await
         .map_err(|e| e.to_string())?;
 
-    // connect captured the `endpoint` event; emit it first so the transcript
-    // opens the same way the F3 capture does.
-    emit_transcript(&client);
-    println!("# message endpoint: {}", client.message_endpoint());
-
     // --- initialize -------------------------------------------------------
-    let info = client.initialize().await.map_err(|e| e.to_string())?;
-    emit_step(&client, "initialize");
-    println!("# serverInfo: {} {}", info.server_name, info.server_version);
+    let info = client.initialize().map_err(|e| e.to_string())?;
+    println!(
+        "# serverInfo: {} {} (protocol {})",
+        info.server_name, info.server_version, info.protocol_version
+    );
 
     // --- tools/list -------------------------------------------------------
     let tools = client.list_tools().await.map_err(|e| e.to_string())?;
-    emit_step(&client, "tools/list");
     let names: Vec<&str> = tools.iter().map(|t| t.name().as_str()).collect();
     println!("# advertised tools: {names:?}");
     let have_keystrokes = names.contains(&"keystrokes");
@@ -77,7 +73,6 @@ async fn run(base_url: &str) -> Result<(), String> {
         .call_tool(&ks_name, &ks_args)
         .await
         .map_err(|e| e.to_string())?;
-    emit_step(&client, "tools/call keystrokes");
     println!(
         "# keystrokes result contains token: {}",
         keystrokes_out.as_str().contains(PROBE_TOKEN)
@@ -90,7 +85,6 @@ async fn run(base_url: &str) -> Result<(), String> {
         .call_tool(&cp_name, &cp_args)
         .await
         .map_err(|e| e.to_string())?;
-    emit_step(&client, "tools/call capture-pane");
     println!("# capture-pane:\n{}", pane.as_str());
 
     if !pane.as_str().contains(PROBE_TOKEN) {
@@ -100,26 +94,5 @@ async fn run(base_url: &str) -> Result<(), String> {
         ));
     }
 
-    // Drain any trailing `: ping` comment frames so the live transcript
-    // captures the keep-alive wire shape too.
-    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-    emit_transcript(&client);
-
     Ok(())
-}
-
-/// Print the most recent JSON-RPC request body, then drain and print all SSE
-/// frames that have arrived since the previous call.
-fn emit_step(client: &SidecarClient, label: &str) {
-    println!(">>> {label}");
-    if let Some(req) = client.last_request() {
-        println!("{req}");
-    }
-    emit_transcript(client);
-}
-
-fn emit_transcript(client: &SidecarClient) {
-    for block in client.drain_transcript() {
-        print!("{block}");
-    }
 }
