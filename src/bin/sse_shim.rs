@@ -106,16 +106,24 @@ async fn build_state(args: &ShimCliArgs) -> Result<ShimState, ShimError> {
 
     // Connect the MCP server and complete the handshake. A `[mcp.servers]`
     // block in the TOML names the server (transport, url, static headers);
-    // with no block, `--sidecar-url` is the fallback. `connect` performs the
-    // full initialize handshake, so a server that would reject early
-    // requests never sees one; `initialize` reports the negotiated identity.
+    // with no block, `--sidecar-url` is the fallback. Both connect paths
+    // perform the full initialize handshake, so a server that would reject
+    // early requests never sees one; `initialize` reports the negotiated
+    // identity.
     let sidecar = match &config.mcp_server {
         Some(server) => {
-            SidecarClient::connect_streamable(server.url.clone(), server.headers.clone())
-                .await
-                .map_err(|e| {
-                    ShimError::Server(format!("mcp server '{}' connect failed: {e}", server.name))
-                })?
+            let connected = match server.transport {
+                McpTransport::HttpStreamable => {
+                    SidecarClient::connect_streamable(server.url.clone(), server.headers.clone())
+                        .await
+                }
+                McpTransport::LegacySse => {
+                    SidecarClient::connect_sse(server.url.clone(), server.headers.clone()).await
+                }
+            };
+            connected.map_err(|e| {
+                ShimError::Server(format!("mcp server '{}' connect failed: {e}", server.name))
+            })?
         }
         None => SidecarClient::connect(args.sidecar_url().clone())
             .await
@@ -588,17 +596,30 @@ struct ShimConfig {
     orchestration_config: OrchestrationConfig,
 }
 
+/// The transport a configured MCP server speaks, resolved from the
+/// `transport = "…"` field of its `[mcp.servers.*]` block.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum McpTransport {
+    /// rmcp's streamable HTTP: one endpoint, `POST` requests, optional
+    /// GET stream.
+    HttpStreamable,
+    /// The legacy 2024-11-05 HTTP+SSE protocol: `GET /sse`, the
+    /// `event: endpoint` discovery frame, session POSTs to the resolved
+    /// message URL. Carried by the crate's custom rmcp transport.
+    LegacySse,
+}
+
 /// The MCP server the shim wires, resolved and validated from one
 /// `[mcp.servers.<name>]` block.
 ///
-/// Only the `http_streamable` transport resolves: rmcp removed its legacy
-/// HTTP+SSE client (the 2024-11-05 `GET /sse` + `event: endpoint`
-/// protocol) in 0.11.0 and the current release ships none, so `sse` is
-/// rejected at parse time with that fact rather than failing opaquely at
+/// Both aura transport names resolve: `http_streamable` onto rmcp's
+/// transport, `sse` onto the crate's custom legacy transport. Anything
+/// else is rejected at parse time rather than failing opaquely at
 /// connect time.
 #[derive(Debug)]
 struct ConfiguredMcpServer {
     name: String,
+    transport: McpTransport,
     url: SidecarUrl,
     /// Static headers sent on every request — the auth block the mezmo
     /// server expects.
@@ -607,9 +628,9 @@ struct ConfiguredMcpServer {
 
 /// Resolve `[mcp.servers.*]` into the one server the shim can wire.
 ///
-/// Aura's config names two transports, `http_streamable` and `sse`; only
-/// `http_streamable` is supported here. An empty or absent servers map is
-/// `Ok(None)` — the `--sidecar-url` fallback path.
+/// Aura's config names two transports, `http_streamable` and `sse`; both
+/// are supported here. An empty or absent servers map is `Ok(None)` —
+/// the `--sidecar-url` fallback path.
 fn resolve_mcp_server(parsed: &ParsedConfig) -> Result<Option<ConfiguredMcpServer>, ShimError> {
     if parsed.mcp.servers.is_empty() {
         return Ok(None);
@@ -627,16 +648,9 @@ fn resolve_mcp_server(parsed: &ParsedConfig) -> Result<Option<ConfiguredMcpServe
         )));
     }
     let (name, server) = parsed.mcp.servers.iter().next().expect("len checked above");
-    match server.transport.as_deref() {
-        Some("http_streamable") => {}
-        Some("sse") => {
-            return Err(ShimError::Server(format!(
-                "mcp server '{name}': transport \"sse\" (legacy 2024-11-05 HTTP+SSE, \
-                 GET /sse + endpoint event) is not supported — rmcp removed its SSE \
-                 client transport in 0.11.0 and the current release ships none; use \
-                 \"http_streamable\""
-            )));
-        }
+    let transport = match server.transport.as_deref() {
+        Some("http_streamable") => McpTransport::HttpStreamable,
+        Some("sse") => McpTransport::LegacySse,
         Some(other) => {
             return Err(ShimError::Server(format!(
                 "mcp server '{name}': unknown transport {other:?}; expected \
@@ -649,12 +663,13 @@ fn resolve_mcp_server(parsed: &ParsedConfig) -> Result<Option<ConfiguredMcpServe
                  or \"sse\""
             )));
         }
-    }
+    };
     let url_raw = server.url.as_deref().unwrap_or_default();
     let url = SidecarUrl::new(url_raw)
         .map_err(|e| ShimError::Server(format!("mcp server '{name}': invalid url: {e}")))?;
     Ok(Some(ConfiguredMcpServer {
         name: name.clone(),
+        transport,
         url,
         headers: server.headers.clone(),
     }))
@@ -823,7 +838,7 @@ mod tests {
     /// The mezmo-orchestrated shape: one `http_streamable` server with a
     /// static auth header, carrying sections the shim does not implement.
     #[test]
-    fn a_mezmo_shaped_servers_block_resolves_to_one_server_with_headers() {
+    fn a_mezmo_shaped_servers_block_resolves_to_one_streamable_server_with_headers() {
         let parsed = parse_config(
             r#"
 [mcp]
@@ -847,6 +862,7 @@ min_tokens = 10000
             .expect("one http_streamable server resolves")
             .expect("a server is configured");
         assert_eq!(server.name, "mezmo_mcp");
+        assert_eq!(server.transport, McpTransport::HttpStreamable);
         assert_eq!(server.url.as_str(), "https://mcp.use.dev.mezmo.it/mcp");
         assert_eq!(
             server.headers.get("Authorization").map(String::as_str),
@@ -894,24 +910,32 @@ headers = { Authorization = "Token token=x" }
         );
     }
 
-    /// `sse` is aura's other transport name, so it is recognized — and
-    /// rejected with the upstream fact, not an "unknown transport" dodge.
+    /// `sse` is aura's other transport name: it resolves onto the legacy
+    /// client, keeping the sidecar-style `/sse` server configs the shim
+    /// used to reject with the upstream-removal fact.
     #[test]
-    fn the_sse_transport_is_rejected_with_the_upstream_removal() {
+    fn the_sse_transport_resolves_to_the_legacy_client() {
         let parsed = parse_config(
             r#"
 [mcp.servers.terminal]
 transport = "sse"
 url = "http://localhost:8000/sse"
+
+[mcp.servers.terminal.headers]
+Authorization = "Token token=x"
 "#,
         )
         .expect("parses");
 
-        let error = resolve_mcp_server(&parsed).expect_err("sse has no transport behind it");
-        let message = error.to_string();
-        assert!(
-            message.contains("\"sse\"") && message.contains("rmcp"),
-            "the error names the transport and the removal, got: {message}"
+        let server = resolve_mcp_server(&parsed)
+            .expect("sse resolves onto the legacy transport")
+            .expect("a server is configured");
+        assert_eq!(server.name, "terminal");
+        assert_eq!(server.transport, McpTransport::LegacySse);
+        assert_eq!(server.url.as_str(), "http://localhost:8000/sse");
+        assert_eq!(
+            server.headers.get("Authorization").map(String::as_str),
+            Some("Token token=x")
         );
     }
 
