@@ -20,20 +20,10 @@ publish = false
 agent-driver-rs = { git = "https://github.com/Shearerbeard/agent-driver-rs", rev = "82ee41f298513876bfe8f7735d4f3f48eb92651f", features = ["bedrock"] }
 async-trait = "0.1"
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
-# The MCP client. rmcp at the current release replaces the hand-rolled
-# classic-SSE client: it carries the JSON-RPC envelope, the handshake, and
-# the streamable-HTTP session protocol behind `SidecarClient`'s plain-JSON
-# boundary. `client` is explicit because the transport feature does not
-# imply it (it gates `serve_client` and the client-side `Peer` methods);
-# defaults are off because the server side is mock-mcp-service's affair.
-# rmcp removed its legacy HTTP+SSE client transport (the 2024-11-05
-# `GET /sse` + `event: endpoint` protocol) in 0.11.0 and 3.2 ships none,
-# so that protocol rides the crate's own `Transport<RoleClient>` impl
-# (`src/mcp_client/sse_transport.rs`) — the seam the trait designs for —
-# keeping rmcp the only JSON-RPC machinery. Only `client` and the
-# streamable-HTTP feature are needed from rmcp itself. The agent-driver-rs
-# pin's own optional `mcp` feature is NOT enabled here, so this is the
-# graph's only rmcp.
+# The MCP client: rmcp carries the JSON-RPC envelope, the handshake, and
+# the streamable-HTTP session; the legacy SSE transport is in-tree
+# (src/mcp_client/sse_transport.rs). Only the `client` and
+# streamable-HTTP features are on; this is the graph's only rmcp.
 rmcp = { version = "3.2", default-features = false, features = ["client", "transport-streamable-http-client-reqwest"] }
 # SSE frame parsing for the legacy-transport receive half — the same crate
 # rmcp's own streamable client parses its streams with, so the dependency
@@ -97,5 +87,5 @@ toml = "0.8"
 agent-driver-rs = { git = "https://github.com/Shearerbeard/agent-driver-rs", rev = "82ee41f298513876bfe8f7735d4f3f48eb92651f", features = ["test-support"] }
 insta = { version = "1", features = ["json"] }
 tempfile = "3"
-tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "test-util"] }
 tokio-util = "0.7"
