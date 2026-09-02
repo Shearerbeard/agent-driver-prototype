@@ -1,13 +1,15 @@
-//! JSON-boundary client for the TerminalBench classic-SSE sidecar.
+//! JSON-boundary client for MCP servers, rmcp streamable HTTP underneath.
 //!
-//! The sidecar speaks the pre-2025-11-05 MCP SSE protocol (GET `/sse` for the
-//! event stream, POST `/messages/?session_id=…` for requests). The rmcp
-//! 0.12-vs-1.7 type-version difference that prevents `agent-driver-rs` from
-//! speaking classic SSE is confined behind this module: the public surface is
-//! plain JSON types — tool name plus args in, text content out — so no rmcp
-//! type ever crosses the seam.
+//! rmcp carries the JSON-RPC envelope, the initialize handshake, and the
+//! streamable-HTTP session protocol; this module confines it behind a
+//! plain-JSON surface — tool name plus args in, text content out — so no
+//! rmcp type ever crosses the seam and the worker path is insulated from
+//! the SDK. The legacy classic-SSE transport this module used to implement
+//! by hand (GET `/sse`, `event: endpoint`, session POSTs) was removed from
+//! rmcp in 0.11.0 and has no replacement here; streamable HTTP is the one
+//! client transport.
 //!
-//! Phase 1 declares the types; the SSE transport body lands in Phase 2.
+//! The wire-shape types live in [`wire`]; the client in [`client`].
 
 mod client;
 mod wire;
