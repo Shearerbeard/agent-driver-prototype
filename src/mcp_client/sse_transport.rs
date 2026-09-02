@@ -1,10 +1,6 @@
 //! The legacy MCP HTTP+SSE transport (the 2024-11-05 protocol).
 //!
-//! rmcp removed its SSE client transport in 0.11.0 and ships none today,
-//! but `Transport` is the extension seam the trait designs for: implement
-//! the byte pipe, and rmcp still owns every envelope concern — the
-//! JSON-RPC framing, the initialize handshake, request/response matching.
-//! This module is that pipe:
+//! The wire protocol this pipe speaks:
 //!
 //! 1. `GET` the SSE endpoint with `Accept: text/event-stream`
 //! 2. The server opens the stream with an `event: endpoint` frame naming
@@ -12,21 +8,25 @@
 //! 3. Client JSON-RPC messages are `POST`ed to that URL
 //! 4. Server messages arrive as `event: message` frames on the stream
 //!
-//! [`SseTransport::connect`] consumes the discovery frame before the
+//! [`connect`](Self::connect) consumes the discovery frame before the
 //! transport is handed to `serve_client`, so the handshake's first
-//! `receive` sees an actual message, not the endpoint event.
+//! `receive` sees an actual message, not the endpoint event. Discovery
+//! is bounded: a server that never delivers the endpoint frame fails
+//! inside the connect timeout instead of parking the caller.
 
-use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
 
 use futures::{Stream, StreamExt};
-use reqwest::header::{ACCEPT, CONTENT_TYPE, HeaderMap, HeaderName, HeaderValue};
+use reqwest::header::{ACCEPT, CONTENT_TYPE, HeaderMap};
 use rmcp::RoleClient;
 use rmcp::service::{RxJsonRpcMessage, TxJsonRpcMessage};
 use rmcp::transport::Transport;
 use sse_stream::{Error as SseError, Sse, SseStream};
+use tokio::time::timeout;
 use tracing::{debug, warn};
+
+use super::client::CONNECT_TIMEOUT;
 
 /// SSE event type carrying a JSON-RPC message from server to client.
 const SSE_EVENT_MESSAGE: &str = "message";
@@ -46,9 +46,6 @@ pub(super) enum SseTransportError {
     /// An HTTP request or response failed.
     #[error("SSE HTTP request failed: {0}")]
     Http(#[from] reqwest::Error),
-    /// A configured static header had an invalid name or value.
-    #[error("invalid header: {0}")]
-    InvalidHeader(String),
     /// The SSE base URL or the endpoint frame's URL did not parse.
     #[error("SSE URL parse failed: {0}")]
     UrlParse(#[from] url::ParseError),
@@ -65,6 +62,10 @@ pub(super) enum SseTransportError {
     /// The stream ended before the `event: endpoint` discovery frame.
     #[error("SSE stream closed before the endpoint event")]
     MissingEndpointEvent,
+    /// The opening `GET` or the endpoint-frame wait did not complete
+    /// inside the connect bound.
+    #[error("SSE endpoint discovery timed out after {0:?}")]
+    ConnectTimeout(std::time::Duration),
 }
 
 /// MCP client transport over the legacy SSE protocol.
@@ -148,71 +149,78 @@ impl Transport<RoleClient> for SseTransport {
 impl SseTransport {
     /// Open the SSE connection and resolve the message endpoint.
     ///
-    /// The static headers become the HTTP client's `default_headers`, so
-    /// they ride every request of the session — the opening `GET` and
-    /// every message `POST` alike.
+    /// The headers arrive already validated, typed for reqwest's
+    /// `default_headers`: they ride every request of the session — the
+    /// opening `GET` and every message `POST` alike.
     ///
     /// The `event: endpoint` discovery frame is consumed here, before the
     /// transport is handed to `serve_client`, so the handshake's first
-    /// response wait starts on a stream already positioned past it.
+    /// response wait starts on a stream already positioned past it. The
+    /// opening `GET` and the discovery drain are bounded by
+    /// `CONNECT_TIMEOUT`.
     ///
     /// # Errors
     ///
-    /// Returns [`SseTransportError::InvalidHeader`] for a header that is
-    /// not HTTP-valid, and the connect-failure variants for a refused,
-    /// non-SSE, or endpoint-less response.
-    pub(super) async fn connect(
-        url: &str,
-        headers: &HashMap<String, String>,
-    ) -> Result<Self, SseTransportError> {
+    /// Returns the connect-failure variants for a refused, non-SSE, or
+    /// endpoint-less response, and
+    /// [`SseTransportError::ConnectTimeout`] when discovery does not
+    /// complete inside the bound.
+    pub(super) async fn connect(url: &str, headers: HeaderMap) -> Result<Self, SseTransportError> {
         let sse_endpoint = url::Url::parse(url)?;
 
         let http_client = reqwest::Client::builder()
-            .default_headers(default_headers(headers)?)
+            .default_headers(headers)
             .build()
             .map_err(SseTransportError::Http)?;
 
-        let response = http_client
-            .get(url)
-            .header(ACCEPT, "text/event-stream")
-            .send()
-            .await
-            .map_err(SseTransportError::Http)?;
-        let response = response
-            .error_for_status()
-            .map_err(SseTransportError::Http)?;
-
-        let content_types: Vec<&str> = response
-            .headers()
-            .get_all(CONTENT_TYPE)
-            .into_iter()
-            .filter_map(|value| value.to_str().ok())
-            .collect();
-        if !content_types
-            .iter()
-            .any(|content_type| content_type.starts_with("text/event-stream"))
-        {
-            return Err(match content_types.first() {
-                Some(content_type) => {
-                    SseTransportError::UnexpectedContentType((*content_type).to_owned())
-                }
-                None => SseTransportError::MissingContentType,
-            });
-        }
-
-        let mut stream = SseStream::from_bytes_stream(response.bytes_stream()).boxed();
-
-        let message_endpoint = loop {
-            let sse = stream
-                .next()
+        let (stream, message_endpoint) = timeout(CONNECT_TIMEOUT, async {
+            let response = http_client
+                .get(url)
+                .header(ACCEPT, "text/event-stream")
+                .send()
                 .await
-                .transpose()
-                .map_err(SseTransportError::SseStream)?
-                .ok_or(SseTransportError::MissingEndpointEvent)?;
-            if let (Some(SSE_EVENT_ENDPOINT), Some(endpoint)) = (sse.event.as_deref(), sse.data) {
-                break resolve_message_endpoint(sse_endpoint, endpoint)?;
+                .map_err(SseTransportError::Http)?;
+            let response = response
+                .error_for_status()
+                .map_err(SseTransportError::Http)?;
+
+            let content_types: Vec<&str> = response
+                .headers()
+                .get_all(CONTENT_TYPE)
+                .into_iter()
+                .filter_map(|value| value.to_str().ok())
+                .collect();
+            if !content_types
+                .iter()
+                .any(|content_type| content_type.starts_with("text/event-stream"))
+            {
+                return Err(match content_types.first() {
+                    Some(content_type) => {
+                        SseTransportError::UnexpectedContentType((*content_type).to_owned())
+                    }
+                    None => SseTransportError::MissingContentType,
+                });
             }
-        };
+
+            let mut stream = SseStream::from_bytes_stream(response.bytes_stream()).boxed();
+
+            let message_endpoint = loop {
+                let sse = stream
+                    .next()
+                    .await
+                    .transpose()
+                    .map_err(SseTransportError::SseStream)?
+                    .ok_or(SseTransportError::MissingEndpointEvent)?;
+                if let (Some(SSE_EVENT_ENDPOINT), Some(endpoint)) = (sse.event.as_deref(), sse.data)
+                {
+                    break resolve_message_endpoint(sse_endpoint, endpoint)?;
+                }
+            };
+
+            Ok((stream, message_endpoint))
+        })
+        .await
+        .map_err(|_| SseTransportError::ConnectTimeout(CONNECT_TIMEOUT))??;
 
         Ok(Self {
             http_client,
@@ -231,27 +239,6 @@ fn resolve_message_endpoint(
     endpoint: String,
 ) -> Result<url::Url, SseTransportError> {
     base.join(&endpoint).map_err(SseTransportError::UrlParse)
-}
-
-/// Validate the static header block and type it for reqwest's
-/// `default_headers`.
-///
-/// # Errors
-///
-/// Returns [`SseTransportError::InvalidHeader`] for a name that is not a
-/// valid HTTP header token or a value that is not a valid header value.
-fn default_headers(headers: &HashMap<String, String>) -> Result<HeaderMap, SseTransportError> {
-    let mut map = HeaderMap::with_capacity(headers.len());
-    for (name, value) in headers {
-        let name = HeaderName::from_bytes(name.as_bytes()).map_err(|error| {
-            SseTransportError::InvalidHeader(format!("header name {name:?}: {error}"))
-        })?;
-        let value = HeaderValue::from_str(value).map_err(|error| {
-            SseTransportError::InvalidHeader(format!("header {name:?} value: {error}"))
-        })?;
-        map.insert(name, value);
-    }
-    Ok(map)
 }
 
 #[cfg(test)]
@@ -310,39 +297,38 @@ mod tests {
         );
     }
 
-    // --- static header validation ------------------------------------------
+    // --- connect bound ------------------------------------------------------
 
-    #[test]
-    fn default_headers_accepts_an_auth_block_shape() {
-        let mut headers = HashMap::new();
-        headers.insert("Authorization".to_owned(), "Bearer s3cret".to_owned());
+    /// A listener that completes the TCP handshake and then never answers
+    /// cannot park discovery forever: the connect is bounded, and expiry
+    /// reports as [`SseTransportError::ConnectTimeout`]. Paused time
+    /// makes the 30-second bound elapse at once.
+    #[tokio::test(start_paused = true)]
+    async fn a_silent_server_fails_endpoint_discovery_inside_the_bound() {
+        let blackhole = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("the blackhole listener binds");
+        let port = blackhole
+            .local_addr()
+            .expect("the blackhole listener has an address")
+            .port();
+        tokio::spawn(async move {
+            // Held, not served: the sockets stay open and say nothing.
+            let mut held = Vec::new();
+            while let Ok((connection, _)) = blackhole.accept().await {
+                held.push(connection);
+            }
+        });
 
-        let map = default_headers(&headers).unwrap();
-        assert_eq!(
-            map.get(HeaderName::from_static("authorization")),
-            Some(&HeaderValue::from_static("Bearer s3cret")),
+        let error =
+            SseTransport::connect(&format!("http://127.0.0.1:{port}/sse"), HeaderMap::new())
+                .await
+                .err()
+                .expect("a silent server must fail, not hang");
+
+        assert!(
+            matches!(error, SseTransportError::ConnectTimeout(_)),
+            "discovery expiry maps to ConnectTimeout, got: {error}"
         );
-    }
-
-    #[test]
-    fn default_headers_reject_invalid_names_and_values() {
-        let mut headers = HashMap::new();
-        headers.insert("not a header name".to_owned(), "v".to_owned());
-        assert!(matches!(
-            default_headers(&headers),
-            Err(SseTransportError::InvalidHeader(_))
-        ));
-
-        let mut headers = HashMap::new();
-        headers.insert("Authorization".to_owned(), "bad\nvalue".to_owned());
-        assert!(matches!(
-            default_headers(&headers),
-            Err(SseTransportError::InvalidHeader(_))
-        ));
-    }
-
-    #[test]
-    fn default_headers_empty_is_empty() {
-        assert!(default_headers(&HashMap::new()).unwrap().is_empty());
     }
 }

@@ -1,31 +1,21 @@
 //! The sidecar client: MCP transports behind a plain-JSON boundary.
 //!
-//! `SidecarClient` is the only type that touches the MCP transport. rmcp's
-//! types (`RunningService`, `Peer`, `Tool`, `CallToolResult`) stay private
-//! to this module; the public methods take and return plain JSON-shaped
-//! data, so no rmcp type ever crosses the seam and `producers.rs` and the
-//! worker path are insulated from the SDK. Both transports — rmcp's
-//! streamable HTTP and the crate's legacy-SSE custom transport — end in
-//! the same rmcp session, so everything downstream of the handshake is
-//! transport-agnostic.
-//!
-//! Both connect paths perform the full MCP handshake — rmcp's
-//! `serve_client` sends `initialize`, awaits the result, and delivers the
-//! `notifications/initialized` notification — so a client returned by a
-//! connect is ready for `tools/list` and `tools/call` with no further
-//! ceremony. [`SidecarClient::initialize`] reports the handshake result
-//! and keeps its place in the public surface so existing callers are
-//! unchanged.
+//! `SidecarClient` is the only type that touches an MCP transport; its
+//! public methods take and return plain JSON-shaped data, so no rmcp
+//! type ever crosses the seam. Both connect paths complete the MCP
+//! handshake before returning, so a client is ready for `tools/list` and
+//! `tools/call` immediately; [`SidecarClient::initialize`] reports the
+//! handshake result.
 
 use std::collections::HashMap;
 use std::fmt;
 use std::sync::Arc;
 use std::time::Duration;
 
-use reqwest::header::{HeaderName, HeaderValue};
+use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 use tokio::time::timeout;
 
-use super::sse_transport::{SseTransport, SseTransportError};
+use super::sse_transport::SseTransport;
 use super::wire::{
     SidecarContent, SidecarServerInfo, SidecarTool, SidecarToolArgs, SidecarToolName,
 };
@@ -39,6 +29,13 @@ use super::wire::{
 /// downstream; rmcp's cancellation propagation is a separate adoption
 /// concern, deliberately out of scope here.
 const RESPONSE_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Bound on any single connect: endpoint discovery, transport setup, and
+/// the `initialize` handshake it ends in. The value matches the
+/// hand-rolled client's connect bound: a server that accepts the
+/// connection but never answers fails as [`SidecarError::Connect`]
+/// instead of parking the caller forever.
+pub(super) const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// The endpoint of an MCP server.
 ///
@@ -93,7 +90,7 @@ pub enum SidecarError {
     #[error("invalid sidecar URL: {0}")]
     InvalidUrl(String),
     /// The handshake could not be completed: transport, HTTP, or
-    /// initialize-round-trip failure.
+    /// initialize-round-trip failure, or the connect outlived its bound.
     #[error("sidecar connection failed: {0}")]
     Connect(String),
     /// A post-handshake request was malformed, rejected, or timed out.
@@ -121,8 +118,8 @@ fn client_info() -> rmcp::model::ClientInfo {
     )
 }
 
-/// Convert plain string pairs into the typed header map rmcp's transport
-/// config takes.
+/// Parse the static header block into the typed map both transports
+/// take — the single validation point for configured headers.
 ///
 /// `http` 1.x unifies across this crate's reqwest 0.12 and rmcp's reqwest
 /// 0.13, so `reqwest::header::{HeaderName, HeaderValue}` are the exact
@@ -134,10 +131,8 @@ fn client_info() -> rmcp::model::ClientInfo {
 ///
 /// Returns [`SidecarError::InvalidHeader`] for a name that is not a valid
 /// HTTP header token or a value that is not a valid HTTP header value.
-fn header_map(
-    headers: &HashMap<String, String>,
-) -> Result<HashMap<HeaderName, HeaderValue>, SidecarError> {
-    let mut map = HashMap::with_capacity(headers.len());
+fn header_map(headers: &HashMap<String, String>) -> Result<HeaderMap, SidecarError> {
+    let mut map = HeaderMap::with_capacity(headers.len());
     for (name, value) in headers {
         let name = HeaderName::try_from(name.as_str())
             .map_err(|e| SidecarError::InvalidHeader(format!("header name {name:?}: {e}")))?;
@@ -146,6 +141,16 @@ fn header_map(
         map.insert(name, value);
     }
     Ok(map)
+}
+
+/// Copy the parsed header map into the container rmcp's streamable
+/// config takes. The pairs are already validated; this is a move between
+/// container types, not a second parse.
+fn rmcp_custom_headers(headers: &HeaderMap) -> HashMap<HeaderName, HeaderValue> {
+    headers
+        .iter()
+        .map(|(name, value)| (name.clone(), value.clone()))
+        .collect()
 }
 
 /// Extract the server identity from the handshake rmcp already recorded.
@@ -214,59 +219,51 @@ impl fmt::Debug for SidecarClient {
 }
 
 impl SidecarClient {
-    /// Connect to an MCP server over streamable HTTP and complete the MCP
-    /// handshake.
-    ///
-    /// The returned client is ready for [`Self::list_tools`] and
-    /// [`Self::call_tool`] immediately: rmcp sends `initialize`, reads the
-    /// result, and delivers `notifications/initialized` before this
-    /// returns, so a server that would reject early requests never sees
-    /// one.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`SidecarError::InvalidUrl`] when the URL does not parse and
-    /// [`SidecarError::Connect`] when the transport cannot be established
-    /// or the handshake fails.
-    pub async fn connect(url: SidecarUrl) -> Result<Self, SidecarError> {
-        Self::connect_streamable(url, HashMap::new()).await
-    }
-
     /// Connect over streamable HTTP with static headers sent on every
     /// request.
     ///
-    /// The headers are the `[mcp.servers.*.headers]` block of the
-    /// orchestration TOML — the auth headers the mezmo server expects on
-    /// every POST and GET. They ride rmcp's per-request custom-header
-    /// channel, which applies them to every request of the session.
+    /// The transport choice is explicit at every call site; there is no
+    /// default connect. The headers are the `[mcp.servers.*].headers`
+    /// block of the orchestration TOML — the auth headers the mezmo
+    /// server expects on every POST and GET. They ride rmcp's per-request
+    /// custom-header channel, which applies them to every request of the
+    /// session.
     ///
     /// # Errors
     ///
-    /// As [`Self::connect`], plus [`SidecarError::InvalidHeader`] when a
-    /// header name or value is not HTTP-valid.
+    /// Returns [`SidecarError::InvalidUrl`] when the URL does not parse,
+    /// [`SidecarError::InvalidHeader`] when a header name or value is not
+    /// HTTP-valid, and [`SidecarError::Connect`] when the transport
+    /// cannot be established, the handshake fails, or the connect does
+    /// not complete inside the 30-second connect bound.
     pub async fn connect_streamable(
         url: SidecarUrl,
         headers: HashMap<String, String>,
     ) -> Result<Self, SidecarError> {
+        let headers = header_map(&headers)?;
         let config =
             rmcp::transport::streamable_http_client::StreamableHttpClientTransportConfig::with_uri(
                 url.as_str(),
             )
-            .custom_headers(header_map(&headers)?);
+            .custom_headers(rmcp_custom_headers(&headers));
         let transport = rmcp::transport::StreamableHttpClientTransport::from_config(config);
-        let service = rmcp::serve_client(client_info(), transport)
-            .await
-            .map_err(|e| SidecarError::Connect(format!("streamable HTTP handshake failed: {e}")))?;
+        let service = timeout(
+            CONNECT_TIMEOUT,
+            rmcp::serve_client(client_info(), transport),
+        )
+        .await
+        .map_err(|_| {
+            SidecarError::Connect(format!(
+                "streamable HTTP handshake timed out after {CONNECT_TIMEOUT:?}"
+            ))
+        })?
+        .map_err(|e| SidecarError::Connect(format!("streamable HTTP handshake failed: {e}")))?;
         Self::from_service(url, service)
     }
 
     /// Connect over the legacy (2024-11-05) HTTP+SSE transport and
     /// complete the MCP handshake.
     ///
-    /// The transport `GET`s the SSE endpoint, consumes the `endpoint`
-    /// discovery frame, then hands its byte pipe to rmcp: the initialize
-    /// handshake, every request/response match, and the notification
-    /// delivery run on rmcp's machinery, exactly as over streamable HTTP.
     /// The static headers ride every request, the opening `GET` included.
     ///
     /// # Errors
@@ -274,30 +271,26 @@ impl SidecarClient {
     /// As [`Self::connect_streamable`]: [`SidecarError::InvalidUrl`] when
     /// the URL does not parse, [`SidecarError::InvalidHeader`] when a
     /// header name or value is not HTTP-valid, and
-    /// [`SidecarError::Connect`] when the transport cannot be established
-    /// or the handshake fails.
+    /// [`SidecarError::Connect`] when endpoint discovery, the transport,
+    /// or the handshake fails, or the connect does not complete inside
+    /// the 30-second connect bound.
     pub async fn connect_sse(
         url: SidecarUrl,
         headers: HashMap<String, String>,
     ) -> Result<Self, SidecarError> {
-        let transport = SseTransport::connect(url.as_str(), &headers)
+        let transport = SseTransport::connect(url.as_str(), header_map(&headers)?)
             .await
-            .map_err(Self::sse_connect_error)?;
-        let service = rmcp::serve_client(client_info(), transport)
-            .await
-            .map_err(|e| SidecarError::Connect(format!("SSE handshake failed: {e}")))?;
+            .map_err(|e| SidecarError::Connect(format!("SSE connect failed: {e}")))?;
+        let service = timeout(
+            CONNECT_TIMEOUT,
+            rmcp::serve_client(client_info(), transport),
+        )
+        .await
+        .map_err(|_| {
+            SidecarError::Connect(format!("SSE handshake timed out after {CONNECT_TIMEOUT:?}"))
+        })?
+        .map_err(|e| SidecarError::Connect(format!("SSE handshake failed: {e}")))?;
         Self::from_service(url, service)
-    }
-
-    /// Fold an SSE transport failure into the sidecar error surface.
-    ///
-    /// Header validation keeps its variant so both transports report it
-    /// the same way; everything else happened while connecting.
-    fn sse_connect_error(error: SseTransportError) -> SidecarError {
-        match error {
-            SseTransportError::InvalidHeader(message) => SidecarError::InvalidHeader(message),
-            other => SidecarError::Connect(format!("SSE connect failed: {other}")),
-        }
     }
 
     /// Record a served session's handshake behind the client's shared
@@ -342,11 +335,11 @@ impl SidecarClient {
         }
     }
 
-    /// Report the server info from the handshake [`Self::connect`]
+    /// Report the server info from the handshake the connect path
     /// completed.
     ///
-    /// The handshake itself runs inside `connect`; this returns its result
-    /// so callers that log or check the server identity keep their place.
+    /// The connect paths run the handshake; this returns its result so
+    /// callers that log or check the server identity keep their place.
     ///
     /// # Errors
     ///
@@ -501,7 +494,7 @@ mod tests {
         let map = header_map(&headers).unwrap();
         assert_eq!(map.len(), 2);
         assert_eq!(
-            map.get(&HeaderName::from_static("authorization")),
+            map.get(HeaderName::from_static("authorization")),
             Some(&HeaderValue::from_static("Bearer s3cret"))
         );
     }
@@ -604,5 +597,44 @@ mod tests {
         // Both clones report the same placeholder URL through Debug.
         assert!(format!("{client:?}").contains("localhost:0"));
         assert!(format!("{clone:?}").contains("localhost:0"));
+    }
+
+    // --- Connect bound ------------------------------------------------------
+
+    /// A server that completes the TCP handshake and then never answers
+    /// cannot park `connect_streamable` forever: the handshake wait is
+    /// bounded, and expiry reports as [`SidecarError::Connect`] naming the
+    /// bound. Paused time makes the 30-second bound elapse at once.
+    #[tokio::test(start_paused = true)]
+    async fn a_silent_streamable_server_times_out_as_a_connect_error() {
+        let blackhole = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("the blackhole listener binds");
+        let port = blackhole
+            .local_addr()
+            .expect("the blackhole listener has an address")
+            .port();
+        tokio::spawn(async move {
+            // Held, not served: the sockets stay open and say nothing.
+            let mut held = Vec::new();
+            while let Ok((connection, _)) = blackhole.accept().await {
+                held.push(connection);
+            }
+        });
+
+        let url = SidecarUrl::new(&format!("http://127.0.0.1:{port}/mcp"))
+            .expect("the blackhole URL is valid");
+        let error = SidecarClient::connect_streamable(url, HashMap::new())
+            .await
+            .expect_err("a silent server must fail, not hang");
+
+        assert!(
+            matches!(error, SidecarError::Connect(_)),
+            "the timeout maps to Connect, got: {error}"
+        );
+        assert!(
+            error.to_string().contains("timed out"),
+            "the error names the timeout, got: {error}"
+        );
     }
 }

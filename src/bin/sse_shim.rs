@@ -106,9 +106,10 @@ async fn build_state(args: &ShimCliArgs) -> Result<ShimState, ShimError> {
 
     // Connect the MCP server and complete the handshake. A `[mcp.servers]`
     // block in the TOML names the server (transport, url, static headers);
-    // with no block, `--sidecar-url` is the fallback. Both connect paths
-    // perform the full initialize handshake, so a server that would reject
-    // early requests never sees one; `initialize` reports the negotiated
+    // with no block, `--sidecar-url` is the fallback, and a `--sidecar-url`
+    // targets the TerminalBench classic-SSE sidecar by definition, so the
+    // fallback connects over SSE explicitly. Both connect paths perform
+    // the full initialize handshake; `initialize` reports the negotiated
     // identity.
     let sidecar = match &config.mcp_server {
         Some(server) => {
@@ -125,7 +126,7 @@ async fn build_state(args: &ShimCliArgs) -> Result<ShimState, ShimError> {
                 ShimError::Server(format!("mcp server '{}' connect failed: {e}", server.name))
             })?
         }
-        None => SidecarClient::connect(args.sidecar_url().clone())
+        None => SidecarClient::connect_sse(args.sidecar_url().clone(), HashMap::new())
             .await
             .map_err(|e| ShimError::Server(format!("sidecar connect failed: {e}")))?,
     };
