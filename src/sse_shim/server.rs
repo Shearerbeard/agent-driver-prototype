@@ -4,9 +4,12 @@
 //! The shim serves two routes:
 //! - `GET /health` — returns `200 OK` for readiness probes.
 //! - `POST /v1/chat/completions` — accepts an OpenAI-compatible chat
-//!   completion request and returns an SSE stream emitting the full
-//!   `aura.*` vocabulary, data-only chat-completion chunks, and a terminal
-//!   `data: [DONE]`.
+//!   completion request and returns an SSE stream emitting six named
+//!   `aura.*` events (`aura.session_info`, `aura.usage`,
+//!   `aura.tool_start`, `aura.tool_complete`,
+//!   `aura.orchestrator.task_started`,
+//!   `aura.orchestrator.task_completed`; see `events.rs`), data-only
+//!   chat-completion chunks, and a terminal `data: [DONE]`.
 //!
 //! One `CoordinatorLoop` is built and spawned per request from the shared
 //! [`ShimState`]. The observer feeds `aura.*` events through a bounded
