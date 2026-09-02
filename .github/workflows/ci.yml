@@ -1,0 +1,27 @@
+# Hermetic CI: no secrets, no AWS env, no live providers. The whole test
+# suite runs offline (MockProvider-backed loops, localhost-only listeners);
+# the credential-needing surfaces (the sse_shim and sidecar_probe binaries)
+# are run manually, never by `cargo test`.
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      # 1.91.1 is the crate's declared `rust-version`; testing at it keeps
+      # the MSRV honest.
+      - uses: dtolnay/rust-toolchain@1.91.1
+        with:
+          components: rustfmt, clippy
+      - run: cargo fmt --check
+      - run: cargo clippy --all-targets --locked
+      - run: cargo test --locked
