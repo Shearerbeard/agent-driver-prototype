@@ -1,9 +1,9 @@
-//! Wire-shape types for the classic-SSE MCP protocol.
+//! Wire-shape types for the MCP tool protocol.
 //!
-//! Every type models what the F3 transcript captured: the `initialize`
-//! result, the `tools/list` tool entries, and the `tools/call` content
-//! payload. No rmcp type appears here — the JSON-RPC envelope is handled
-//! inside [`super::client::SidecarClient`], and only plain JSON reaches the
+//! Every type models what the wire carries: the `initialize` result, the
+//! `tools/list` tool entries, and the `tools/call` content payload. No rmcp
+//! type appears here — the transport is handled inside
+//! [`super::client::SidecarClient`], and only plain JSON reaches the
 //! public boundary.
 
 use serde::{Deserialize, Serialize};

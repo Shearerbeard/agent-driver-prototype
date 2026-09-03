@@ -19,37 +19,36 @@ publish = false
 # tracing pipeline. See `src/sse_shim/DESIGN.md` for the rationale.
 agent-driver-rs = { git = "https://github.com/Shearerbeard/agent-driver-rs", rev = "82ee41f298513876bfe8f7735d4f3f48eb92651f", features = ["bedrock"] }
 async-trait = "0.1"
-# `Bytes` is the chunk type of the reqwest SSE response stream and is named in
-# the `dyn Stream<Item = Result<Bytes, reqwest::Error>>` field of `SseReader`.
-# Already a transitive dep of reqwest; declared directly so the type is not
-# borrowed through a transitive crate.
-bytes = "1"
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
-# `StreamExt::next` pulls chunks from the long-lived SSE GET response, as the
-# aura `mcp_sse.rs` source does. No SSE-frame crate is pulled: the frame
-# parser is a pure function over a UTF-8 buffer (unit-tested against F3).
+# The MCP client: rmcp carries the JSON-RPC envelope, the handshake, and
+# the streamable-HTTP session; the legacy SSE transport is in-tree
+# (src/mcp_client/sse_transport.rs). Only the `client` and
+# streamable-HTTP features are on; this is the graph's only rmcp.
+rmcp = { version = "3.2", default-features = false, features = ["client", "transport-streamable-http-client-reqwest"] }
+# SSE frame parsing for the legacy-transport receive half — the same crate
+# rmcp's own streamable client parses its streams with, so the dependency
+# unifies to the copy already in the graph.
+sse-stream = "0.2"
+# `Stream`/`StreamExt` for the shim's SSE response bodies and their tests.
 futures = "0.3"
-# HTTP client for the SSE GET and the JSON-RPC POSTs. Pinned to 0.12 to match
-# the agent-driver-rs pin (a 0.13 copy exists transitively via async-openai;
-# declaring 0.12 avoids a second direct major version). The `stream` feature
-# gates `Response::bytes_stream` for the open SSE stream.
-reqwest = { version = "0.12", features = ["stream"] }
+# HTTP header types (`HeaderName`, `HeaderValue`) for rmcp's per-server
+# custom-header config — `http` 1.x unifies across this reqwest and rmcp's,
+# so the re-exports are the exact types rmcp expects. Also the HTTP client
+# the sse_shim integration tests drive the shim with.
+reqwest = "0.12"
+# URL parsing and RFC 3986 join for the SSE endpoint frame resolution in
+# `src/mcp_client/sse_transport.rs`.
+url = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 strum = { version = "0.26", features = ["derive"] }
 thiserror = "1"
-# Runtime + async primitives: `#[tokio::main]` for the probe binary,
-# `tokio::sync::Mutex` to hold the SSE stream across `.await`, and
-# `tokio::time::timeout` for bounded response reads. Also a dev-dep so the
-# integration-test crate can name `tokio` directly; features unify.
-# S73: the `signal` feature gates `tokio::signal::ctrl_c()` for graceful
-# shim shutdown.
+# Runtime + async primitives: `#[tokio::main]` for the binaries,
+# `tokio::time::timeout` for bounded response reads, and graceful-shutdown
+# signal handling for the shim. Also a dev-dep so the integration-test
+# crate can name `tokio` directly; features unify.
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "fs", "signal"] }
 tracing = "0.1"
-# RFC 3986 resolution of the relative `endpoint` event URL against the SSE
-# base URL in `SidecarClient::connect`, matching aura's `url::Url::join`.
-# `SidecarUrl::new` keeps its prefix check; full parse happens in `connect`.
-url = "2"
 
 # --- S73: SSE shim server deps ---
 
@@ -88,5 +87,5 @@ toml = "0.8"
 agent-driver-rs = { git = "https://github.com/Shearerbeard/agent-driver-rs", rev = "82ee41f298513876bfe8f7735d4f3f48eb92651f", features = ["test-support"] }
 insta = { version = "1", features = ["json"] }
 tempfile = "3"
-tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "test-util"] }
 tokio-util = "0.7"
