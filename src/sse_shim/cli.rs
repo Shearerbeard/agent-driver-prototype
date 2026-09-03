@@ -1,6 +1,6 @@
-//! CLI argument types for the SSE shim binary.
+//! CLI argument types for the server binary.
 //!
-//! Parsed from `std::env::args` to match the existing `sidecar_probe`
+//! Parsed from `std::env::args` to match the existing `mcp_probe`
 //! convention — the spike repo does not depend on `clap`.
 
 use std::path::PathBuf;
@@ -79,7 +79,7 @@ impl ShimCliArgs {
 
     /// Parse `std::env::args` into typed CLI args.
     ///
-    /// Expected: `sse_shim --port <N> --sidecar-url <URL> --config <PATH>`.
+    /// Expected: `server --port <N> --sidecar-url <URL> --config <PATH>`.
     /// Both `--flag value` and `--flag=value` forms are accepted; the program
     /// name (argv[0]) is skipped. Unknown flags and missing values are hard
     /// errors. The sidecar URL is validated via [`SidecarUrl::new`].

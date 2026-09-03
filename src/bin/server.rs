@@ -1,10 +1,10 @@
-//! The SSE shim binary: an HTTP server wrapping the coordinator loop behind
+//! The server binary: an HTTP server wrapping the coordinator loop behind
 //! an OpenAI-compatible `/v1/chat/completions` endpoint.
 //!
 //! Usage:
 //!
 //! ```text
-//! sse_shim --port <N> --sidecar-url <URL> --config <PATH>
+//! server --port <N> --sidecar-url <URL> --config <PATH>
 //! ```
 //!
 //! `--port 0` binds to an ephemeral port and prints `SHIM_PORT=<n>` on
@@ -57,7 +57,7 @@ use serde::Deserialize;
 #[tokio::main]
 async fn main() {
     if let Err(error) = run().await {
-        eprintln!("sse_shim failed: {error}");
+        eprintln!("server failed: {error}");
         std::process::exit(1);
     }
 }

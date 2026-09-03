@@ -6,7 +6,7 @@
 //! `keystrokes` + `capture-pane` advertised, and the captured pane
 //! contains the probe token `S72_PROBE_OK_72`.
 //!
-//! Usage: `sidecar_probe [--transport sse|http_streamable] <mcp-url>`
+//! Usage: `mcp_probe [--transport sse|http_streamable] <mcp-url>`
 //! (e.g. `http://localhost:9992/sse`). The transport defaults to `sse` —
 //! the probe's contract is the TB sidecar's `/sse` endpoint and the S72
 //! wire assertions; `--transport http_streamable` reaches a
@@ -87,7 +87,7 @@ fn parse_probe_args(args: &[String]) -> Result<ProbeArgs, String> {
 #[tokio::main]
 async fn main() {
     let argv: Vec<String> = std::env::args().collect();
-    let prog = argv.first().map(String::as_str).unwrap_or("sidecar_probe");
+    let prog = argv.first().map(String::as_str).unwrap_or("mcp_probe");
     let parsed = match parse_probe_args(&argv[1..]) {
         Ok(parsed) => parsed,
         Err(error) => {
@@ -98,7 +98,7 @@ async fn main() {
         }
     };
     if let Err(error) = run(&parsed.url, parsed.transport).await {
-        eprintln!("sidecar_probe failed: {error}");
+        eprintln!("mcp_probe failed: {error}");
         exit(1);
     }
 }

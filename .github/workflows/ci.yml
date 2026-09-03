@@ -1,6 +1,6 @@
 # Hermetic CI: no secrets, no AWS env, no live providers. The whole test
 # suite runs offline (MockProvider-backed loops, localhost-only listeners);
-# the credential-needing surfaces (the sse_shim and sidecar_probe binaries)
+# the credential-needing surfaces (the server and mcp_probe binaries)
 # are run manually, never by `cargo test`.
 name: CI
 

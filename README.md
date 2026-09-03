@@ -74,9 +74,9 @@ run against the real harness topology.
   `coordinator_loop/`, `dag_executor/`, `mcp_client/`, `sse_shim/`.
   Each subsystem after the port keeps its type-design record in a
   `DESIGN.md` next to the code.
-- `src/bin/sse_shim.rs` — the shim server binary.
-- `src/bin/sidecar_probe.rs` — a live probe for a classic-SSE MCP
-  sidecar.
+- `src/bin/server.rs` — the shim server binary.
+- `src/bin/mcp_probe.rs` — a live probe for an MCP server (streamable
+  HTTP or classic-SSE sidecar).
 - `tests/` — integration tests for the loop, executor, and shim, all
   offline.
 - `snapshots/` — the aura golden-envelope-corpus insta snapshots that
@@ -104,14 +104,14 @@ table to an untracked `.cargo/config.toml`.
 ## Running the shim
 
 ```sh
-cargo run --bin sse_shim -- --port <N> --sidecar-url <URL> --config <PATH>
-cargo run --bin sidecar_probe -- <sse-base-url>   # e.g. http://localhost:8000/sse
+cargo run --bin server -- --port <N> --sidecar-url <URL> --config <PATH>
+cargo run --bin mcp_probe -- <mcp-url>   # e.g. http://localhost:8000/sse
 ```
 
 - `--port 0` binds an ephemeral port and prints `SHIM_PORT=<n>` on
   stdout after bind.
 - `--sidecar-url` points at the classic-SSE MCP sidecar;
-  `sidecar_probe` connects to one, runs the full JSON-RPC sequence,
+  `mcp_probe` connects to one, runs the full JSON-RPC sequence,
   and prints the transcript verbatim.
 - `--config` is the orchestration TOML: the worker roster, the
   planning/turn budgets, the inline spill threshold, and the prompt
