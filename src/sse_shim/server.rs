@@ -30,7 +30,7 @@ use axum::extract::{Json, State};
 use axum::response::IntoResponse;
 use axum::response::sse::{Event, Sse};
 use futures::Stream;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc::Receiver;
 use tokio::task::JoinHandle;
 use tracing::Instrument;
@@ -38,7 +38,8 @@ use tracing::Instrument;
 use crate::artifacts::{ArtifactStore, InlineThreshold};
 use crate::context::PinnedGoal;
 use crate::coordinator_loop::{
-    CoordinatorLoop, CoordinatorLoopConfig, LoopBudget, RunStore, WorkerSections,
+    ChatHistory, ChatTurn, ChatTurnRole, CoordinatorLoop, CoordinatorLoopConfig, LoopBudget,
+    RunStore, WorkerSections,
 };
 use crate::dag_executor::{DagExecutor, DagLifecycleObserver, WorkerLoopConfig};
 use crate::mcp_client::SidecarClient;
@@ -96,21 +97,23 @@ pub struct ChatMessage {
 /// The `POST /v1/chat/completions` request body.
 ///
 /// Matches the adapter's wire contract: `{"model", "messages":
-/// [{"role","content"}], "stream": true}`.
+/// [{"role","content"}], "stream": true}`. The `model` field is OPTIONAL:
+/// a stock client that has not selected a model omits it (S100 finding F1,
+/// user ruling 2026-09-03), and the shim never consumes the value - events
+/// and chunks always carry the *configured* model (C9).
 ///
 /// Forbidden invalid state: an empty `messages` list (no instruction to
 /// run); `stream: false` (the shim only supports streaming). Validation is
-/// in the handler. The `model` field is the request's arbitrary model
-/// string; the shim always emits the *configured* model in events and
-/// chunks (C9), never this field.
+/// in the handler.
 #[derive(Debug, Clone, Deserialize)]
 pub struct ChatCompletionsRequest {
-    /// The model name from the request. The shim uses the *configured*
-    /// model (`ShimState::model`) for events and chunks, not this field
-    /// (C9).
-    pub model: String,
-    /// The conversation messages. The shim extracts the last `user` message
-    /// as the coordinator's query.
+    /// The model name from the request, when the client sent one. The shim
+    /// uses the *configured* model (`ShimState::model`) for events and
+    /// chunks, not this field (C9).
+    pub model: Option<String>,
+    /// The conversation messages. The trailing `user` message is the
+    /// coordinator's query; the sanitized remainder is prior conversation
+    /// (see [`split_query_and_history`]).
     pub messages: Vec<ChatMessage>,
     /// Whether to stream. Must be `true`; the shim rejects `false`.
     pub stream: bool,
@@ -230,7 +233,11 @@ impl ShimState {
     /// Returns [`ShimError::Coordinator`] when the `CoordinatorLoop` cannot
     /// be built (session construction failure), and [`ShimError::InvalidRequest`]
     /// when the query is empty/whitespace-only and cannot pin a goal.
-    pub async fn build_request(self: &Arc<Self>, query: &str) -> Result<ShimRequest, ShimError> {
+    pub async fn build_request(
+        self: &Arc<Self>,
+        query: &str,
+        history: ChatHistory,
+    ) -> Result<ShimRequest, ShimError> {
         // 1. Fresh session id.
         let session_id = ShimSessionId::generate();
         // 2. Fresh per-request usage sink (C1).
@@ -324,7 +331,7 @@ impl ShimState {
         let span = tracing::info_span!("chat.completions", session.id = session_id.as_str());
         let join_handle = tokio::spawn(
             async move {
-                if let Err(error) = loop_run.run(&goal).await {
+                if let Err(error) = loop_run.run(&goal, &history).await {
                     tracing::error!(session_id = %session_id, %error, "coordinator loop run failed");
                 }
             }
@@ -372,13 +379,44 @@ pub async fn health() -> impl IntoResponse {
     Json(serde_json::json!({"status": "ok"}))
 }
 
+/// The `GET /v1/models` response body: the OpenAI list shape the CLI's
+/// `/model` command and background fetch parse (`data[].id`).
+#[derive(Debug, Serialize)]
+pub struct ModelsResponse {
+    pub object: &'static str,
+    pub data: Vec<ModelEntry>,
+}
+
+/// One `/v1/models` entry.
+#[derive(Debug, Serialize)]
+pub struct ModelEntry {
+    pub id: String,
+    pub object: &'static str,
+    pub owned_by: &'static str,
+}
+
+/// `GET /v1/models` — answers with exactly the configured model, so the
+/// CLI's `/model` command works against the shim (S101). The shim serves
+/// one model by construction; the list is length one.
+pub async fn models(State(state): State<Arc<ShimState>>) -> Json<ModelsResponse> {
+    Json(ModelsResponse {
+        object: "list",
+        data: vec![ModelEntry {
+            id: state.model().as_str().to_owned(),
+            object: "model",
+            owned_by: "sse-shim",
+        }],
+    })
+}
+
 /// `POST /v1/chat/completions` — accepts a chat-completions request and
 /// returns an SSE stream.
 ///
 /// The handler:
 /// 1. Validates the request (non-empty messages, `stream: true`, at least one
 ///    user message) BEFORE any per-request construction.
-/// 2. Extracts the last user message as the query.
+/// 2. Splits the body into the trailing user message (the query) and the
+///    sanitized prior conversation (see [`split_query_and_history`]).
 /// 3. Calls `ShimState::build_request` to create the coordinator loop and
 ///    event channel.
 /// 4. Returns an `Sse` response reading from the event channel receiver. The
@@ -399,15 +437,9 @@ pub async fn chat_completions(
             "the shim only supports streaming; set stream: true".to_owned(),
         ));
     }
-    let last_user = req
-        .messages
-        .iter()
-        .rev()
-        .find(|m| m.role == ChatRole::User)
-        .ok_or_else(|| ShimError::InvalidRequest("no user message in the request".to_owned()))?;
-    let query = &last_user.content;
+    let (query, history) = split_query_and_history(&req.messages)?;
 
-    let shim_request = state.build_request(query).await?;
+    let shim_request = state.build_request(&query, history).await?;
 
     // The chat-completion id is derived from the session id (the same formula
     // build_request used for the observer), so any error-termination chunks
@@ -431,10 +463,50 @@ pub async fn chat_completions(
     Ok(Sse::new(stream))
 }
 
-/// Build the axum router with the two routes mounted.
+/// Split a request body into the query and the sanitized prior conversation.
+///
+/// Ported from the web server's message conversion (aura
+/// `handlers.rs:815-835` shape, minus the client-tools legs the shim does
+/// not have):
+///
+/// - the trailing `user` message is the query, and is REMOVED from history;
+/// - `system` messages are dropped (the shim's preamble is the
+///   authoritative system prompt);
+/// - whitespace-only messages and unknown roles are dropped;
+/// - `user` and `assistant` messages survive, oldest first.
+///
+/// # Errors
+///
+/// Returns [`ShimError::InvalidRequest`] when no `user` message exists to
+/// query the coordinator with.
+fn split_query_and_history(messages: &[ChatMessage]) -> Result<(String, ChatHistory), ShimError> {
+    let query_index = messages
+        .iter()
+        .rposition(|m| m.role == ChatRole::User)
+        .ok_or_else(|| ShimError::InvalidRequest("no user message in the request".to_owned()))?;
+    let query = messages[query_index].content.clone();
+    let turns = messages[..query_index]
+        .iter()
+        .filter_map(|m| {
+            let role = match m.role {
+                ChatRole::User => ChatTurnRole::User,
+                ChatRole::Assistant => ChatTurnRole::Assistant,
+                ChatRole::System | ChatRole::Tool | ChatRole::Other => return None,
+            };
+            (!m.content.trim().is_empty()).then(|| ChatTurn {
+                role,
+                content: m.content.clone(),
+            })
+        })
+        .collect();
+    Ok((query, ChatHistory::new(turns)))
+}
+
+/// Build the axum router with the routes mounted.
 pub fn router(state: Arc<ShimState>) -> axum::Router {
     axum::Router::new()
         .route("/health", axum::routing::get(health))
+        .route("/v1/models", axum::routing::get(models))
         .route(
             "/v1/chat/completions",
             axum::routing::post(chat_completions),
@@ -591,7 +663,7 @@ mod tests {
     async fn rejects_empty_messages() {
         let state = test_state();
         let req = ChatCompletionsRequest {
-            model: "x".to_owned(),
+            model: Some("x".to_owned()),
             messages: vec![],
             stream: true,
         };
@@ -605,7 +677,7 @@ mod tests {
     async fn rejects_stream_false() {
         let state = test_state();
         let req = ChatCompletionsRequest {
-            model: "x".to_owned(),
+            model: Some("x".to_owned()),
             messages: vec![ChatMessage {
                 role: ChatRole::User,
                 content: "hi".to_owned(),
@@ -669,7 +741,7 @@ mod tests {
 
         let state = test_state();
         let request = state
-            .build_request("summarize the incident")
+            .build_request("summarize the incident", ChatHistory::default())
             .await
             .expect("a mock provider and a disconnected sidecar build a request");
         // The span records its fields at creation, so the spawned loop never
@@ -693,7 +765,7 @@ mod tests {
     async fn rejects_request_with_no_user_message() {
         let state = test_state();
         let req = ChatCompletionsRequest {
-            model: "x".to_owned(),
+            model: Some("x".to_owned()),
             messages: vec![ChatMessage {
                 role: ChatRole::Assistant,
                 content: "hi".to_owned(),
@@ -702,5 +774,124 @@ mod tests {
         };
         let result = chat_completions(State(state), Json(req)).await;
         assert!(matches!(result, Err(ShimError::InvalidRequest(_))));
+    }
+
+    // -------------------------------------------------------------------
+    // S101: query/history split
+    // -------------------------------------------------------------------
+
+    fn msg(role: ChatRole, content: &str) -> ChatMessage {
+        ChatMessage {
+            role,
+            content: content.to_owned(),
+        }
+    }
+
+    /// The trailing user message is the query and is removed from history;
+    /// prior user/assistant turns survive, oldest first.
+    #[test]
+    fn split_takes_trailing_user_as_query_and_keeps_prior_turns() {
+        let (query, history) = split_query_and_history(&[
+            msg(ChatRole::User, "what failed overnight?"),
+            msg(ChatRole::Assistant, "the checkout service failed 43 times"),
+            msg(ChatRole::User, "drill into the checkout failures"),
+        ])
+        .expect("a conversation with a trailing user message splits");
+
+        assert_eq!(query, "drill into the checkout failures");
+        assert_eq!(
+            history.turns(),
+            &[
+                ChatTurn {
+                    role: ChatTurnRole::User,
+                    content: "what failed overnight?".to_owned(),
+                },
+                ChatTurn {
+                    role: ChatTurnRole::Assistant,
+                    content: "the checkout service failed 43 times".to_owned(),
+                },
+            ],
+            "prior turns survive sanitization in order"
+        );
+    }
+
+    /// System messages are dropped (the preamble is authoritative),
+    /// whitespace-only turns are dropped, tool and unknown roles are
+    /// dropped, and nothing after the trailing user message leaks into
+    /// history.
+    #[test]
+    fn split_sanitizes_the_history() {
+        let (query, history) = split_query_and_history(&[
+            msg(ChatRole::System, "you are a copilot"),
+            msg(ChatRole::User, "   "),
+            msg(ChatRole::User, "list the pipelines"),
+            msg(ChatRole::Assistant, "there are three pipelines"),
+            msg(ChatRole::Tool, "{\"result\": 3}"),
+            msg(ChatRole::Other, "mystery"),
+            msg(ChatRole::User, "summarise the third"),
+        ])
+        .expect("a trailing user message exists");
+
+        assert_eq!(query, "summarise the third");
+        assert_eq!(
+            history.turns(),
+            &[
+                ChatTurn {
+                    role: ChatTurnRole::User,
+                    content: "list the pipelines".to_owned(),
+                },
+                ChatTurn {
+                    role: ChatTurnRole::Assistant,
+                    content: "there are three pipelines".to_owned(),
+                },
+            ],
+            "only conversational, non-empty turns before the query survive"
+        );
+    }
+
+    /// A single-turn request yields an empty history.
+    #[test]
+    fn split_single_turn_yields_empty_history() {
+        let (query, history) = split_query_and_history(&[msg(ChatRole::User, "just this")])
+            .expect("one user message splits");
+        assert_eq!(query, "just this");
+        assert!(history.is_empty());
+    }
+
+    /// No user message at any position is still the invalid-request case.
+    #[test]
+    fn split_without_a_user_message_is_invalid() {
+        let result = split_query_and_history(&[msg(ChatRole::Assistant, "hi")]);
+        assert!(matches!(result, Err(ShimError::InvalidRequest(_))));
+    }
+
+    /// A request body without a `model` field parses (S100 finding F1:
+    /// a stock CLI omits it until a model is selected).
+    #[test]
+    fn a_request_without_model_parses() {
+        let body = r#"{"messages":[{"role":"user","content":"hi"}],"stream":true}"#;
+        let req: ChatCompletionsRequest =
+            serde_json::from_str(body).expect("model is optional on the wire contract");
+        assert_eq!(req.model, None);
+    }
+
+    /// `GET /v1/models` answers with exactly the configured model in the
+    /// OpenAI list shape the CLI parses.
+    #[tokio::test]
+    async fn models_lists_the_configured_model() {
+        let state = test_state();
+        let expected = state.model().as_str().to_owned();
+
+        let axum::Json(list) = models(State(state)).await;
+
+        assert_eq!(list.object, "list");
+        assert_eq!(list.data.len(), 1, "the shim serves one model");
+        assert_eq!(list.data[0].id, expected);
+        let serialized = serde_json::to_value(&list).expect("the list serializes");
+        assert_eq!(
+            serialized["data"][0]["id"],
+            serde_json::json!(expected),
+            "the wire shape carries data[].id the CLI reads"
+        );
     }
 }
