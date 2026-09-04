@@ -24,7 +24,9 @@ mod terminal;
 mod tools;
 
 pub use budget::LoopBudget;
-pub use driver::{CoordinatorLoop, CoordinatorLoopConfig, WorkerSections};
+pub use driver::{
+    ChatHistory, ChatTurn, ChatTurnRole, CoordinatorLoop, CoordinatorLoopConfig, WorkerSections,
+};
 pub use error::{AlreadyRecorded, CoordinatorLoopError, CoordinatorRunError};
 pub use executor::PlanExecutor;
 pub use observation::{
