@@ -140,7 +140,7 @@ limit means deleting its line:
 - A dispatched run cannot be cancelled; the only abort path is server shutdown — `src/sse_shim/live_requests.rs`.
 - Nothing a run records survives the process: plans, executions, and task records are in-memory only — `src/coordinator_loop/run_store.rs`.
 - A worker's prompt is its task description alone; the ported prior-work frame is not wired into live dispatch — `src/dag_executor/worker.rs`.
-- Each request is a fresh session: only the last user message is read, and prior conversation is ignored — `src/sse_shim/server.rs`.
+- Conversation history folds into planning: the trailing user message is the query and the sanitized prior turns enter the planning wrapper once — `src/sse_shim/server.rs`, `src/coordinator_loop/driver.rs`.
 - The stream carries six named `aura.*` events, not aura's full event vocabulary — `src/sse_shim/events.rs`.
 
 ## Card ids and review ledgers

@@ -205,6 +205,85 @@ fn render_roster_full_tools(roster: &WorkerRoster) -> String {
     })
 }
 
+/// One prior conversation turn entering the coordinator's planning context.
+///
+/// Only the two conversational roles survive sanitization: the shim's wire
+/// split drops `system` (the preamble is the authoritative system prompt),
+/// tool follow-ups, and unknown roles before a history ever reaches this
+/// type, so an invalid turn cannot be represented here.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChatTurn {
+    pub role: ChatTurnRole,
+    pub content: String,
+}
+
+/// The role of a [`ChatTurn`]. `System` is absent by construction.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChatTurnRole {
+    User,
+    Assistant,
+}
+
+impl ChatTurnRole {
+    /// The bracketed label the planning wrapper renders for the role.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::User => "user",
+            Self::Assistant => "assistant",
+        }
+    }
+}
+
+/// Sanitized prior conversation, oldest first, with the current query
+/// already removed by the wire split.
+///
+/// Empty is the single-turn case: [`ChatHistory::render_block`] collapses to
+/// an empty string so a single-turn planning wrapper renders byte-identical
+/// to a shim with no history support at all.
+///
+/// This is prior conversation entering the planning wrapper once - NOT the
+/// within-run loop transcript, which the module's no-replay rule keeps as
+/// ordinary agent-loop history and never renders into a prompt.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ChatHistory(Vec<ChatTurn>);
+
+impl ChatHistory {
+    /// Wrap already-sanitized turns. The wire split owns sanitization; this
+    /// constructor is deliberately plain so the type documents where the
+    /// guarantee comes from rather than re-deriving it.
+    pub fn new(turns: Vec<ChatTurn>) -> Self {
+        Self(turns)
+    }
+
+    /// The sanitized turns, oldest first.
+    pub fn turns(&self) -> &[ChatTurn] {
+        &self.0
+    }
+
+    /// Whether there is no prior conversation.
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    /// Render the history block for the planning wrapper.
+    ///
+    /// Empty renders as `""` (the wrapper's `%%CHAT_HISTORY%%` marker
+    /// collapses); non-empty renders a labeled block terminated by a blank
+    /// line so the wrapper's `Analyze this user query` line keeps its
+    /// spacing either way.
+    pub fn render_block(&self) -> String {
+        if self.0.is_empty() {
+            return String::new();
+        }
+        let mut block = String::from("CONVERSATION HISTORY (prior turns, oldest first):\n");
+        for turn in &self.0 {
+            block.push_str(&format!("[{}] {}\n", turn.role.label(), turn.content));
+        }
+        block.push('\n');
+        block
+    }
+}
+
 /// Everything the loop needs before its first provider call.
 ///
 /// The system prompt is supplied rather than composed here: the ported
@@ -329,19 +408,26 @@ impl CoordinatorLoop {
     /// The opening message is the rendered loop-shaped planning wrapper,
     /// which names the four tools this loop registers (`create_plan`,
     /// `execute`, `inspect_run`, `respond`) rather than the bounded
-    /// router's three. Everything after it is ordinary conversation
-    /// history: tool calls and their observations, with no state replayed
-    /// into a prompt.
+    /// router's three. Prior conversation (`history`) renders into that
+    /// wrapper ahead of the query when present; everything after the
+    /// wrapper is ordinary conversation history: tool calls and their
+    /// observations, with no state replayed into a prompt.
     ///
     /// # Errors
     ///
     /// Returns [`CoordinatorRunError::AgentLoop`] when the substrate loop
     /// fails outright. A loop that stops for any reported reason, the turn
     /// budget included, is an outcome rather than an error.
-    pub async fn run(self, query: &PinnedGoal) -> Result<CoordinatorOutcome, CoordinatorRunError> {
+    pub async fn run(
+        self,
+        query: &PinnedGoal,
+        history: &ChatHistory,
+    ) -> Result<CoordinatorOutcome, CoordinatorRunError> {
         let timestamp = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+        let chat_history = history.render_block();
         let message = render_planning_loop_prompt(&PlanningLoopVars {
             timestamp: &timestamp,
+            chat_history: &chat_history,
             query: query.as_str(),
             worker_section: self.worker_sections.roster_section(),
             worker_guidelines: self.worker_sections.guidelines(),

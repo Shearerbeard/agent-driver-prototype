@@ -211,18 +211,28 @@ impl TemplateVars for PlanningVars<'_> {
 #[derive(Debug, Clone)]
 pub struct PlanningLoopVars<'a> {
     pub timestamp: &'a str,
+    /// Pre-rendered prior-conversation block; empty for a single-turn
+    /// request, in which case the template collapses to the identical
+    /// bytes a history-less shim rendered.
+    pub chat_history: &'a str,
     pub query: &'a str,
     pub worker_section: &'a str,
     pub worker_guidelines: &'a str,
 }
 
 impl TemplateVars for PlanningLoopVars<'_> {
-    const VARS: &'static [&'static str] =
-        &["TIMESTAMP", "QUERY", "WORKER_SECTION", "WORKER_GUIDELINES"];
+    const VARS: &'static [&'static str] = &[
+        "TIMESTAMP",
+        "CHAT_HISTORY",
+        "QUERY",
+        "WORKER_SECTION",
+        "WORKER_GUIDELINES",
+    ];
 
     fn render(&self, template: &str) -> String {
         template
             .replace("%%TIMESTAMP%%", self.timestamp)
+            .replace("%%CHAT_HISTORY%%", self.chat_history)
             .replace("%%QUERY%%", self.query)
             .replace("%%WORKER_SECTION%%", self.worker_section)
             .replace("%%WORKER_GUIDELINES%%", self.worker_guidelines)

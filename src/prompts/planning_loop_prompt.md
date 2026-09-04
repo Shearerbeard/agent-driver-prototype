@@ -1,6 +1,6 @@
 Current time: %%TIMESTAMP%%
 
-Analyze this user query and decide on the best approach.
+%%CHAT_HISTORY%%Analyze this user query and decide on the best approach.
 
 USER QUERY: %%QUERY%%%%WORKER_SECTION%%
 

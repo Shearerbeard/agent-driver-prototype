@@ -24,10 +24,10 @@ use agent_driver_prototype::context::{
     WorkerRole,
 };
 use agent_driver_prototype::coordinator_loop::{
-    CoordinatorLoop, CoordinatorLoopConfig, CoordinatorLoopError, CoordinatorOutcome,
-    CreatePlanArgs, ExecutionObservation, FinalResponse, InterruptionReason, LoopBudget,
-    OutcomeCounts, PlanExecutor, PlanId, PlanObservation, RunStore, TaskObservation, TerminalSlot,
-    WorkerRoster, WorkerSections,
+    ChatHistory, ChatTurn, ChatTurnRole, CoordinatorLoop, CoordinatorLoopConfig,
+    CoordinatorLoopError, CoordinatorOutcome, CreatePlanArgs, ExecutionObservation, FinalResponse,
+    InterruptionReason, LoopBudget, OutcomeCounts, PlanExecutor, PlanId, PlanObservation, RunStore,
+    TaskObservation, TerminalSlot, WorkerRoster, WorkerSections,
 };
 use agent_driver_prototype::dag_executor::{DagExecutor, WorkerLoopConfig};
 use agent_driver_prototype::mcp_client::SidecarClient;
@@ -234,7 +234,7 @@ async fn create_plan_then_execute_continues_without_a_stream_break() {
     let (observer, calls) = recorder();
     let outcome = coordinator
         .with_observer(observer)
-        .run(&goal())
+        .run(&goal(), &ChatHistory::default())
         .await
         .expect("the loop runs");
 
@@ -295,7 +295,7 @@ async fn turn_budget_stops_the_loop_and_the_host_writes_the_answer() {
     let (observer, calls) = recorder();
     let outcome = coordinator
         .with_observer(observer)
-        .run(&goal())
+        .run(&goal(), &ChatHistory::default())
         .await
         .expect("the loop runs");
 
@@ -342,7 +342,10 @@ async fn budget_exhausted_before_execution_lists_the_unexecuted_plan() {
     ];
 
     let coordinator = coordinator(responses, Vec::new(), 1).await;
-    let outcome = coordinator.run(&goal()).await.expect("the loop runs");
+    let outcome = coordinator
+        .run(&goal(), &ChatHistory::default())
+        .await
+        .expect("the loop runs");
 
     let CoordinatorOutcome::BudgetExhausted { fallback, turns } = outcome else {
         panic!("expected a host-authored answer, got {outcome:?}");
@@ -380,7 +383,10 @@ async fn an_unknown_worker_is_a_rejection_the_loop_survives() {
 
     let coordinator = coordinator(responses, Vec::new(), 8).await;
     let runs = coordinator.runs().clone();
-    let outcome = coordinator.run(&goal()).await.expect("the loop runs");
+    let outcome = coordinator
+        .run(&goal(), &ChatHistory::default())
+        .await
+        .expect("the loop runs");
 
     // The rejected plan never reached the store; the revised one did, so the
     // loop continued past the rejection.
@@ -401,7 +407,10 @@ async fn a_second_answer_is_refused_and_the_first_stands() {
     ];
 
     let coordinator = coordinator(responses, Vec::new(), 8).await;
-    let outcome = coordinator.run(&goal()).await.expect("the loop runs");
+    let outcome = coordinator
+        .run(&goal(), &ChatHistory::default())
+        .await
+        .expect("the loop runs");
 
     let CoordinatorOutcome::Responded { action, turns } = outcome else {
         panic!("expected a coordinator-authored answer, got {outcome:?}");
@@ -1135,9 +1144,96 @@ fn planning_loop_message_through_from_roster() {
     let sections = test_sections();
     let message = render_planning_loop_prompt(&PlanningLoopVars {
         timestamp: "2026-07-27T12:00:00Z",
+        chat_history: "",
         query: "Summarise yesterday's error spike",
         worker_section: sections.roster_section(),
         worker_guidelines: sections.guidelines(),
     });
     insta::assert_snapshot!("planning_loop_message", message);
+}
+
+// ---------------------------------------------------------------------------
+// S101: prior conversation folding into the planning wrapper
+// ---------------------------------------------------------------------------
+
+/// A two-turn history renders each prior turn exactly once, in order, with
+/// its role label, and the query appears exactly once.
+#[test]
+fn planning_loop_message_folds_history_once_in_order() {
+    let sections = test_sections();
+    let history = ChatHistory::new(vec![
+        ChatTurn {
+            role: ChatTurnRole::User,
+            content: "what failed overnight?".to_owned(),
+        },
+        ChatTurn {
+            role: ChatTurnRole::Assistant,
+            content: "the checkout service failed 43 times".to_owned(),
+        },
+    ]);
+    let message = render_planning_loop_prompt(&PlanningLoopVars {
+        timestamp: "2026-09-03T12:00:00Z",
+        chat_history: &history.render_block(),
+        query: "drill into the checkout failures",
+        worker_section: sections.roster_section(),
+        worker_guidelines: sections.guidelines(),
+    });
+
+    assert!(
+        message.contains("CONVERSATION HISTORY (prior turns, oldest first):"),
+        "the history block is present, got: {message}"
+    );
+    let user_pos = message.find("[user] what failed overnight?");
+    let assistant_pos = message.find("[assistant] the checkout service failed 43 times");
+    let (u, a) = (
+        user_pos.expect("the user turn renders"),
+        assistant_pos.expect("the assistant turn renders"),
+    );
+    assert!(
+        u < a,
+        "prior turns render oldest first (user at {u}, assistant at {a})"
+    );
+    assert_eq!(
+        message.matches("[user] what failed overnight?").count(),
+        1,
+        "a prior turn renders exactly once"
+    );
+    assert_eq!(
+        message.matches("drill into the checkout failures").count(),
+        1,
+        "the query renders exactly once"
+    );
+    assert!(
+        a < message
+            .find("USER QUERY: drill into the checkout failures")
+            .expect("the query line follows the history"),
+        "the history precedes the query"
+    );
+}
+
+/// The single-turn case renders the history marker away: no block, no
+/// label, and the wrapper opens exactly as the history-less shim rendered
+/// it (byte identity is enforced by the unchanged
+/// `planning_loop_message` snapshot above; this test pins the collapse).
+#[test]
+fn single_turn_history_renders_away() {
+    assert_eq!(ChatHistory::default().render_block(), "");
+    assert_eq!(ChatHistory::new(vec![]).render_block(), "");
+
+    let sections = test_sections();
+    let single_turn = render_planning_loop_prompt(&PlanningLoopVars {
+        timestamp: "2026-09-03T12:00:00Z",
+        chat_history: "",
+        query: "summarise the incident",
+        worker_section: sections.roster_section(),
+        worker_guidelines: sections.guidelines(),
+    });
+    assert!(
+        !single_turn.contains("CONVERSATION HISTORY"),
+        "no history block renders for a single-turn request"
+    );
+    assert!(
+        single_turn.contains("Current time: 2026-09-03T12:00:00Z\n\nAnalyze this user query"),
+        "the wrapper opens with its original spacing, got: {single_turn}"
+    );
 }
