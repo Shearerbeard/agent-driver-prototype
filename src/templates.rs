@@ -1,17 +1,8 @@
-//! Prompt template rendering with type-safe validation.
+//! Prompt templates with a shared variable-binding contract.
 //!
-//! This module provides a simple template system using `%%VAR%%` placeholders
-//! that avoids conflicts with JSON `{{`/`}}` literals and Rust format strings.
-//! Every prompt template in `crates/aura/src/prompts/` is loaded here and
-//! rendered through a typed `TemplateVars` impl, so the placeholder convention
-//! is uniform across the orchestration pipeline.
-//!
-//! # Type Safety
-//!
-//! Each template has an associated context type implementing `TemplateVars`.
-//! Tests validate bi-directionally that:
-//! - All template placeholders are provided by the context
-//! - All context fields are used in the template
+//! Templates use `%%VAR%%` placeholders, leaving JSON braces untouched.
+//! Rendering and validation share each context's name/value bindings.
+//! See `templates/DESIGN.md` for the contract and coverage limits.
 //!
 //! # Example
 //!
@@ -37,18 +28,27 @@ pub const WORKER_GUIDELINES_TEMPLATE: &str = include_str!("prompts/worker_guidel
 pub const CONTINUATION_WRAPPER_TEMPLATE: &str = include_str!("prompts/continuation_wrapper.md");
 pub const PLANNING_LOOP_PROMPT_TEMPLATE: &str = include_str!("prompts/planning_loop_prompt.md");
 
-/// Trait for template variable providers.
-///
-/// Implementing types declare the variable names they provide,
-/// enabling compile-time and test-time validation.
+/// Borrowed values for a prompt template.
 pub trait TemplateVars {
-    /// Variable names this context provides (uppercase, without %% delimiters).
-    /// Used by validation tests to ensure templates and structs stay in sync.
-    #[allow(dead_code)]
-    const VARS: &'static [&'static str];
+    /// Unique variable names, without `%%` delimiters, paired with their values.
+    ///
+    /// Names are static literals; values borrow from this context. Returning
+    /// an array keeps each context's binding list on the stack.
+    fn bindings(&self) -> impl AsRef<[(&'static str, &str)]>;
 
-    /// Render this context into the given template.
-    fn render(&self, template: &str) -> String;
+    /// Substitute known placeholders without scanning inserted values.
+    /// Unknown or incomplete placeholders remain literal text.
+    fn render(&self, template: &str) -> String {
+        render_single_pass(template, self.bindings().as_ref())
+    }
+}
+
+#[expect(
+    unused_variables,
+    reason = "typed hole; filled after S101 (history fold-in) interface approval"
+)]
+fn render_single_pass(template: &str, bindings: &[(&str, &str)]) -> String {
+    todo!()
 }
 
 /// Variables for the worker task prompt.
@@ -59,12 +59,8 @@ pub struct WorkerTaskVars<'a> {
 }
 
 impl TemplateVars for WorkerTaskVars<'_> {
-    const VARS: &'static [&'static str] = &["CONTEXT", "YOUR_TASK"];
-
-    fn render(&self, template: &str) -> String {
-        template
-            .replace("%%CONTEXT%%", self.context)
-            .replace("%%YOUR_TASK%%", self.your_task)
+    fn bindings(&self) -> impl AsRef<[(&'static str, &str)]> {
+        [("CONTEXT", self.context), ("YOUR_TASK", self.your_task)]
     }
 }
 
@@ -90,35 +86,21 @@ pub struct ContinuationVars<'a> {
 }
 
 impl TemplateVars for ContinuationVars<'_> {
-    const VARS: &'static [&'static str] = &[
-        "ITERATION",
-        "MAX_ITERATIONS",
-        "URGENCY",
-        "SUCCEEDED",
-        "TOTAL",
-        "GOAL",
-        "COMPLETED_SECTION",
-        "BLOCKED_SECTION",
-        "REDESIGN_SECTION",
-        "FAILURE_SECTION",
-        "FAILURE_HISTORY",
-        "REUSE_GUIDANCE",
-    ];
-
-    fn render(&self, template: &str) -> String {
-        template
-            .replace("%%ITERATION%%", self.iteration)
-            .replace("%%MAX_ITERATIONS%%", self.max_iterations)
-            .replace("%%URGENCY%%", self.urgency)
-            .replace("%%SUCCEEDED%%", self.succeeded)
-            .replace("%%TOTAL%%", self.total)
-            .replace("%%GOAL%%", self.goal)
-            .replace("%%COMPLETED_SECTION%%", self.completed_section)
-            .replace("%%BLOCKED_SECTION%%", self.blocked_section)
-            .replace("%%REDESIGN_SECTION%%", self.redesign_section)
-            .replace("%%FAILURE_SECTION%%", self.failure_section)
-            .replace("%%FAILURE_HISTORY%%", self.failure_history)
-            .replace("%%REUSE_GUIDANCE%%", self.reuse_guidance)
+    fn bindings(&self) -> impl AsRef<[(&'static str, &str)]> {
+        [
+            ("ITERATION", self.iteration),
+            ("MAX_ITERATIONS", self.max_iterations),
+            ("URGENCY", self.urgency),
+            ("SUCCEEDED", self.succeeded),
+            ("TOTAL", self.total),
+            ("GOAL", self.goal),
+            ("COMPLETED_SECTION", self.completed_section),
+            ("BLOCKED_SECTION", self.blocked_section),
+            ("REDESIGN_SECTION", self.redesign_section),
+            ("FAILURE_SECTION", self.failure_section),
+            ("FAILURE_HISTORY", self.failure_history),
+            ("REUSE_GUIDANCE", self.reuse_guidance),
+        ]
     }
 }
 
@@ -131,20 +113,15 @@ pub struct CoordinatorPreambleVars<'a> {
 }
 
 impl TemplateVars for CoordinatorPreambleVars<'_> {
-    const VARS: &'static [&'static str] = &[
-        "ORCHESTRATION_SYSTEM_PROMPT",
-        "TOOLS_SECTION",
-        "RECON_GUIDANCE",
-    ];
-
-    fn render(&self, template: &str) -> String {
-        template
-            .replace(
-                "%%ORCHESTRATION_SYSTEM_PROMPT%%",
+    fn bindings(&self) -> impl AsRef<[(&'static str, &str)]> {
+        [
+            (
+                "ORCHESTRATION_SYSTEM_PROMPT",
                 self.orchestration_system_prompt,
-            )
-            .replace("%%TOOLS_SECTION%%", self.tools_section)
-            .replace("%%RECON_GUIDANCE%%", self.recon_guidance)
+            ),
+            ("TOOLS_SECTION", self.tools_section),
+            ("RECON_GUIDANCE", self.recon_guidance),
+        ]
     }
 }
 
@@ -155,10 +132,8 @@ pub struct WorkerPreambleVars<'a> {
 }
 
 impl TemplateVars for WorkerPreambleVars<'_> {
-    const VARS: &'static [&'static str] = &["WORKER_SYSTEM_PROMPT"];
-
-    fn render(&self, template: &str) -> String {
-        template.replace("%%WORKER_SYSTEM_PROMPT%%", self.worker_system_prompt)
+    fn bindings(&self) -> impl AsRef<[(&'static str, &str)]> {
+        [("WORKER_SYSTEM_PROMPT", self.worker_system_prompt)]
     }
 }
 
@@ -170,12 +145,11 @@ pub struct SessionHistoryVars<'a> {
 }
 
 impl TemplateVars for SessionHistoryVars<'_> {
-    const VARS: &'static [&'static str] = &["TURN_COUNT", "TURN_ENTRIES"];
-
-    fn render(&self, template: &str) -> String {
-        template
-            .replace("%%TURN_COUNT%%", self.turn_count)
-            .replace("%%TURN_ENTRIES%%", self.turn_entries)
+    fn bindings(&self) -> impl AsRef<[(&'static str, &str)]> {
+        [
+            ("TURN_COUNT", self.turn_count),
+            ("TURN_ENTRIES", self.turn_entries),
+        ]
     }
 }
 
@@ -189,31 +163,23 @@ pub struct PlanningVars<'a> {
 }
 
 impl TemplateVars for PlanningVars<'_> {
-    const VARS: &'static [&'static str] =
-        &["TIMESTAMP", "QUERY", "WORKER_SECTION", "WORKER_GUIDELINES"];
-
-    fn render(&self, template: &str) -> String {
-        template
-            .replace("%%TIMESTAMP%%", self.timestamp)
-            .replace("%%QUERY%%", self.query)
-            .replace("%%WORKER_SECTION%%", self.worker_section)
-            .replace("%%WORKER_GUIDELINES%%", self.worker_guidelines)
+    fn bindings(&self) -> impl AsRef<[(&'static str, &str)]> {
+        [
+            ("TIMESTAMP", self.timestamp),
+            ("QUERY", self.query),
+            ("WORKER_SECTION", self.worker_section),
+            ("WORKER_GUIDELINES", self.worker_guidelines),
+        ]
     }
 }
 
 /// Variables for the loop-shaped planning wrapper.
 ///
-/// Structurally identical to [`PlanningVars`] — the same four placeholders
-/// — but a distinct type so the loop template and the bounded-router
-/// template cannot be silently swapped. The body names `respond`,
-/// `create_plan`, `execute`, and `inspect_run`, the four tools the
-/// coordinator loop registers.
+/// Includes prior conversation alongside the query and worker roster.
 #[derive(Debug, Clone)]
 pub struct PlanningLoopVars<'a> {
     pub timestamp: &'a str,
-    /// Pre-rendered prior-conversation block; empty for a single-turn
-    /// request, in which case the template collapses to the identical
-    /// bytes a history-less shim rendered.
+    /// Pre-rendered prior conversation; empty for a single-turn request.
     pub chat_history: &'a str,
     pub query: &'a str,
     pub worker_section: &'a str,
@@ -221,21 +187,14 @@ pub struct PlanningLoopVars<'a> {
 }
 
 impl TemplateVars for PlanningLoopVars<'_> {
-    const VARS: &'static [&'static str] = &[
-        "TIMESTAMP",
-        "CHAT_HISTORY",
-        "QUERY",
-        "WORKER_SECTION",
-        "WORKER_GUIDELINES",
-    ];
-
-    fn render(&self, template: &str) -> String {
-        template
-            .replace("%%TIMESTAMP%%", self.timestamp)
-            .replace("%%CHAT_HISTORY%%", self.chat_history)
-            .replace("%%QUERY%%", self.query)
-            .replace("%%WORKER_SECTION%%", self.worker_section)
-            .replace("%%WORKER_GUIDELINES%%", self.worker_guidelines)
+    fn bindings(&self) -> impl AsRef<[(&'static str, &str)]> {
+        [
+            ("TIMESTAMP", self.timestamp),
+            ("CHAT_HISTORY", self.chat_history),
+            ("QUERY", self.query),
+            ("WORKER_SECTION", self.worker_section),
+            ("WORKER_GUIDELINES", self.worker_guidelines),
+        ]
     }
 }
 
@@ -248,13 +207,12 @@ pub struct WorkerRosterVars<'a> {
 }
 
 impl TemplateVars for WorkerRosterVars<'_> {
-    const VARS: &'static [&'static str] = &["HEADER_NOTE", "ROSTER_CONTENT", "CLOSING_LINE"];
-
-    fn render(&self, template: &str) -> String {
-        template
-            .replace("%%HEADER_NOTE%%", self.header_note)
-            .replace("%%ROSTER_CONTENT%%", self.roster_content)
-            .replace("%%CLOSING_LINE%%", self.closing_line)
+    fn bindings(&self) -> impl AsRef<[(&'static str, &str)]> {
+        [
+            ("HEADER_NOTE", self.header_note),
+            ("ROSTER_CONTENT", self.roster_content),
+            ("CLOSING_LINE", self.closing_line),
+        ]
     }
 }
 
@@ -265,10 +223,8 @@ pub struct WorkerGuidelinesVars<'a> {
 }
 
 impl TemplateVars for WorkerGuidelinesVars<'_> {
-    const VARS: &'static [&'static str] = &["VALID_WORKER_NAMES"];
-
-    fn render(&self, template: &str) -> String {
-        template.replace("%%VALID_WORKER_NAMES%%", self.valid_worker_names)
+    fn bindings(&self) -> impl AsRef<[(&'static str, &str)]> {
+        [("VALID_WORKER_NAMES", self.valid_worker_names)]
     }
 }
 
@@ -280,12 +236,11 @@ pub struct ContinuationWrapperVars<'a> {
 }
 
 impl TemplateVars for ContinuationWrapperVars<'_> {
-    const VARS: &'static [&'static str] = &["TIMESTAMP", "CONTINUATION_BODY"];
-
-    fn render(&self, template: &str) -> String {
-        template
-            .replace("%%TIMESTAMP%%", self.timestamp)
-            .replace("%%CONTINUATION_BODY%%", self.continuation_body)
+    fn bindings(&self) -> impl AsRef<[(&'static str, &str)]> {
+        [
+            ("TIMESTAMP", self.timestamp),
+            ("CONTINUATION_BODY", self.continuation_body),
+        ]
     }
 }
 
@@ -371,41 +326,14 @@ fn extract_placeholders(template: &str) -> HashSet<String> {
     vars
 }
 
-/// Validate that a template's placeholders match the expected variables.
-///
-/// Returns `Ok(())` if valid, or `Err` with a description of mismatches.
+/// Check unique binding names against the template's placeholders.
 #[cfg(test)]
-fn validate_template<T: TemplateVars>(template: &str) -> Result<(), String> {
-    let template_vars = extract_placeholders(template);
-    let context_vars: HashSet<_> = T::VARS.iter().map(|s| s.to_string()).collect();
-
-    let mut errors = Vec::new();
-
-    // Check template vars are in context
-    for var in &template_vars {
-        if !context_vars.contains(var) {
-            errors.push(format!(
-                "Template has %%{}%% but context doesn't provide it",
-                var
-            ));
-        }
-    }
-
-    // Check context vars are in template
-    for var in &context_vars {
-        if !template_vars.contains(var) {
-            errors.push(format!(
-                "Context provides {} but template doesn't use %%{}%%",
-                var, var
-            ));
-        }
-    }
-
-    if errors.is_empty() {
-        Ok(())
-    } else {
-        Err(errors.join("\n"))
-    }
+#[expect(
+    unused_variables,
+    reason = "typed hole; filled after S101 (history fold-in) interface approval"
+)]
+fn validate_template(template: &str, vars: &impl TemplateVars) -> Result<(), String> {
+    todo!()
 }
 
 #[cfg(test)]
@@ -482,62 +410,137 @@ mod tests {
 
     #[test]
     fn test_worker_task_template_matches_context() {
-        validate_template::<WorkerTaskVars>(WORKER_TASK_PROMPT_TEMPLATE)
-            .expect("Worker task template should match WorkerTaskVars");
+        validate_template(
+            WORKER_TASK_PROMPT_TEMPLATE,
+            &WorkerTaskVars {
+                context: "",
+                your_task: "",
+            },
+        )
+        .expect("Worker task template should match WorkerTaskVars");
     }
 
     #[test]
     fn test_continuation_template_matches_context() {
-        validate_template::<ContinuationVars>(CONTINUATION_PROMPT_TEMPLATE)
-            .expect("Continuation template should match ContinuationVars");
+        validate_template(
+            CONTINUATION_PROMPT_TEMPLATE,
+            &ContinuationVars {
+                iteration: "",
+                max_iterations: "",
+                urgency: "",
+                succeeded: "",
+                total: "",
+                goal: "",
+                completed_section: "",
+                blocked_section: "",
+                redesign_section: "",
+                failure_section: "",
+                failure_history: "",
+                reuse_guidance: "",
+            },
+        )
+        .expect("Continuation template should match ContinuationVars");
     }
 
     #[test]
     fn test_orchestrator_preamble_template_matches_context() {
-        validate_template::<CoordinatorPreambleVars>(ORCHESTRATOR_PREAMBLE_TEMPLATE)
-            .expect("Orchestrator preamble template should match CoordinatorPreambleVars");
+        validate_template(
+            ORCHESTRATOR_PREAMBLE_TEMPLATE,
+            &CoordinatorPreambleVars {
+                orchestration_system_prompt: "",
+                tools_section: "",
+                recon_guidance: "",
+            },
+        )
+        .expect("Orchestrator preamble template should match CoordinatorPreambleVars");
     }
 
     #[test]
     fn test_worker_preamble_template_matches_context() {
-        validate_template::<WorkerPreambleVars>(WORKER_PREAMBLE_TEMPLATE)
-            .expect("Worker preamble template should match WorkerPreambleVars");
+        validate_template(
+            WORKER_PREAMBLE_TEMPLATE,
+            &WorkerPreambleVars {
+                worker_system_prompt: "",
+            },
+        )
+        .expect("Worker preamble template should match WorkerPreambleVars");
     }
 
     #[test]
     fn test_session_history_template_matches_context() {
-        validate_template::<SessionHistoryVars>(SESSION_HISTORY_TEMPLATE)
-            .expect("Session history template should match SessionHistoryVars");
+        validate_template(
+            SESSION_HISTORY_TEMPLATE,
+            &SessionHistoryVars {
+                turn_count: "",
+                turn_entries: "",
+            },
+        )
+        .expect("Session history template should match SessionHistoryVars");
     }
 
     #[test]
     fn test_planning_prompt_template_matches_context() {
-        validate_template::<PlanningVars>(PLANNING_PROMPT_TEMPLATE)
-            .expect("Planning prompt template should match PlanningVars");
+        validate_template(
+            PLANNING_PROMPT_TEMPLATE,
+            &PlanningVars {
+                timestamp: "",
+                query: "",
+                worker_section: "",
+                worker_guidelines: "",
+            },
+        )
+        .expect("Planning prompt template should match PlanningVars");
     }
 
     #[test]
     fn test_planning_loop_template_matches_context() {
-        validate_template::<PlanningLoopVars>(PLANNING_LOOP_PROMPT_TEMPLATE)
-            .expect("Planning loop template should match PlanningLoopVars");
+        validate_template(
+            PLANNING_LOOP_PROMPT_TEMPLATE,
+            &PlanningLoopVars {
+                timestamp: "",
+                chat_history: "",
+                query: "",
+                worker_section: "",
+                worker_guidelines: "",
+            },
+        )
+        .expect("Planning loop template should match PlanningLoopVars");
     }
 
     #[test]
     fn test_worker_roster_template_matches_context() {
-        validate_template::<WorkerRosterVars>(WORKER_ROSTER_TEMPLATE)
-            .expect("Worker roster template should match WorkerRosterVars");
+        validate_template(
+            WORKER_ROSTER_TEMPLATE,
+            &WorkerRosterVars {
+                header_note: "",
+                roster_content: "",
+                closing_line: "",
+            },
+        )
+        .expect("Worker roster template should match WorkerRosterVars");
     }
 
     #[test]
     fn test_worker_guidelines_template_matches_context() {
-        validate_template::<WorkerGuidelinesVars>(WORKER_GUIDELINES_TEMPLATE)
-            .expect("Worker guidelines template should match WorkerGuidelinesVars");
+        validate_template(
+            WORKER_GUIDELINES_TEMPLATE,
+            &WorkerGuidelinesVars {
+                valid_worker_names: "",
+            },
+        )
+        .expect("Worker guidelines template should match WorkerGuidelinesVars");
     }
 
     #[test]
     fn test_continuation_wrapper_template_matches_context() {
-        validate_template::<ContinuationWrapperVars>(CONTINUATION_WRAPPER_TEMPLATE)
-            .expect("Continuation wrapper template should match ContinuationWrapperVars");
+        validate_template(
+            CONTINUATION_WRAPPER_TEMPLATE,
+            &ContinuationWrapperVars {
+                timestamp: "",
+                continuation_body: "",
+            },
+        )
+        .expect("Continuation wrapper template should match ContinuationWrapperVars");
     }
 
     // =========================================================================
@@ -548,13 +551,12 @@ mod tests {
     fn test_validate_catches_missing_template_var() {
         struct TestVars;
         impl TemplateVars for TestVars {
-            const VARS: &'static [&'static str] = &["A", "B", "C"];
-            fn render(&self, _: &str) -> String {
-                String::new()
+            fn bindings(&self) -> impl AsRef<[(&'static str, &str)]> {
+                [("A", ""), ("B", ""), ("C", "")]
             }
         }
 
-        let result = validate_template::<TestVars>("%%A%% %%B%%"); // missing C
+        let result = validate_template("%%A%% %%B%%", &TestVars); // missing C
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("C"));
     }
@@ -563,13 +565,12 @@ mod tests {
     fn test_validate_catches_extra_template_var() {
         struct TestVars;
         impl TemplateVars for TestVars {
-            const VARS: &'static [&'static str] = &["A"];
-            fn render(&self, _: &str) -> String {
-                String::new()
+            fn bindings(&self) -> impl AsRef<[(&'static str, &str)]> {
+                [("A", "")]
             }
         }
 
-        let result = validate_template::<TestVars>("%%A%% %%EXTRA%%");
+        let result = validate_template("%%A%% %%EXTRA%%", &TestVars);
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("EXTRA"));
     }

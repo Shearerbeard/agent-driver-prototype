@@ -10,7 +10,7 @@
 use std::collections::HashMap;
 
 use crate::bounding::ToolListLimit;
-use crate::config::{OrchestrationConfig, VectorStoreConfig};
+use crate::config::OrchestrationConfig;
 use crate::config_builders::build_vector_store_context;
 use crate::config_builders::{build_coordinator_preamble, build_worker_preamble};
 use crate::message::{Message, ToolDefinition};
@@ -25,13 +25,12 @@ use crate::templates::{
 use crate::types::{IterationContext, Plan, StructuredTaskOutput};
 
 use super::helpers::{SCRATCHPAD_PREAMBLE, build_session_context, render_skill_catalog};
+use super::scenario::FailedResultFixture;
 use super::scenario::{
-    CoordinatorCall, CoordinatorScenario, CoordinatorToolConfig, FixtureError, HistoryTools,
-    IterationFixture, PreambleFixture, ReconTools, ScratchpadWiring, TaskOutcome,
-    WorkerFrameFixture, WorkerPreambleAppends, WorkerPreambleFixture, WorkerRosterFixture,
-    WorkerScenario,
+    CoordinatorCall, CoordinatorScenario, FixtureError, HistoryTools, IterationFixture,
+    PreambleFixture, ReconTools, ScratchpadWiring, TaskOutcome, WorkerFrameFixture,
+    WorkerPreambleAppends, WorkerPreambleFixture, WorkerScenario,
 };
-use super::scenario::{FailedResultFixture, PlanDecision};
 use super::tool_definitions;
 
 /// The complete request envelope for one model call.

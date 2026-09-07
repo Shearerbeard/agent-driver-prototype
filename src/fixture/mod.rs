@@ -9,10 +9,7 @@ mod normalize;
 mod scenario;
 mod tool_definitions;
 
-pub(crate) use envelope::{
-    RequestEnvelope, compose_coordinator_preamble, compose_worker_preamble, coordinator_envelope,
-    executed_plan, merged_traces, worker_envelope, worker_tool_definitions,
-};
+pub(crate) use envelope::{coordinator_envelope, worker_envelope};
 #[cfg(test)]
 pub(crate) use normalize::assert_envelope_snapshot;
 pub(crate) use normalize::{NormalizedSnapshot, normalize};
