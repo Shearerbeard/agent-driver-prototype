@@ -43,12 +43,39 @@ pub trait TemplateVars {
     }
 }
 
-#[expect(
-    unused_variables,
-    reason = "typed hole; filled after S101 (history fold-in) interface approval"
-)]
 fn render_single_pass(template: &str, bindings: &[(&str, &str)]) -> String {
-    todo!()
+    let bytes = template.as_bytes();
+    let mut out = String::with_capacity(template.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        let Some(offset) = bytes[i..].iter().position(|&byte| byte == b'%') else {
+            out.push_str(&template[i..]);
+            break;
+        };
+        let open = i + offset;
+        if open + 1 == bytes.len() || bytes[open + 1] != b'%' {
+            out.push_str(&template[i..open + 1]);
+            i = open + 1;
+            continue;
+        }
+        let close = (open + 2..bytes.len().saturating_sub(1))
+            .find(|&j| bytes[j] == b'%' && bytes[j + 1] == b'%');
+        let Some(close) = close else {
+            out.push_str(&template[i..]);
+            break;
+        };
+        let name = &template[open + 2..close];
+        out.push_str(&template[i..open]);
+        match bindings
+            .iter()
+            .find(|(key, _)| !key.is_empty() && *key == name)
+        {
+            Some((_, value)) => out.push_str(value),
+            None => out.push_str(&template[open..close + 2]),
+        }
+        i = close + 2;
+    }
+    out
 }
 
 /// Variables for the worker task prompt.
@@ -328,12 +355,26 @@ fn extract_placeholders(template: &str) -> HashSet<String> {
 
 /// Check unique binding names against the template's placeholders.
 #[cfg(test)]
-#[expect(
-    unused_variables,
-    reason = "typed hole; filled after S101 (history fold-in) interface approval"
-)]
 fn validate_template(template: &str, vars: &impl TemplateVars) -> Result<(), String> {
-    todo!()
+    let bindings = vars.bindings();
+    let mut names = HashSet::new();
+    for (name, _) in bindings.as_ref() {
+        if !names.insert(*name) {
+            return Err(format!("duplicate binding name: {name}"));
+        }
+    }
+    let placeholders = extract_placeholders(template);
+    for name in &placeholders {
+        if !names.contains(name.as_str()) {
+            return Err(format!("template placeholder without binding: {name}"));
+        }
+    }
+    for (name, _) in bindings.as_ref() {
+        if !placeholders.contains(*name) {
+            return Err(format!("binding without template placeholder: {name}"));
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]
