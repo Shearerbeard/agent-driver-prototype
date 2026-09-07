@@ -6,12 +6,18 @@
 //! send.
 
 use std::collections::HashMap;
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 
 use agent_driver_rs::agent::{AgentEvent, AgentObserver, AgentOutcome, LoopStopReason};
+use agent_driver_rs::error::ProviderError;
 use agent_driver_rs::provider::mock::{MockProvider, mock_text_response, mock_tool_call_response};
-use agent_driver_rs::streaming::CollectedResponse;
-use agent_driver_rs::types::{ContentBlock, ModelId, SystemPrompt};
+use agent_driver_rs::provider::{
+    CompletionRequest, ModelInfo, Provider, ProviderContext, ProviderInfo,
+};
+use agent_driver_rs::streaming::{CollectedResponse, StreamHandle};
+use agent_driver_rs::types::{ContentBlock, Message, ModelId, Role, SystemPrompt};
 use async_trait::async_trait;
 
 use agent_driver_prototype::artifacts::{ArtifactStore, InlineThreshold};
@@ -142,6 +148,19 @@ async fn coordinator(
     worker_responses: Vec<Vec<agent_driver_rs::StreamEvent>>,
     turns: u32,
 ) -> CoordinatorLoop {
+    coordinator_with_provider(
+        Arc::new(MockProvider::new(responses)),
+        worker_responses,
+        turns,
+    )
+    .await
+}
+
+async fn coordinator_with_provider(
+    provider: Arc<impl Provider + 'static>,
+    worker_responses: Vec<Vec<agent_driver_rs::StreamEvent>>,
+    turns: u32,
+) -> CoordinatorLoop {
     let runs = RunStore::new();
     let worker_config = WorkerLoopConfig {
         provider: Arc::new(MockProvider::new(worker_responses)),
@@ -159,7 +178,7 @@ async fn coordinator(
         None,
     ));
     CoordinatorLoop::new(CoordinatorLoopConfig {
-        provider: Arc::new(MockProvider::new(responses)),
+        provider,
         model: model(),
         system_prompt: SystemPrompt::new("You coordinate one continuous loop."),
         budget: LoopBudget::new(turns).expect("non-zero budget"),
@@ -1236,4 +1255,120 @@ fn single_turn_history_renders_away() {
         single_turn.contains("Current time: 2026-09-03T12:00:00Z\n\nAnalyze this user query"),
         "the wrapper opens with its original spacing, got: {single_turn}"
     );
+}
+
+struct PlanningRecorder {
+    inner: MockProvider,
+    messages: Mutex<Vec<Vec<Message>>>,
+}
+
+impl Provider for PlanningRecorder {
+    fn info(&self) -> &ProviderInfo {
+        self.inner.info()
+    }
+
+    fn complete_stream(
+        &self,
+        request: CompletionRequest,
+        ctx: ProviderContext,
+    ) -> Pin<Box<dyn Future<Output = Result<StreamHandle, ProviderError>> + Send + '_>> {
+        // Keep the complete messages before forwarding ownership to the mock.
+        self.messages
+            .lock()
+            .expect("planning recorder mutex")
+            .push(request.messages.clone());
+        self.inner.complete_stream(request, ctx)
+    }
+
+    fn list_models(
+        &self,
+        ctx: ProviderContext,
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<ModelInfo>, ProviderError>> + Send + '_>> {
+        self.inner.list_models(ctx)
+    }
+}
+
+#[tokio::test]
+async fn planning_request_preserves_literal_history_markers() {
+    let provider = Arc::new(PlanningRecorder {
+        inner: MockProvider::new(vec![
+            mock_tool_call_response("c1", "respond", r#"{"response":"Markers preserved."}"#),
+            mock_text_response(""),
+        ]),
+        messages: Mutex::new(Vec::new()),
+    });
+    let coordinator = coordinator_with_provider(Arc::clone(&provider), Vec::new(), 8).await;
+    let history = ChatHistory::new(vec![
+        ChatTurn {
+            role: ChatTurnRole::User,
+            content: "At 2026-07-27T12:00:00Z keep %%TIMESTAMP%% %%CHAT_HISTORY%% %%QUERY%% %%WORKER_SECTION%% %%WORKER_GUIDELINES%%".to_owned(),
+        },
+        ChatTurn {
+            role: ChatTurnRole::Assistant,
+            content: "Literal markers: %%TIMESTAMP%% %%CHAT_HISTORY%% %%QUERY%% %%WORKER_SECTION%% %%WORKER_GUIDELINES%%".to_owned(),
+        },
+    ]);
+    let query = PinnedGoal::new("Repeat %%QUERY%% and %%WORKER_SECTION%% literally.")
+        .expect("non-empty query");
+    coordinator
+        .run(&query, &history)
+        .await
+        .expect("the loop runs");
+
+    let requests = provider.messages.lock().expect("planning recorder mutex");
+    assert_eq!(requests.len(), 2, "respond round plus final completion");
+    let [opening] = requests[0].as_slice() else {
+        panic!("planning must enter as exactly one message");
+    };
+    assert_eq!(opening.role, Role::User);
+    let [ContentBlock::Text { text }] = opening.content.as_slice() else {
+        panic!("planning must be one text block");
+    };
+    let (header, body) = text
+        .split_once('\n')
+        .expect("timestamp header has a newline");
+    let timestamp = header
+        .strip_prefix("Current time: ")
+        .expect("timestamp occupies the first line");
+    chrono::DateTime::parse_from_rfc3339(timestamp).expect("timestamp is RFC 3339");
+    // Normalize only the generated header, never timestamp-like payload text.
+    let message = format!("Current time: <TIMESTAMP>\n{body}");
+    insta::assert_snapshot!(message, @r#"
+    Current time: <TIMESTAMP>
+
+    CONVERSATION HISTORY (prior turns, oldest first):
+    [user] At 2026-07-27T12:00:00Z keep %%TIMESTAMP%% %%CHAT_HISTORY%% %%QUERY%% %%WORKER_SECTION%% %%WORKER_GUIDELINES%%
+    [assistant] Literal markers: %%TIMESTAMP%% %%CHAT_HISTORY%% %%QUERY%% %%WORKER_SECTION%% %%WORKER_GUIDELINES%%
+
+    Analyze this user query and decide on the best approach.
+
+    USER QUERY: Repeat %%QUERY%% and %%WORKER_SECTION%% literally.
+
+    AVAILABLE WORKERS:
+    NOTE: Worker names below are role assignments, not callable tool names. Only the tools listed under each worker are MCP tools that workers can execute.
+
+    ## operations
+    Logs, pipelines and metrics
+    Tools: (none configured — this worker cannot query external systems)
+
+    Assign tasks to the worker whose tools best match the required operations.
+
+    You have four tools to drive this run. Call them as needed:
+
+    1. **create_plan** — Decompose the query into a plan of tasks assigned to workers. Call this when the query requires tool execution, data gathering, or multi-step analysis.
+
+    2. **execute** — Run the tasks of a plan you created. Returns per-task evidence and an outcome tally; it does not answer the user. You stay in control after it returns.
+
+    3. **inspect_run** — Read back one of this run's own records: a plan you created, the most recent plan, the most recent execution, or a per-task record by plan, task id, and attempt. Use it when you need the task text or the full evidence that an earlier observation summarised.
+
+    4. **respond** — Write the final answer for the user. Call this when you have enough evidence to answer the query. The first response is the one recorded.
+
+
+    - Assign each task to a worker using the "worker" field
+    - Valid worker names: "operations"
+    - Choose the worker whose tools best match what the task needs to accomplish
+    - For time-scoped tasks, include the current time and relevant time range in the task description so workers have explicit time context
+
+    Call create_plan to begin.
+    "#);
 }
