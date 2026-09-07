@@ -1,7 +1,8 @@
 # Template binding contract
 
-Status: type skeleton, 2026-09-06. Rendering and validation are unfilled.
-Their successful compilation is not evidence that prompts render correctly.
+Status: filled, 2026-09-07. `render_single_pass` and `validate_template`
+landed in `e3c5964` after Gate U(template-interface) and the spec-first
+test commit. This contract records what they must keep doing.
 
 ## Boundary
 
@@ -76,7 +77,9 @@ No provider, MCP, server, persistence, or dependency changes are required.
 The baseline at `cfa4c6b` passes 310 tests with snapshot updates disabled.
 Four unused-import diagnostics in fixtures blocked strict clippy. The
 approved import-only cleanup passes the same suite and strict clippy.
-No post-skeleton rendering test has passed yet.
+After the fill, the full locked/offline suite passes 317 tests with
+snapshot updates disabled, including every rendering and validation test
+that pre-failed at the two holes.
 
 | Surface | Evidence or planned test |
 | --- | --- |
@@ -111,11 +114,12 @@ It does not prove provider behavior or CLI presentation.
 
 ## Hole inventory and gates
 
-Only `render_single_pass` and `validate_template` are behavior holes.
-Both carry `#[expect(unused_variables)]` markers. Inventory uses Grep for
-`todo!()` and the marker reasons in `templates.rs`, without Cargo lint
-configuration changes. No module-wide dead-code allowance is needed: both
-holes have callers. Each fill must remove its own marker explicitly.
+The two former behavior holes, `render_single_pass` and
+`validate_template`, are filled in `e3c5964`; both
+`#[expect(unused_variables)]` markers are removed and the inventory
+(`todo!()` and marker search over `templates.rs`) returns nothing. The
+inventory method stays Grep-based, without Cargo lint configuration
+changes.
 
 Surface gate: `cargo check --workspace --all-targets --locked --offline`,
 `cargo clippy --workspace --all-targets --locked --offline -- -D warnings`,
@@ -186,3 +190,19 @@ zero findings on the tests and coverage record. Author:
 The reviewer independently reran check, strict clippy, and fmt. Baseline
 red proofs and the MSRV check remain parent-verified evidence. This review
 does not pass the later behavior or integration gates.
+
+## Post-fill verification
+
+The fill commit `e3c5964` (user-approved message) fills both bodies and
+removes both markers. The full battery passed on the active nightly and
+the declared Rust 1.91.1 MSRV: the locked/offline workspace suite with
+snapshot updates disabled, strict clippy with `-D warnings`, and
+`cargo fmt --check`. No existing snapshot changed. Live acceptance on the
+real CLI, the wire-level transcript resend, and the provider-side planning
+frame are recorded with card S101 on the tracking board; Gate U(code-review)
+runs as the user's PR review.
+
+| Record | Finding and disposition |
+| --- | --- |
+| Behavior review | PASS, zero findings. Fresh `frontier-reviewer` context `ses_f831a5ec9ffeuXXcIFJSOJGBsL`, runtime `baseten/moonshotai/Kimi-K3`, distinct from every author in scope: GLM-5.3 (original PR), `openai/gpt-6-astra` (skeleton, tests, docs), glm-5.3-flash (pinned fill executor). Hand-traced the delimiter contract and the order/empty-name cases, verified the ten bundled binding arrays are name-unique, reran check, strict clippy, and fmt, and confirmed commit scope via read-only git. |
+| Failed first dispatch | A prior fresh `rust-reviewer` dispatch (runtime Kimi-K2.7-Code) found no code defects and attested independence but could not run the required test and git commands under its subagent shell policy, so it graded itself incomplete. Recorded as a failed delegation, not review evidence; the re-dispatch supplied those surfaces as staged parent-verified evidence instead. |
