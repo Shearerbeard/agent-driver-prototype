@@ -375,9 +375,101 @@ mod tests {
         assert_eq!(rendered, r#"{"task": "test", "nested": {"key": "value"}}"#);
     }
 
+    #[test]
+    fn test_render_preserves_all_planning_markers_in_values() {
+        let vars = PlanningLoopVars {
+            timestamp: "time: %%TIMESTAMP%% %%CHAT_HISTORY%% %%QUERY%% %%WORKER_SECTION%% %%WORKER_GUIDELINES%%",
+            chat_history: "history: %%TIMESTAMP%% %%CHAT_HISTORY%% %%QUERY%% %%WORKER_SECTION%% %%WORKER_GUIDELINES%%",
+            query: "query: %%TIMESTAMP%% %%CHAT_HISTORY%% %%QUERY%% %%WORKER_SECTION%% %%WORKER_GUIDELINES%%",
+            worker_section: "roster: %%TIMESTAMP%% %%CHAT_HISTORY%% %%QUERY%% %%WORKER_SECTION%% %%WORKER_GUIDELINES%%",
+            worker_guidelines: "guidance: %%TIMESTAMP%% %%CHAT_HISTORY%% %%QUERY%% %%WORKER_SECTION%% %%WORKER_GUIDELINES%%",
+        };
+
+        assert_eq!(
+            vars.render("%%TIMESTAMP%%\n%%CHAT_HISTORY%%\n%%QUERY%%\n%%WORKER_SECTION%%\n%%WORKER_GUIDELINES%%"),
+            concat!(
+                "time: %%TIMESTAMP%% %%CHAT_HISTORY%% %%QUERY%% %%WORKER_SECTION%% %%WORKER_GUIDELINES%%\n",
+                "history: %%TIMESTAMP%% %%CHAT_HISTORY%% %%QUERY%% %%WORKER_SECTION%% %%WORKER_GUIDELINES%%\n",
+                "query: %%TIMESTAMP%% %%CHAT_HISTORY%% %%QUERY%% %%WORKER_SECTION%% %%WORKER_GUIDELINES%%\n",
+                "roster: %%TIMESTAMP%% %%CHAT_HISTORY%% %%QUERY%% %%WORKER_SECTION%% %%WORKER_GUIDELINES%%\n",
+                "guidance: %%TIMESTAMP%% %%CHAT_HISTORY%% %%QUERY%% %%WORKER_SECTION%% %%WORKER_GUIDELINES%%",
+            ),
+        );
+    }
+
+    #[test]
+    fn test_render_delimiter_contract() {
+        let vars = PlanningLoopVars {
+            timestamp: "",
+            chat_history: "history",
+            query: "雪",
+            worker_section: "roster",
+            worker_guidelines: "guidance",
+        };
+        for (template, expected) in [
+            ("", ""),
+            ("plain {\"雪\": true}\n", "plain {\"雪\": true}\n"),
+            ("%", "%"),
+            ("%%", "%%"),
+            ("%%%", "%%%"),
+            ("%%%%", "%%%%"),
+            ("%%%%%", "%%%%%"),
+            ("%%%%%%", "%%%%%%"),
+            ("%%QUERY%%", "雪"),
+            ("%%QUERY%%%%QUERY%%", "雪雪"),
+            ("%%QUERY%%%%CHAT_HISTORY%%", "雪history"),
+            ("[%%TIMESTAMP%%]", "[]"),
+            (
+                "%%MISSING%% %%QUERY%% %%query%%",
+                "%%MISSING%% 雪 %%query%%",
+            ),
+            ("%%QUERY%% then %%MISSING", "雪 then %%MISSING"),
+            ("before %%QUERY", "before %%QUERY"),
+            ("%%%QUERY%%%", "%%%QUERY%%%"),
+            ("%%%QUERY%%", "%%%QUERY%%"),
+            ("%%QUERY%%%", "雪%"),
+            ("%%QUERY%%%%", "雪%%"),
+            ("%%%%%%QUERY%%", "%%%%雪"),
+            ("%%unknown %%QUERY%%", "%%unknown %%QUERY%%"),
+            ("雪%%QUERY%%é%", "雪雪é%"),
+        ] {
+            assert_eq!(vars.render(template), expected, "template: {template:?}");
+        }
+    }
+
+    #[test]
+    fn test_render_binding_order_and_empty_names() {
+        let mut bindings = [("A", "%%B%%"), ("B", "second"), ("", "not a placeholder")];
+        let template = "%%%% %%A%%%%B%%%%A%%";
+        let expected = "%%%% %%B%%second%%B%%";
+        assert_eq!(render_single_pass(template, &bindings), expected);
+        bindings.reverse();
+        assert_eq!(render_single_pass(template, &bindings), expected);
+    }
+
     // =========================================================================
     // Placeholder extraction tests
     // =========================================================================
+
+    #[test]
+    fn test_extract_placeholders_delimiter_contract() {
+        let cases: &[(&str, &[&str])] = &[
+            ("%%%%", &[]),
+            ("%%%A%%%", &["%A"]),
+            ("%%%%%%A%%", &["A"]),
+            ("%%A%%%%B%%%%A%%", &["A", "B"]),
+            ("%%A%% %%unfinished", &["A"]),
+            ("%%unknown %%A%%", &["unknown "]),
+            ("雪%%名前%%é%", &["名前"]),
+        ];
+        for &(template, expected) in cases {
+            assert_eq!(
+                extract_placeholders(template),
+                expected.iter().map(|name| (*name).to_owned()).collect(),
+                "template: {template:?}",
+            );
+        }
+    }
 
     #[test]
     fn test_extract_placeholders_basic() {
@@ -546,6 +638,38 @@ mod tests {
     // =========================================================================
     // Validation function tests
     // =========================================================================
+
+    #[test]
+    fn test_validate_rejects_duplicate_bindings() {
+        struct TestVars;
+        impl TemplateVars for TestVars {
+            fn bindings(&self) -> impl AsRef<[(&'static str, &str)]> {
+                [("A", "first"), ("A", "second")]
+            }
+        }
+
+        let error = validate_template("%%A%%", &TestVars)
+            .expect_err("duplicate bindings must not disappear into the name set");
+        assert!(
+            error.contains('A'),
+            "the diagnostic names the duplicate: {error}"
+        );
+    }
+
+    #[test]
+    fn test_validate_matches_delimiter_contract() {
+        let vars = WorkerTaskVars {
+            context: "%%NOT_A_TEMPLATE_VAR%%",
+            your_task: "",
+        };
+        for template in [
+            "%%%% %%CONTEXT%%%%YOUR_TASK%% %%",
+            "%%YOUR_TASK%% %%CONTEXT%% %%YOUR_TASK%%",
+        ] {
+            assert_eq!(validate_template(template, &vars), Ok(()), "{template:?}");
+        }
+        assert!(validate_template("%%%CONTEXT%%% %%YOUR_TASK%%", &vars).is_err());
+    }
 
     #[test]
     fn test_validate_catches_missing_template_var() {
