@@ -7,7 +7,6 @@ use std::time::Instant;
 use agent_driver_rs::SystemPrompt;
 use agent_driver_rs::tool::ToolContext;
 use async_trait::async_trait;
-use tokio_util::sync::CancellationToken;
 
 use crate::artifacts::{ArtifactFilename, ArtifactStore, InlineThreshold, SpilledBody};
 use crate::bounding::ErrorPreviewWidth;
@@ -171,15 +170,7 @@ impl DagExecutor {
 
 #[async_trait]
 impl PlanExecutor for DagExecutor {
-    async fn execute(
-        &self,
-        plan: &Plan,
-        #[expect(
-            unused,
-            reason = "skeleton: the executor reads ctx's token at the dispatch-loop top in the fill"
-        )]
-        ctx: &ToolContext,
-    ) -> ExecutionObservation {
+    async fn execute(&self, plan: &Plan, ctx: &ToolContext) -> ExecutionObservation {
         let mut work_plan = plan.clone();
         let plan_id = match self.runs.latest_plan() {
             Some((id, _)) => id,
@@ -207,6 +198,15 @@ impl PlanExecutor for DagExecutor {
             }
 
             for task_id in ready {
+                // S90: stop before any per-task work when the run is
+                // cancelled, so tasks that never ran file no observer
+                // events and no records.
+                if ctx.cancellation.is_cancelled() {
+                    let observed: Vec<TaskObservation> =
+                        observations.iter().flatten().cloned().collect();
+                    return Self::execution_failed("execution cancelled before dispatch", observed);
+                }
+
                 let index = *task_index
                     .get(&task_id)
                     .expect("ready task id exists in plan");
@@ -232,7 +232,9 @@ impl PlanExecutor for DagExecutor {
                     model: self.worker_config.model.clone(),
                     budget: self.resolve_budget(&work_plan.tasks[index]),
                     system_prompt: self.resolve_preamble(&work_plan.tasks[index]),
-                    cancellation: CancellationToken::new(),
+                    // S90: the honored token is the dispatch's own child of
+                    // ctx, never the stored template value (panel ruling).
+                    cancellation: ctx.cancellation.child_token(),
                 };
 
                 let slot: TerminalSlot<WorkerSubmission> = TerminalSlot::new();
@@ -510,6 +512,7 @@ mod tests {
 
     use agent_driver_rs::ModelId;
     use agent_driver_rs::provider::mock::MockProvider;
+    use tokio_util::sync::CancellationToken;
 
     use crate::artifacts::ArtifactStore;
     use crate::bounding::ToolListLimit;
