@@ -18,9 +18,11 @@
 //!
 //! ## ThinkingDelta (C3)
 //!
-//! `ThinkingDelta` is dropped — it maps to no emitted event. Mapping it to
-//! `choices[0].delta.content` would corrupt the assistant answer and could
-//! leak reasoning tokens to the adapter. See DESIGN.md §C3.
+//! `ThinkingDelta` maps to the named `aura.reasoning` event — never into
+//! `choices[0].delta.content`, which would corrupt the assistant answer and
+//! could leak reasoning tokens to the adapter (the C3 rule; see DESIGN.md
+//! §C3). Worker thinking surfaces as `aura.orchestrator.worker_reasoning`
+//! through the per-worker observer instead.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -33,13 +35,30 @@ use tokio::sync::Mutex;
 use tokio::sync::mpsc::Sender;
 
 use super::events::{
-    AuraEvent, ChatCompletionChunk, FinishReason, ToolCompletePayload, ToolStartPayload,
-    UsagePayload,
+    AuraEvent, ChatCompletionChunk, ContextUsagePayload, FinishReason, PlanCreatedPayload,
+    ReasoningPayload, ToolCompletePayload, ToolStartPayload, UsagePayload,
 };
 use super::session::{ShimSessionId, UsageAccumulator};
+use crate::coordinator_loop::CreatePlanArgs;
 
 /// The agent id the coordinator's observer uses for its own tool events.
 const COORDINATOR_AGENT_ID: &str = "main";
+
+/// The planning tool's name, as `CreatePlanTool` mounts it
+/// (`coordinator_loop/tools/create_plan.rs`). The observer watches for this
+/// name to map a completed plan onto `aura.orchestrator.plan_created`.
+const CREATE_PLAN_TOOL_NAME: &str = "create_plan";
+
+/// What the observer remembers from a `create_plan` tool call's arguments,
+/// so the matching completion can emit `aura.orchestrator.plan_created`.
+///
+/// `task_count` is the flattened step count (`flatten_steps`), not the raw
+/// `steps` length: the plan the executor runs is the flattened task list.
+struct PlanCapture {
+    goal: String,
+    rationale: String,
+    task_count: usize,
+}
 
 /// The `AgentObserver` that maps coordinator-loop events into
 /// `aura.*` SSE events.
@@ -67,6 +86,11 @@ pub struct ShimObserver {
     /// `duration_ms`. A std mutex is held for the duration of the map lookup
     /// only (no await while held).
     tool_starts: std::sync::Mutex<HashMap<ToolCallId, Instant>>,
+    /// `create_plan` arguments captured at `ToolCallStart`, keyed by tool
+    /// call id so the matching completion can emit `plan_created`. The
+    /// continuous loop may plan several times per turn; each completion
+    /// emits its own event.
+    plan_args: std::sync::Mutex<HashMap<ToolCallId, PlanCapture>>,
 }
 
 impl ShimObserver {
@@ -96,6 +120,7 @@ impl ShimObserver {
             usage,
             event_tx,
             tool_starts: std::sync::Mutex::new(HashMap::new()),
+            plan_args: std::sync::Mutex::new(HashMap::new()),
         }
     }
 
@@ -182,6 +207,74 @@ impl ShimObserver {
         ChatCompletionChunk::finish(&self.chat_completion_id, self.created, &self.model, reason)
             .expect("chat_completion_id and model are non-empty by ShimState construction")
     }
+
+    /// Capture a `create_plan` call's arguments so its completion can emit
+    /// `aura.orchestrator.plan_created`.
+    ///
+    /// The task count is the FLATTENED step count (`flatten_steps`), matching
+    /// the task list the executor will run. Arguments that fail to parse are
+    /// not captured: that call cannot produce a successful plan anyway, so
+    /// no completion will look for a capture.
+    fn capture_plan_args(&self, id: &ToolCallId, input: &serde_json::Value) {
+        let Ok(args) = serde_json::from_value::<CreatePlanArgs>(input.clone()) else {
+            return;
+        };
+        let task_count = match crate::types::flatten_steps(&args.steps) {
+            Ok(tasks) => tasks.len(),
+            Err(_) => return,
+        };
+        self.plan_args
+            .lock()
+            .expect("plan_args lock poisoned")
+            .insert(
+                id.clone(),
+                PlanCapture {
+                    goal: args.goal,
+                    rationale: args.planning_rationale,
+                    task_count,
+                },
+            );
+    }
+
+    /// Build the `plan_created` event for a successfully completed
+    /// `create_plan` call, or `None` when the mapped fields would violate
+    /// the payload's construction rules (an empty goal or rationale slipped
+    /// through the tool's own validation). `None` drops the named event and
+    /// logs; it never breaks the stream.
+    fn plan_created_event(&self, capture: PlanCapture) -> Option<AuraEvent> {
+        match PlanCreatedPayload::new(
+            capture.goal,
+            capture.task_count,
+            capture.rationale,
+            None,
+            COORDINATOR_AGENT_ID,
+            self.session_id.as_str(),
+        ) {
+            Ok(payload) => Some(AuraEvent::PlanCreated(payload)),
+            Err(error) => {
+                tracing::warn!(
+                    session_id = %self.session_id,
+                    %error,
+                    "dropping plan_created event: captured fields failed payload validation"
+                );
+                None
+            }
+        }
+    }
+
+    /// The coordinator's `aura.context_usage` event: final-turn occupancy
+    /// read from the metering sink, which the decorator updated with the
+    /// coordinator's last provider call before `LoopComplete` fired. Zero
+    /// when no provider call reported usage (mirrors aura's server, which
+    /// emits the event unconditionally at stream end).
+    fn context_usage_event(&self, context_tokens: u64, response_tokens: u64) -> AuraEvent {
+        AuraEvent::ContextUsage(ContextUsagePayload::from_final_turn(
+            context_tokens,
+            response_tokens,
+            COORDINATOR_AGENT_ID,
+            self.session_id.as_str(),
+        ))
+    }
 }
 
 #[async_trait]
@@ -191,18 +284,29 @@ impl AgentObserver for ShimObserver {
             AgentEvent::TextDelta { text } => {
                 self.emit(AuraEvent::ChatChunk(self.text_chunk(text))).await;
             }
-            AgentEvent::ThinkingDelta { .. } => {
-                // C3: ThinkingDelta is dropped. Mapping it to
-                // choices[0].delta.content would corrupt the assistant
-                // answer and could leak reasoning tokens to the adapter.
+            AgentEvent::ThinkingDelta { thinking } => {
+                // C3: thinking rides the named `aura.reasoning` event,
+                // never `choices[0].delta.content` (which would corrupt the
+                // assistant answer). An empty delta is dropped rather than
+                // rejected: the stream must not fail on it.
+                if let Ok(payload) =
+                    ReasoningPayload::new(thinking, COORDINATOR_AGENT_ID, self.session_id.as_str())
+                {
+                    self.emit(AuraEvent::Reasoning(payload)).await;
+                }
             }
-            AgentEvent::ToolCallStart { id, name, .. } => {
+            AgentEvent::ToolCallStart { id, name, input } => {
                 // R5: record the start instant so ToolCallComplete can compute
                 // the tool-call duration.
                 self.tool_starts
                     .lock()
                     .expect("tool_starts lock poisoned")
                     .insert(id.clone(), Instant::now());
+                // S102: remember a create_plan's arguments so its completion
+                // can emit `plan_created`.
+                if name.as_str() == CREATE_PLAN_TOOL_NAME {
+                    self.capture_plan_args(id, input);
+                }
                 self.emit(AuraEvent::ToolStart(self.tool_start_payload(id, name)))
                     .await;
             }
@@ -227,6 +331,25 @@ impl AgentObserver for ShimObserver {
                     duration_ms,
                 )))
                 .await;
+                // S102: a successfully completed create_plan then emits
+                // `plan_created` — the named event the CLI renders as the
+                // plan line, mapped from the captured arguments. After the
+                // generic tool frame, matching "fires when create_plan
+                // completes".
+                if name.as_str() == CREATE_PLAN_TOOL_NAME && !*is_error {
+                    // Bind the capture outside the await: the mutex guard is
+                    // dropped at the semicolon, before `emit` yields.
+                    let capture = self
+                        .plan_args
+                        .lock()
+                        .expect("plan_args lock poisoned")
+                        .remove(id);
+                    if let Some(capture) = capture {
+                        if let Some(event) = self.plan_created_event(capture) {
+                            self.emit(event).await;
+                        }
+                    }
+                }
             }
             AgentEvent::IterationComplete { .. } => {
                 // C1: Usage is metered by the UsageMeteringProvider
@@ -236,15 +359,25 @@ impl AgentObserver for ShimObserver {
             }
             AgentEvent::LoopComplete { reason, .. } => {
                 // Emit the final aura.usage event from the accumulator that
-                // the UsageMeteringProvider decorator fed (C1).
+                // the UsageMeteringProvider decorator fed (C1), and read the
+                // same sink's latest call for the coordinator's final-turn
+                // context occupancy (S102: aura's server emits usage then
+                // context_usage at stream end).
                 let usage = self.usage.lock().await;
-                self.emit(AuraEvent::Usage(UsagePayload::from_totals(
+                let (prompt, completion, (context_tokens, response_tokens)) = (
                     usage.prompt_tokens(),
                     usage.completion_tokens(),
+                    usage.last_usage().unwrap_or((0, 0)),
+                );
+                self.emit(AuraEvent::Usage(UsagePayload::from_totals(
+                    prompt,
+                    completion,
                     self.session_id.as_str(),
                 )))
                 .await;
                 drop(usage);
+                self.emit(self.context_usage_event(context_tokens, response_tokens))
+                    .await;
 
                 // Emit the terminal finish-reason chunk.
                 self.emit(AuraEvent::ChatChunk(
@@ -309,8 +442,9 @@ mod tests {
     }
 
     /// The `LoopComplete` sequence is `aura.usage` (with the accumulated
-    /// totals), then the terminal finish-reason chunk, then `[DONE]` — in
-    /// that order and no others.
+    /// totals), then the coordinator's `aura.context_usage` (S102: the
+    /// final-turn occupancy), then the terminal finish-reason chunk, then
+    /// `[DONE]` — in that order and no others.
     #[tokio::test]
     async fn loop_complete_emits_usage_then_finish_then_done() {
         let session_id = ShimSessionId::generate();
@@ -340,7 +474,7 @@ mod tests {
         }
 
         let events = drain(&mut rx).await;
-        assert_eq!(events.len(), 3, "usage, finish chunk, done");
+        assert_eq!(events.len(), 4, "usage, context_usage, finish chunk, done");
 
         // 1. aura.usage with the accumulated totals.
         assert!(matches!(events[0], AuraEvent::Usage(_)));
@@ -352,21 +486,31 @@ mod tests {
         let sid = session_id.as_str();
         assert_eq!(u["session_id"].as_str(), Some(sid.as_str()));
 
-        // 2. data-only finish chunk with finish_reason "stop" and the
-        //    configured model (C9), never the request's model.
-        assert!(matches!(events[1], AuraEvent::ChatChunk(_)));
-        assert!(events[1].sse_event_name().is_none(), "chunk is data-only");
+        // 2. aura.context_usage with the same single call's occupancy.
+        assert_eq!(
+            events[1].sse_event_name(),
+            Some(crate::sse_shim::events::EVENT_CONTEXT_USAGE)
+        );
         let c: serde_json::Value = serde_json::from_str(&events[1].sse_data()).unwrap();
+        assert_eq!(c["context_tokens"].as_u64(), Some(100));
+        assert_eq!(c["response_tokens"].as_u64(), Some(40));
+        assert_eq!(c["agent_id"].as_str(), Some("main"));
+
+        // 3. data-only finish chunk with finish_reason "stop" and the
+        //    configured model (C9), never the request's model.
+        assert!(matches!(events[2], AuraEvent::ChatChunk(_)));
+        assert!(events[2].sse_event_name().is_none(), "chunk is data-only");
+        let c: serde_json::Value = serde_json::from_str(&events[2].sse_data()).unwrap();
         assert_eq!(c["object"].as_str(), Some("chat.completion.chunk"));
         assert_eq!(c["model"].as_str(), Some("configured-model"));
         assert_eq!(c["id"].as_str(), Some("chatcmpl-test"));
         assert_eq!(c["choices"][0]["finish_reason"].as_str(), Some("stop"));
         assert!(c["choices"][0]["delta"]["content"].is_null());
 
-        // 3. [DONE] last, data-only.
-        assert!(matches!(events[2], AuraEvent::Done));
-        assert!(events[2].sse_event_name().is_none());
-        assert_eq!(events[2].sse_data(), SSE_DONE);
+        // 4. [DONE] last, data-only.
+        assert!(matches!(events[3], AuraEvent::Done));
+        assert!(events[3].sse_event_name().is_none());
+        assert_eq!(events[3].sse_data(), SSE_DONE);
     }
 
     /// `MaxTokens` maps to `finish_reason: "length"` (the adapter's
@@ -391,7 +535,7 @@ mod tests {
                 .await;
         }
         let events = drain(&mut rx).await;
-        let c: serde_json::Value = serde_json::from_str(&events[1].sse_data()).unwrap();
+        let c: serde_json::Value = serde_json::from_str(&events[2].sse_data()).unwrap();
         assert_eq!(c["choices"][0]["finish_reason"].as_str(), Some("length"));
     }
 
@@ -456,5 +600,205 @@ mod tests {
         );
         assert_eq!(v["success"].as_bool(), Some(true));
         assert_eq!(v["result"].as_str(), Some("ok"));
+    }
+
+    /// S102/C3: a coordinator thinking delta surfaces as the named
+    /// `aura.reasoning` event and never as chat-chunk content.
+    #[tokio::test]
+    async fn thinking_delta_emits_named_reasoning_event() {
+        let (tx, mut rx) = mpsc::channel::<AuraEvent>(16);
+        {
+            let observer = ShimObserver::new(
+                ShimSessionId::generate(),
+                "m",
+                "id",
+                0,
+                shared_accumulator(),
+                tx,
+            );
+            observer
+                .on_event(&AgentEvent::ThinkingDelta {
+                    thinking: "weighing options".to_owned(),
+                })
+                .await;
+        }
+        let events = drain(&mut rx).await;
+        assert_eq!(events.len(), 1, "one named event, no chat chunk");
+        assert_eq!(
+            events[0].sse_event_name(),
+            Some(crate::sse_shim::events::EVENT_REASONING)
+        );
+        let v: serde_json::Value = serde_json::from_str(&events[0].sse_data()).unwrap();
+        assert_eq!(v["content"].as_str(), Some("weighing options"));
+        assert_eq!(v["agent_id"].as_str(), Some("main"));
+    }
+
+    /// S102: a successful `create_plan` completion emits `plan_created`
+    /// AFTER its `aura.tool_complete`, mapping goal, the flattened step
+    /// count (a parallel group counts its leaves, not the group), and the
+    /// planning rationale; routing is always orchestrated.
+    #[tokio::test]
+    async fn create_plan_completion_emits_plan_created_after_tool_complete() {
+        use crate::types::StepInput;
+
+        let (tx, mut rx) = mpsc::channel::<AuraEvent>(16);
+        {
+            let observer = ShimObserver::new(
+                ShimSessionId::generate(),
+                "m",
+                "id",
+                0,
+                shared_accumulator(),
+                tx,
+            );
+            let args = crate::coordinator_loop::CreatePlanArgs {
+                goal: "Fix the outage".to_owned(),
+                steps: vec![
+                    StepInput::LeafTask {
+                        task: "a".to_owned(),
+                        worker: None,
+                    },
+                    StepInput::ParallelGroup {
+                        items: vec![
+                            StepInput::LeafTask {
+                                task: "b".to_owned(),
+                                worker: None,
+                            },
+                            StepInput::LeafTask {
+                                task: "c".to_owned(),
+                                worker: None,
+                            },
+                        ],
+                    },
+                ],
+                planning_rationale: "divide then parallelize".to_owned(),
+            };
+            let input =
+                serde_json::to_value(&args).expect("CreatePlanArgs serializes to tool input");
+            let id = agent_driver_rs::ToolCallId::new("call_plan");
+            let name = agent_driver_rs::ToolName::new("create_plan").unwrap();
+            observer
+                .on_event(&AgentEvent::ToolCallStart {
+                    id: id.clone(),
+                    name: name.clone(),
+                    input,
+                })
+                .await;
+            observer
+                .on_event(&AgentEvent::ToolCallComplete {
+                    id,
+                    name,
+                    result: "{\"plan_id\":\"p1\"}".to_owned(),
+                    is_error: false,
+                })
+                .await;
+        }
+        let events = drain(&mut rx).await;
+        assert_eq!(events.len(), 3, "tool start, tool complete, plan_created");
+        assert!(matches!(events[1], AuraEvent::ToolComplete(_)));
+        assert_eq!(
+            events[2].sse_event_name(),
+            Some(crate::sse_shim::events::EVENT_PLAN_CREATED)
+        );
+        let v: serde_json::Value = serde_json::from_str(&events[2].sse_data()).unwrap();
+        assert_eq!(v["goal"].as_str(), Some("Fix the outage"));
+        assert_eq!(v["task_count"].as_u64(), Some(3), "flattened leaf count");
+        assert_eq!(v["routing_mode"].as_str(), Some("orchestrated"));
+        assert_eq!(
+            v["routing_rationale"].as_str(),
+            Some("divide then parallelize")
+        );
+    }
+
+    /// S102: a FAILED `create_plan` (arguments rejected by the tool) emits
+    /// no `plan_created` — the plan never existed.
+    #[tokio::test]
+    async fn failed_create_plan_emits_no_plan_created() {
+        let (tx, mut rx) = mpsc::channel::<AuraEvent>(16);
+        {
+            let observer = ShimObserver::new(
+                ShimSessionId::generate(),
+                "m",
+                "id",
+                0,
+                shared_accumulator(),
+                tx,
+            );
+            let id = agent_driver_rs::ToolCallId::new("call_plan");
+            let name = agent_driver_rs::ToolName::new("create_plan").unwrap();
+            // Arguments that do not parse as CreatePlanArgs are not
+            // captured at start, so the completion has nothing to map.
+            observer
+                .on_event(&AgentEvent::ToolCallStart {
+                    id: id.clone(),
+                    name: name.clone(),
+                    input: serde_json::json!({"goal": 42}),
+                })
+                .await;
+            observer
+                .on_event(&AgentEvent::ToolCallComplete {
+                    id,
+                    name,
+                    result: "create_plan arguments did not parse".to_owned(),
+                    is_error: true,
+                })
+                .await;
+        }
+        let events = drain(&mut rx).await;
+        assert_eq!(events.len(), 2, "tool start and complete only");
+        assert!(
+            events
+                .iter()
+                .all(|e| e.sse_event_name() != Some(crate::sse_shim::events::EVENT_PLAN_CREATED))
+        );
+    }
+
+    /// S102: `LoopComplete` emits `aura.usage` then the coordinator's
+    /// `aura.context_usage` from the sink's latest call, then the finish
+    /// chunk, then `[DONE]`.
+    #[tokio::test]
+    async fn loop_complete_emits_context_usage_after_usage() {
+        let session_id = ShimSessionId::generate();
+        let usage = shared_accumulator();
+        usage.lock().await.add(TokenUsage {
+            input_tokens: 100,
+            output_tokens: 40,
+        });
+        usage.lock().await.add(TokenUsage {
+            input_tokens: 70,
+            output_tokens: 9,
+        });
+
+        let (tx, mut rx) = mpsc::channel::<AuraEvent>(16);
+        {
+            let observer = ShimObserver::new(session_id, "m", "id", 0, usage, tx);
+            observer
+                .on_event(&AgentEvent::LoopComplete {
+                    reason: LoopStopReason::EndTurn,
+                    total_iterations: 2,
+                })
+                .await;
+        }
+        let events = drain(&mut rx).await;
+        assert_eq!(events.len(), 4, "usage, context_usage, finish, done");
+        let names: Vec<Option<&str>> = events.iter().map(|e| e.sse_event_name()).collect();
+
+        assert_eq!(names[0], Some(crate::sse_shim::events::EVENT_USAGE));
+        let u: serde_json::Value = serde_json::from_str(&events[0].sse_data()).unwrap();
+        assert_eq!(u["prompt_tokens"].as_u64(), Some(170));
+        assert_eq!(u["completion_tokens"].as_u64(), Some(49));
+
+        assert_eq!(names[1], Some(crate::sse_shim::events::EVENT_CONTEXT_USAGE));
+        let c: serde_json::Value = serde_json::from_str(&events[1].sse_data()).unwrap();
+        assert_eq!(
+            c["context_tokens"].as_u64(),
+            Some(70),
+            "final-turn occupancy, not the running total"
+        );
+        assert_eq!(c["response_tokens"].as_u64(), Some(9));
+        assert_eq!(c["agent_id"].as_str(), Some("main"));
+
+        assert!(matches!(events[2], AuraEvent::ChatChunk(_)));
+        assert!(matches!(events[3], AuraEvent::Done));
     }
 }
