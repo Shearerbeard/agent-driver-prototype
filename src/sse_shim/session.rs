@@ -79,6 +79,11 @@ impl std::fmt::Display for ShimSessionId {
 pub struct UsageAccumulator {
     prompt_tokens: u64,
     completion_tokens: u64,
+    /// The most recent call's usage, overwritten on every `add`. S102's
+    /// `aura.context_usage` reports per-agent final-turn occupancy: because
+    /// provider streams run sequentially within a request, the latest call
+    /// when an agent's loop completes is that agent's final turn.
+    last: Option<TokenUsage>,
 }
 
 impl UsageAccumulator {
@@ -94,6 +99,7 @@ impl UsageAccumulator {
     pub fn add(&mut self, usage: TokenUsage) {
         self.prompt_tokens += u64::from(usage.input_tokens);
         self.completion_tokens += u64::from(usage.output_tokens);
+        self.last = Some(usage);
     }
 
     /// Total prompt (input) tokens across all iterations.
@@ -112,6 +118,21 @@ impl UsageAccumulator {
     #[must_use]
     pub fn total_tokens(&self) -> u64 {
         self.prompt_tokens + self.completion_tokens
+    }
+
+    /// The most recent call's (input, output) usage, or `None` when no
+    /// provider call has reported usage yet.
+    ///
+    /// Read at an agent's loop completion to emit that agent's
+    /// `aura.context_usage` (per-agent final-turn occupancy).
+    #[must_use]
+    pub fn last_usage(&self) -> Option<(u64, u64)> {
+        self.last.map(|usage| {
+            (
+                u64::from(usage.input_tokens),
+                u64::from(usage.output_tokens),
+            )
+        })
     }
 }
 

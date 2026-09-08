@@ -2,9 +2,12 @@
 
 use std::sync::Arc;
 
-use agent_driver_rs::agent::{AgentLoop, AgentLoopConfig, LoopStopReason};
+use agent_driver_rs::agent::{
+    AgentEvent, AgentLoop, AgentLoopConfig, AgentObserver, LoopStopReason,
+};
 use agent_driver_rs::error::ProviderError;
 use agent_driver_rs::{ConfigError, ModelId, Provider, SessionBuilder, SystemPrompt};
+use async_trait::async_trait;
 use tokio_util::sync::CancellationToken;
 
 use crate::artifacts::ArtifactStore;
@@ -14,6 +17,34 @@ use crate::mcp_client::SidecarClient;
 use crate::types::{FailureCategory, Task};
 
 use super::tools::{CapturePaneTool, KeystrokesTool, ReadArtifactTool};
+
+/// Mints the per-task observer a worker loop attaches to its `AgentLoop`.
+///
+/// The factory (not a bare observer) rides in [`WorkerLoopConfig`] because
+/// the observer is per-task: it needs the task id and the worker's agent id,
+/// which the executor resolves per dispatch. The shim implements this to
+/// hand back a `ShimWorkerObserver` wired to the request's SSE channel;
+/// `None` (tests, the standalone bins) runs workers unobserved, exactly as
+/// before S102.
+pub trait WorkerObserverFactory: Send + Sync {
+    /// The observer for one task run: `task_id` identifies the plan task
+    /// and `worker_id` the assigned worker (the executor's own resolution,
+    /// e.g. `"default"` for an unassigned task).
+    fn observer_for(&self, task_id: usize, worker_id: &str) -> Arc<dyn AgentObserver>;
+}
+
+/// Forwards loop events to a shared observer handle, so an `Arc<dyn
+/// AgentObserver>` can attach to a loop that takes its observer by value
+/// (the pin has no `AgentObserver for Arc<dyn AgentObserver>` impl — same
+/// wrapper the coordinator driver uses).
+struct SharedWorkerObserver(Arc<dyn AgentObserver>);
+
+#[async_trait]
+impl AgentObserver for SharedWorkerObserver {
+    async fn on_event(&self, event: &AgentEvent) {
+        self.0.on_event(event).await;
+    }
+}
 
 /// Everything a worker inner loop needs before its first provider call.
 ///
@@ -32,6 +63,11 @@ pub struct WorkerLoopConfig {
     /// Both cancel paths - the loop-top stop and the in-flight
     /// `AgentLoopError::Cancelled` - converge on `WorkerOutcome::Interrupted`.
     pub cancellation: CancellationToken,
+    /// Optional per-task observer factory (S102): the executor resolves the
+    /// task and worker identity, the factory mints the observer, and the
+    /// worker loop attaches it to its `AgentLoop` so worker tool calls and
+    /// reasoning reach the SSE stream. `None` observes nothing.
+    pub observer_factory: Option<Arc<dyn WorkerObserverFactory>>,
 }
 
 /// What a worker run produced, mirroring the S71 `CoordinatorOutcome` pattern.
@@ -138,12 +174,20 @@ impl WorkerLoop {
         };
 
         let config = self.agent_loop_config();
-        let outcome = match AgentLoop::new(&session)
+        let mut agent_loop = AgentLoop::new(&session)
             .with_config(config)
-            .with_cancellation(self.config.cancellation.clone())
-            .run(&task.description)
-            .await
-        {
+            .with_cancellation(self.config.cancellation.clone());
+        // S102: attach the per-task observer when a factory is configured.
+        // The worker id mirrors the executor's own resolution (task.worker,
+        // falling back to "default") so lifecycle and tool events agree on
+        // the agent identity.
+        if let Some(factory) = &self.config.observer_factory {
+            let worker_id = task.worker.as_deref().unwrap_or("default");
+            agent_loop = agent_loop.with_observer(SharedWorkerObserver(
+                factory.observer_for(task.id, worker_id),
+            ));
+        }
+        let outcome = match agent_loop.run(&task.description).await {
             Ok(outcome) => outcome,
             Err(error) => return agent_loop_error_to_outcome(&error),
         };

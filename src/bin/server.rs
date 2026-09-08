@@ -203,6 +203,7 @@ async fn build_state(args: &ShimCliArgs) -> Result<ShimState, ShimError> {
         budget: worker_budget,
         system_prompt: worker_preamble,
         cancellation: CancellationToken::new(),
+        observer_factory: None,
     };
 
     // Coordinator budget: max_planning_cycles → turn depth (4 cycles → 12
@@ -927,6 +928,7 @@ mod tests {
             budget: LoopBudget::CANONICAL,
             system_prompt: SystemPrompt::empty(),
             cancellation: CancellationToken::new(),
+            observer_factory: None,
         };
         Arc::new(ShimState::from_parts(
             provider,

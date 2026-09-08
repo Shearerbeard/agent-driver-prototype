@@ -149,6 +149,7 @@ fn shim_state(provider: Arc<dyn Provider>, artifact_root: PathBuf) -> Arc<ShimSt
         budget: LoopBudget::new(8).expect("non-zero worker budget"),
         system_prompt: SystemPrompt::new("You are a worker. Submit your result."),
         cancellation: CancellationToken::new(),
+        observer_factory: None,
     };
     Arc::new(ShimState::from_parts(
         provider,
@@ -602,6 +603,7 @@ fn burn_state(provider: Arc<dyn Provider>, artifact_root: PathBuf) -> Arc<ShimSt
         budget: LoopBudget::new(1_000_000).expect("non-zero worker budget"),
         system_prompt: SystemPrompt::new("You are a worker. Submit your result."),
         cancellation: CancellationToken::new(),
+        observer_factory: None,
     };
     Arc::new(ShimState::from_parts(
         provider,
@@ -760,9 +762,7 @@ fn thinking_text_response_with_usage(
     completed.stop_reason = Some(StopReason::EndTurn);
     completed.usage = Some(usage);
     vec![
-        StreamEvent::Started {
-            metadata: started,
-        },
+        StreamEvent::Started { metadata: started },
         StreamEvent::ContentBlockStart {
             index: 0,
             block_type: ContentBlockType::Thinking,
@@ -875,9 +875,9 @@ async fn s102_named_events_reach_the_stream() {
     let transcript = transcript_summary(&frames);
     let json = |f: &SseFrame| serde_json::from_str::<serde_json::Value>(&f.data);
     let position = |name: &str, pred: &dyn Fn(&serde_json::Value) -> bool| {
-        frames.iter().position(|f| {
-            f.event.as_deref() == Some(name) && json(f).is_ok_and(|v| pred(&v))
-        })
+        frames
+            .iter()
+            .position(|f| f.event.as_deref() == Some(name) && json(f).is_ok_and(|v| pred(&v)))
     };
     let mut failures: Vec<String> = Vec::new();
 
@@ -903,13 +903,13 @@ async fn s102_named_events_reach_the_stream() {
         v["tool_name"].as_str() == Some("create_plan")
     });
     let task_started = position("aura.orchestrator.task_started", &|_| true);
-    if let (Some(plan), Some(complete), Some(started)) = (plan_pos, create_plan_complete, task_started)
+    if let (Some(plan), Some(complete), Some(started)) =
+        (plan_pos, create_plan_complete, task_started)
+        && !(complete < plan && plan < started)
     {
-        if !(complete < plan && plan < started) {
-            failures.push(format!(
-                "(a) plan_created ordering wrong: tool_complete@{complete}, plan@{plan}, task_started@{started}"
-            ));
-        }
+        failures.push(format!(
+            "(a) plan_created ordering wrong: tool_complete@{complete}, plan@{plan}, task_started@{started}"
+        ));
     }
 
     // (b) worker tool events carry the worker's agent id and task id; the
@@ -951,14 +951,16 @@ async fn s102_named_events_reach_the_stream() {
         }
     }
     let task_completed = position("aura.orchestrator.task_completed", &|_| true);
-    if let (Some(start), Some(complete), Some(t_started), Some(t_completed)) =
-        (worker_tool_start, worker_tool_complete, task_started, task_completed)
+    if let (Some(start), Some(complete), Some(t_started), Some(t_completed)) = (
+        worker_tool_start,
+        worker_tool_complete,
+        task_started,
+        task_completed,
+    ) && !(t_started < start && start < complete && complete < t_completed)
     {
-        if !(t_started < start && start < complete && complete < t_completed) {
-            failures.push(format!(
-                "(b) worker tool events outside the task window: task_started@{t_started}, start@{start}, complete@{complete}, task_completed@{t_completed}"
-            ));
-        }
+        failures.push(format!(
+            "(b) worker tool events outside the task window: task_started@{t_started}, start@{start}, complete@{complete}, task_completed@{t_completed}"
+        ));
     }
 
     // (c) reasoning surfaces as NAMED events: worker thinking under
@@ -967,7 +969,9 @@ async fn s102_named_events_reach_the_stream() {
     let worker_reasoning = position("aura.orchestrator.worker_reasoning", &|v| {
         v["task_id"].as_u64() == Some(0)
             && v["worker_id"].as_str() == Some("operations")
-            && v["content"].as_str().is_some_and(|c| c.contains("service logs"))
+            && v["content"]
+                .as_str()
+                .is_some_and(|c| c.contains("service logs"))
             && v["agent_id"].as_str() == Some("operations")
     });
     if worker_reasoning.is_none() {
@@ -975,7 +979,9 @@ async fn s102_named_events_reach_the_stream() {
     }
     let coordinator_reasoning = position("aura.reasoning", &|v| {
         v["agent_id"].as_str() == Some("main")
-            && v["content"].as_str().is_some_and(|c| c.contains("frames the answer"))
+            && v["content"]
+                .as_str()
+                .is_some_and(|c| c.contains("frames the answer"))
     });
     if coordinator_reasoning.is_none() {
         failures.push("(c) no aura.reasoning carrying the coordinator's thinking".to_owned());
@@ -1011,19 +1017,19 @@ async fn s102_named_events_reach_the_stream() {
     // (e) C3: the answer stream stays byte-clean. No chat chunk's content
     //     carries a thinking marker; the plain answer text does arrive.
     for f in &frames {
-        if f.event.is_none() && f.data != "[DONE]" {
-            if let Ok(v) = json(f) {
-                let content = v["choices"][0]["delta"]["content"].as_str().unwrap_or("");
-                if content.contains(WORKER_THINKING) || content.contains(COORDINATOR_THINKING) {
-                    failures.push("(e) reasoning leaked into choices[0].delta.content".to_owned());
-                }
+        if f.event.is_none()
+            && f.data != "[DONE]"
+            && let Ok(v) = json(f)
+        {
+            let content = v["choices"][0]["delta"]["content"].as_str().unwrap_or("");
+            if content.contains(WORKER_THINKING) || content.contains(COORDINATOR_THINKING) {
+                failures.push("(e) reasoning leaked into choices[0].delta.content".to_owned());
             }
         }
     }
     let answer_arrived = frames.iter().any(|f| {
         f.event.is_none()
-            && json(f)
-                .is_ok_and(|v| v["choices"][0]["delta"]["content"].as_str() == Some("done."))
+            && json(f).is_ok_and(|v| v["choices"][0]["delta"]["content"].as_str() == Some("done."))
     });
     if !answer_arrived {
         failures.push("(e) the plain answer text never arrived as a content chunk".to_owned());

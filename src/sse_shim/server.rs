@@ -301,6 +301,7 @@ impl ShimState {
             budget: self.worker_config.budget,
             system_prompt: self.worker_config.system_prompt.clone(),
             cancellation: CancellationToken::new(),
+            observer_factory: None,
         };
         let executor = DagExecutor::new(
             self.sidecar.clone(),
@@ -733,6 +734,7 @@ mod tests {
             budget: LoopBudget::CANONICAL,
             system_prompt: SystemPrompt::empty(),
             cancellation: CancellationToken::new(),
+            observer_factory: None,
         };
         Arc::new(ShimState::from_parts(
             provider,
