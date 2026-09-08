@@ -1098,14 +1098,15 @@ mod tests {
         let shutdown = started.elapsed();
 
         // Only the still-attached run has to be live at the signal: the
-        // severed run ended cooperatively at its disconnect (S90), closing and
-        // exporting its span then, so the shutdown abort has just the
+        // disconnect backstop already ended the severed stalled run inside its
+        // settle window (S90), closing its span then (the batch exporter hands
+        // it over at the guard's flush), so the shutdown abort has just the
         // harness-timeout shape left to end.
         assert_eq!(
             outcome,
             ShutdownAbort::Settled { aborted: 1 },
             "only the still-attached run needs the shutdown abort because the \
-             severed run ended cooperatively at its disconnect (S90)"
+             disconnect backstop already ended the severed run (S90)"
         );
         assert!(
             shutdown < Duration::from_secs(5),
