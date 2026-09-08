@@ -1,12 +1,14 @@
 //! The registry of coordinator tasks that are still running, and the abort
 //! the shutdown path uses to close their spans.
 //!
-//! A `chat.completions` span lives as long as the task it instruments. Nothing
-//! ends that task on its own: the SSE stream holds the only `JoinHandle`, and
-//! dropping a `JoinHandle` detaches the task rather than stopping it, so a
-//! client that goes away mid-stream leaves the coordinator running with its
-//! span open. An open span is never handed to the span processor, so the flush
-//! at process exit has nothing of it to export and the trace is lost.
+//! A `chat.completions` span lives as long as the task it instruments. A
+//! client that goes away mid-stream no longer leaves the task running: the
+//! stream's drop fires the run's cancellation token, and the disconnect
+//! backstop in this module aborts whatever outlives its window. What remains
+//! is the shutdown shape — a task still live when SIGTERM arrives, its client
+//! attached or long gone, whose span must close before the exporter flushes.
+//! An open span is never handed to the span processor, so the flush at process
+//! exit has nothing of it to export and the trace is lost.
 //!
 //! Registering each task's [`AbortHandle`] here gives the shutdown path a way
 //! to end those tasks — dropping their futures, and with them the span guards —

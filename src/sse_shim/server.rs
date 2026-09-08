@@ -355,10 +355,11 @@ impl ShimState {
             }
             .instrument(span),
         );
-        // 13. Register the task so the shutdown path can end it. Without this
-        //     the span outlives every chance to export it: the SSE stream owns
-        //     the only `JoinHandle`, and a client that leaves mid-stream drops
-        //     that handle, which detaches the task rather than stopping it.
+        // 13. Register the task so the shutdown path can end it. The
+        //     disconnect path (the token, then the backstop) covers a client
+        //     that leaves mid-stream; this registry is what ends a task still
+        //     live when SIGTERM arrives, so its span closes before the
+        //     exporter flushes.
         self.live_requests.register(join_handle.abort_handle());
         // A second abort_handle(): the stream needs its own clone of the
         // task's abort handle for the disconnect backstop, independent of
