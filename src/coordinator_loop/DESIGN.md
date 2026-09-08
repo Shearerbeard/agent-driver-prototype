@@ -249,12 +249,14 @@ not have and force a `match` at every use site that can never discriminate.
 When S72 adds clarification the enum returns as `TerminalAction`, wrapping
 this struct unchanged.
 
-**Dropped: `ExecutionObservation::Cancelled`.** S71 has no cancellation
-mechanism reaching the executor, so the variant would be unreachable in
-production and reachable only from a test that constructs it. Deferred to
-S72 along with the `CancellationToken` path. `PlanExecutor::execute` already
-takes the `ToolContext` that path needs, so adding the variant will not
-change the trait.
+**Dropped: `ExecutionObservation::Cancelled`.** The `CancellationToken` path has
+landed (S90 via the shim's per-request token, threaded through `ToolContext` into
+the executor and worker configs), but the variant stays dropped because the
+executor observes cancellation through its `ToolContext` and reports interruption
+through `WorkerOutcome::Interrupted` mapped to per-task status, so no observation
+variant is needed. The cancellation check at dispatch top
+(`ctx.cancellation.is_cancelled()`) ensures tasks that never ran are never filed
+Failed.
 
 **Dropped: `BudgetSnapshot` in observations.** S39 returns spend and
 remaining budget in every `ExecutionObservation`. S71's budget is a single

@@ -60,7 +60,7 @@ forbids.
 | `InlineThreshold` | Results below this size stay inline; at or above it, they spill | A zero threshold, which would spill every result including an empty one |
 | `SpilledBody` | A spill pointer carries the filename and the full body's character count | A spill pointer with an empty filename; the constructor delegates to `ArtifactFilename` |
 | `DagExecutor` | Execution runs the DAG to completion with real workers behind four tools, filing per-task records into the `RunStore`; the `InlineThreshold` controls spill | An executor without a sidecar client, artifact store, run store, or inline threshold, leaving worker tools with no terminal, no spill channel, no task-record destination, and no spill bound |
-| `WorkerLoopConfig` | Everything a worker inner loop needs is supplied before its first provider call; `Clone` so the executor can override the system prompt per task | A worker loop that discovers a missing provider, model, or budget mid-run |
+| `WorkerLoopConfig` | Everything a worker inner loop needs is supplied before its first provider call; `Clone` so the executor can override the system prompt per task; `cancellation: CancellationToken` is the per-dispatch child of the run's request token (honored value derived from `ToolContext`, never the stored template) | A worker loop that discovers a missing provider, model, budget, or cancellation token mid-run; both cancel paths converge on `WorkerOutcome::Interrupted`; a cancelled-before-dispatch task is never filed Failed |
 | `WorkerLoop` | One loop drives one task, over a submission slot that belongs to it alone, with the sidecar and artifact handles it needs to build its four-tool set | A second write to the same submission slot; detected at runtime via `AlreadyRecorded`, and the `DagExecutor` mints one fresh slot per task so production cannot share |
 | `WorkerOutcome` | A worker run's outcome is the join of the stop reason with the submission slot | A non-submission outcome collapsed into `None`, hiding the failure class the executor needs |
 | `WorkerSpec` | One worker's renderable specification: role, description, resolved tools, preamble, and its own turn-depth budget when configured | A worker spec without a valid role; the constructor delegates to `WorkerRole`. A configured turn depth of zero is rejected at the parse, so a spec's budget is a depth the worker can spend |
@@ -335,4 +335,6 @@ only call `submit_result` and never invoke the sidecar tools.
 
 `WorkerLoopConfig` derives `Clone` (not `Debug`, since `Arc<dyn Provider>`
 does not implement `Debug`). The executor clones the config per task,
-overriding the `system_prompt` with the resolved preamble.
+overriding the `system_prompt` with the resolved preamble and the
+`cancellation` with the per-dispatch `ctx.cancellation.child_token()`,
+so the stored config's token is a template, never the honored value.
