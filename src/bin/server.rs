@@ -1025,14 +1025,19 @@ mod tests {
     /// A chat still mid-stream when the signal lands must still export its
     /// span.
     ///
-    /// Both teardown shapes the S75 rep-1 runs produced are live at once. The
-    /// first client is severed mid-stream, the way the adapter's HTTP read
-    /// timeout severs one, which detaches the coordinator task: dropping a
-    /// `JoinHandle` does not stop the task, so it kept running with its span
-    /// open and the span died with the process. The second client is still
-    /// attached with the stream mid-flight, which is the shape a harness agent
-    /// timeout leaves behind. Neither span can be exported while its task
-    /// lives, so the shutdown has to end both tasks before the flush.
+    /// Both teardown shapes the S75 rep-1 runs produced are exercised here.
+    /// The first client is severed mid-stream, the way the adapter's HTTP read
+    /// timeout severs one. Before S90 that drop detached the coordinator task:
+    /// dropping a `JoinHandle` did not stop the task, so it kept running with
+    /// its span open until the shutdown abort ended it (S87 pinned both runs
+    /// live at the signal). S90 makes the drop fire cancellation instead, so
+    /// the severed run now exits cooperatively moments after the drop and its
+    /// span exports then, at cancellation. The second client is still attached
+    /// with the stream mid-flight, the shape a harness agent timeout leaves
+    /// behind; its span cannot be exported while its task lives, so the
+    /// shutdown abort has to end that task before the flush. The export
+    /// assertions below therefore still cover both teardown shapes: one span
+    /// closed by disconnect cancellation, one closed by the shutdown abort.
     #[tokio::test(flavor = "multi_thread")]
     async fn a_chat_still_open_at_shutdown_exports_its_span() {
         use opentelemetry::trace::TracerProvider as _;
@@ -1087,13 +1092,15 @@ mod tests {
         drop(guard);
         let shutdown = started.elapsed();
 
-        // Both runs have to have been live at the signal, or the export below
-        // proves nothing: a task that had already ended would have closed its
-        // span without the abort.
+        // Only the still-attached run has to be live at the signal: the
+        // severed run ended cooperatively at its disconnect (S90), closing and
+        // exporting its span then, so the shutdown abort has just the
+        // harness-timeout shape left to end.
         assert_eq!(
             outcome,
-            ShutdownAbort::Settled { aborted: 2 },
-            "both coordinator runs must still be in flight when the signal lands"
+            ShutdownAbort::Settled { aborted: 1 },
+            "only the still-attached run needs the shutdown abort because the \
+             severed run ended cooperatively at its disconnect (S90)"
         );
         assert!(
             shutdown < Duration::from_secs(5),

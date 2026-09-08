@@ -39,8 +39,8 @@ use tracing::Instrument;
 use crate::artifacts::{ArtifactStore, InlineThreshold};
 use crate::context::PinnedGoal;
 use crate::coordinator_loop::{
-    ChatHistory, ChatTurn, ChatTurnRole, CoordinatorLoop, CoordinatorLoopConfig, LoopBudget,
-    RunStore, WorkerSections,
+    ChatHistory, ChatTurn, ChatTurnRole, CoordinatorLoop, CoordinatorLoopConfig,
+    CoordinatorRunError, LoopBudget, RunStore, WorkerSections,
 };
 use crate::dag_executor::{DagExecutor, DagLifecycleObserver, WorkerLoopConfig};
 use crate::mcp_client::SidecarClient;
@@ -241,6 +241,11 @@ impl ShimState {
         query: &str,
         history: ChatHistory,
     ) -> Result<ShimRequest, ShimError> {
+        // 0. The request's cancellation token. The parent rides out on the
+        //    `ShimRequest` (the SSE stream's `Drop` fires it); the loop at
+        //    step 11 is armed with a child of it, so the run stops whenever
+        //    the parent does.
+        let cancellation = CancellationToken::new();
         // 1. Fresh session id.
         let session_id = ShimSessionId::generate();
         // 2. Fresh per-request usage sink (C1).
@@ -318,11 +323,13 @@ impl ShimState {
             worker_sections: self.worker_sections.clone(),
             runs,
         };
-        // 11. CoordinatorLoop with the ShimObserver attached.
+        // 11. CoordinatorLoop with the ShimObserver attached, armed with a
+        //     child of the request's cancellation token (step 0).
         let loop_run = CoordinatorLoop::new(loop_config)
             .await
             .map_err(|e| ShimError::Coordinator(e.to_string()))?
-            .with_observer(observer);
+            .with_observer(observer)
+            .with_cancellation(cancellation.child_token());
         // The user instruction is the last user message; PinnedGoal pins it.
         let goal = PinnedGoal::new(query).map_err(|e| ShimError::InvalidRequest(e.to_string()))?;
         // 12. Spawn the loop run inside a per-request span carrying session.id
@@ -336,7 +343,14 @@ impl ShimState {
         let join_handle = tokio::spawn(
             async move {
                 if let Err(error) = loop_run.run(&goal, &history).await {
-                    tracing::error!(session_id = %session_id, %error, "coordinator loop run failed");
+                    if is_client_cancellation(&error) {
+                        tracing::info!(
+                            session_id = %session_id,
+                            "coordinator loop cancelled by client disconnect"
+                        );
+                    } else {
+                        tracing::error!(session_id = %session_id, %error, "coordinator loop run failed");
+                    }
                 }
             }
             .instrument(span),
@@ -354,10 +368,24 @@ impl ShimState {
             session_id,
             event_rx,
             join_handle,
-            cancellation: CancellationToken::new(),
+            cancellation,
             abort_handle,
         })
     }
+}
+
+/// Whether a coordinator run ended because its client disconnected.
+///
+/// The substrate reports cooperative cancellation as
+/// `AgentLoopError::Cancelled` (`#[non_exhaustive]`), which the run wrapper
+/// sees wrapped in [`CoordinatorRunError::AgentLoop`]. `matches!`'s implicit
+/// fallback covers the sibling `Session` variant and any future substrate
+/// variant, so this stays a detection predicate, never an exhaustive match.
+fn is_client_cancellation(error: &CoordinatorRunError) -> bool {
+    matches!(
+        error,
+        CoordinatorRunError::AgentLoop(agent_driver_rs::AgentLoopError::Cancelled)
+    )
 }
 
 /// Per-request state: the event receiver, session id, loop join handle (C4),
@@ -572,18 +600,10 @@ struct ShimSseStream {
     /// The run's cancellation token, moved off [`ShimRequest`]. Fired on
     /// client disconnect so the coordinator loop and its workers stop
     /// cooperatively.
-    #[expect(
-        dead_code,
-        reason = "skeleton: Drop reads the token when the fill lands"
-    )]
     cancellation: CancellationToken,
     /// The coordinator task's abort handle, the disconnect backstop's end
     /// of the run: when the cooperative cancel does not end the task inside
     /// the settle window, the backstop aborts through it.
-    #[expect(
-        dead_code,
-        reason = "skeleton: Drop and the backstop read the handle when the fill lands"
-    )]
     abort_handle: AbortHandle,
 }
 
@@ -660,10 +680,31 @@ impl Stream for ShimSseStream {
 /// always; spawns the disconnect-backstop watchdog guarded on the
 /// coordinator task still running; and aborts directly through
 /// `abort_handle` when dropped off the tokio runtime, where a watchdog
-/// spawn is impossible. The body lands in the Stage-4 fill; this empty
-/// body is behavior-identical to no `Drop` impl.
+/// spawn is impossible.
 impl Drop for ShimSseStream {
-    fn drop(&mut self) {}
+    fn drop(&mut self) {
+        // Always fire, runtime-free.
+        self.cancellation.cancel();
+        match tokio::runtime::Handle::try_current() {
+            Ok(_) if !self.abort_handle.is_finished() => {
+                super::live_requests::spawn_disconnect_backstop(
+                    self.abort_handle.clone(),
+                    self.session_id,
+                );
+            }
+            // On-runtime and already finished: normal completion, nothing to do.
+            Ok(_) => {}
+            // Off-runtime (SIGTERM teardown drops connection tasks after the
+            // runtime is gone): abort directly — also runtime-free, no spawn.
+            Err(_) => {
+                self.abort_handle.abort();
+                tracing::info!(
+                    session_id = %self.session_id,
+                    "disconnect backstop aborted off-runtime"
+                );
+            }
+        }
+    }
 }
 
 /// Map one [`AuraEvent`] to an axum SSE [`Event`]: named `aura.*` events carry

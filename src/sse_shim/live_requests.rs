@@ -54,23 +54,25 @@ pub const DISCONNECT_BACKSTOP_WINDOW: Duration = Duration::from_millis(500);
 ///
 /// The `session_id` exists for that log line: logging which path ended the
 /// run needs the session id to attribute the end to this request's session.
-#[expect(
-    dead_code,
-    reason = "skeleton: the stream's Drop spawns the backstop when the fill lands"
-)]
-pub(crate) fn spawn_disconnect_backstop(
-    #[expect(
-        unused_variables,
-        reason = "skeleton: the body aborts through the handle when the fill lands"
-    )]
-    abort_handle: AbortHandle,
-    #[expect(
-        unused_variables,
-        reason = "skeleton: the body logs the session id when the fill lands"
-    )]
-    session_id: ShimSessionId,
-) {
-    todo!("Stage 4: sleep DISCONNECT_BACKSTOP_WINDOW, then abort the task if it is still live")
+pub(crate) fn spawn_disconnect_backstop(abort_handle: AbortHandle, session_id: ShimSessionId) {
+    tokio::spawn(async move {
+        tokio::time::sleep(DISCONNECT_BACKSTOP_WINDOW).await;
+        if abort_handle.is_finished() {
+            // The run ended on its own inside the window: the cooperative
+            // cancel won, the span closed, and there is nothing left to do
+            // beyond costing this sleeper task.
+            tracing::debug!(
+                session_id = %session_id,
+                "run ended cooperatively inside the disconnect backstop window"
+            );
+        } else {
+            abort_handle.abort();
+            tracing::info!(
+                session_id = %session_id,
+                "disconnect backstop aborted a run that outlived its settle window"
+            );
+        }
+    });
 }
 
 /// What one shutdown abort did.
