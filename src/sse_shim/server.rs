@@ -675,8 +675,7 @@ impl Stream for ShimSseStream {
     }
 }
 
-/// The Stage-4 cancellation contract, pinned as a trait impl now so the
-/// fill adds no new trait impl. Dropping the stream fires `cancellation`
+/// The cancellation contract. Dropping the stream fires `cancellation`
 /// always; spawns the disconnect-backstop watchdog guarded on the
 /// coordinator task still running; and aborts directly through
 /// `abort_handle` when dropped off the tokio runtime, where a watchdog

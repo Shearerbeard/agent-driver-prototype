@@ -1030,14 +1030,19 @@ mod tests {
     /// timeout severs one. Before S90 that drop detached the coordinator task:
     /// dropping a `JoinHandle` did not stop the task, so it kept running with
     /// its span open until the shutdown abort ended it (S87 pinned both runs
-    /// live at the signal). S90 makes the drop fire cancellation instead, so
-    /// the severed run now exits cooperatively moments after the drop and its
-    /// span exports then, at cancellation. The second client is still attached
+    /// live at the signal). S90 makes the drop fire cancellation and arm a
+    /// bounded per-request backstop instead, so the severed run ends inside
+    /// the settle window. A run parked in the provider-call setup await
+    /// cannot hear the token — the pin races cancellation only around stream
+    /// collection and tool execution — so what ends a stalled run is the
+    /// backstop's abort a settle window after the drop: the S87 abort
+    /// mechanism, demoted to a per-request backstop. Either way the span
+    /// closes before the flush. The second client is still attached
     /// with the stream mid-flight, the shape a harness agent timeout leaves
     /// behind; its span cannot be exported while its task lives, so the
     /// shutdown abort has to end that task before the flush. The export
     /// assertions below therefore still cover both teardown shapes: one span
-    /// closed by disconnect cancellation, one closed by the shutdown abort.
+    /// closed by the disconnect backstop, one by the shutdown abort.
     #[tokio::test(flavor = "multi_thread")]
     async fn a_chat_still_open_at_shutdown_exports_its_span() {
         use opentelemetry::trace::TracerProvider as _;

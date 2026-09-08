@@ -39,12 +39,11 @@ pub struct WorkerLoopConfig {
     /// pin dropping the `execute` future, which drops the in-flight worker
     /// future and its provider stream with it; the token converts an
     /// external cancel into a clean `WorkerOutcome::Interrupted` when the
-    /// worker is still polled to its next await instead. That clean mapping
-    /// holds only on the loop-top stop path
-    /// (`Ok(LoopStopReason::Cancelled)` -> `Interrupted`): the
-    /// `Err(AgentLoopError::Cancelled)` path currently maps through
-    /// `agent_loop_error_to_outcome` to `Failed(AgentError)`, and the fill
-    /// adds a `Cancelled` arm there mapping to `Interrupted`.
+    /// worker is still polled to its next await instead. Both cancel paths
+    /// converge on `WorkerOutcome::Interrupted` — the loop-top stop path via
+    /// `Ok(LoopStopReason::Cancelled)`, and the in-flight
+    /// `Err(AgentLoopError::Cancelled)` via the `Cancelled` arm in
+    /// `agent_loop_error_to_outcome`.
     pub cancellation: CancellationToken,
 }
 
