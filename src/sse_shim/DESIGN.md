@@ -82,7 +82,7 @@ invariant at construction (C8).
 | `ChatMessage` | One message in a chat-completions request | Empty `content` (runtime-only; validation is in the handler, not at deserialization) |
 | `ChatCompletionsRequest` | The `POST /v1/chat/completions` request body matching the adapter's wire contract | An empty `messages` list; `stream: false` (runtime-only; validation is in the handler). The `model` field is the request's arbitrary string; the shim always emits the *configured* model (C9) |
 | `ShimState` | Shared server state holding only truly shareable config (C5) | A state without a base provider, model, or sidecar. The constructor takes all parts |
-| `ShimRequest` | Per-request state: the event receiver and session id, plus the loop's join handle (C4) | A receiver whose sender was dropped before the loop ran (the stream handler detects this and emits an error termination) |
+| `ShimRequest` | Per-request state: the event receiver, session id, loop's join handle, cancellation token (fired on client disconnect), and abort handle (the backstop's abort path) | A receiver whose sender was dropped before the loop ran (the stream handler detects this and emits an error termination); a cancellation token or abort handle missing from the five-field tuple |
 | `ShimError` | A `ShimError` names the boundary that raised it; implements `IntoResponse` (A7) | A blanket error that reports every failure under one message; the variant set is closed so callers can match exhaustively |
 | `EVENT_CHANNEL_CAPACITY` | The bounded event-channel capacity (C10) | - (constant: 256) |
 | `health` | `GET /health` handler returning `200 OK` with a JSON status body | - (infallible) |
@@ -135,6 +135,7 @@ from `crate::producers`; `WorkerLoopConfig`,
 - `config_path: PathBuf`
 
 `build_request` constructs per request:
+0. Fresh `CancellationToken` (the run's token; fired when the client goes away)
 1. Fresh `ShimSessionId` via `generate()`
 2. Fresh `Arc<Mutex<UsageAccumulator>>` (the usage sink)
 3. `UsageMeteringProvider` wrapping `base_provider` + sink (C1)
@@ -143,10 +144,10 @@ from `crate::producers`; `WorkerLoopConfig`,
 6. `ShimDagObserver` (session id, event sender) (C2)
 7. Fresh `ArtifactStore` at `artifact_root.join(session_id)` (C5)
 8. Fresh `RunStore`
-9. Fresh `DagExecutor` (sidecar, per-request ArtifactStore, worker_config with metered provider, worker_sections, RunStore, inline_threshold, Some(ShimDagObserver))
+9. Fresh `DagExecutor` (sidecar, per-request ArtifactStore, worker_config with metered provider (template `cancellation` field), worker_sections, RunStore, inline_threshold, Some(ShimDagObserver))
 10. `CoordinatorLoopConfig` with metered provider
-11. `CoordinatorLoop` with `ShimObserver` via `with_observer`
-12. `tokio::spawn` the loop run; return `ShimRequest { session_id, event_rx, join_handle }` (C4)
+11. `CoordinatorLoop` with `ShimObserver` via `with_observer`, armed with `cancellation.child_token()` via `with_cancellation()`
+12. `tokio::spawn` the loop run; register its `AbortHandle` in `LiveRequests`; return `ShimRequest { session_id, event_rx, join_handle, cancellation, abort_handle }` (C4)
 
 The spawned loop task owns the `CoordinatorLoop` (consumed by `run()`).
 When the loop completes, the observer's `LoopComplete` handler emits
@@ -233,7 +234,7 @@ response the client had already walked away from. What it buys is the trace for
 the whole run. The deadline stays pending until the signal lands, so it cannot
 fire while the shim is serving normally.
 
-### Aborting the coordinator tasks still running (S87)
+### Disconnect cancellation and shutdown abort (S90, S87)
 
 Draining connections does not by itself end the work behind them, and the S75
 rep-1 runs lost five of six task spans to the difference. A `chat.completions`
@@ -245,10 +246,23 @@ open. A span that has not closed was never handed to the span processor, so the
 flush has nothing of it to export and it dies with the process. Only the one
 session that reached `[DONE]` on its own was exported.
 
-`ShimState` keeps a `LiveRequests` registry of the `AbortHandle` of
-every coordinator task it spawns, pruned of finished handles on each
-registration. After the drain, and before returning to the guard,
-`serve_with_shutdown` aborts every handle still live and waits up to
+The S90 disconnect path ends those stranded runs promptly instead of waiting for
+server shutdown. `ShimSseStream::drop` fires the per-request `CancellationToken`
+always (runtime-free). When dropped on-runtime and the task is still unfinished,
+it spawns the disconnect backstop (`DISCONNECT_BACKSTOP_WINDOW`, 500 ms); when
+dropped off-runtime (SIGTERM teardown), it aborts directly. The backstop sleeps
+the window then aborts whatever outlived it so the span still closes before the
+flush.
+
+The token reaches the executor via `ToolContext`: the dispatch top checks
+`ctx.cancellation.is_cancelled()` (tasks that never ran file no observer events),
+and passes `ctx.cancellation.child_token()` into `WorkerLoopConfig`. Both cancel
+paths converge on `WorkerOutcome::Interrupted`.
+
+The S87 shutdown abort remains unchanged. `ShimState` keeps a `LiveRequests`
+registry of the `AbortHandle` of every coordinator task it spawns, pruned of
+finished handles on each registration. After the drain, and before returning to
+the guard, `serve_with_shutdown` aborts every handle still live and waits up to
 `ABORT_SETTLE_WINDOW` for the tasks to go. Tokio drops an aborted task's future
 before the transition that makes the task observably complete, which is the bit
 `is_finished` reads; in tokio 1.53's task harness that drop runs in
@@ -267,6 +281,12 @@ the registry too, and the drain it holds open runs to its deadline before the
 abort reaches it. A task that cannot reach a yield point inside the settle
 window is logged rather than assumed closed. Its span really is still
 open at that point, and the log is the only warning anyone gets.
+
+A known mechanism limit: the pinned library's provider-call SETUP await is not
+raced against the token - the library races cancellation only around stream
+collection and tool execution - so a run stalled there ends by the backstop's
+abort, not the token. Racing that await belongs to the library half (adr/A16),
+not this repo.
 
 ### Shutdown budget
 

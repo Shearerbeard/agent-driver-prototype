@@ -5,6 +5,7 @@ use std::sync::Arc;
 use agent_driver_rs::agent::{AgentLoop, AgentLoopConfig, LoopStopReason};
 use agent_driver_rs::error::ProviderError;
 use agent_driver_rs::{ConfigError, ModelId, Provider, SessionBuilder, SystemPrompt};
+use tokio_util::sync::CancellationToken;
 
 use crate::artifacts::ArtifactStore;
 use crate::coordinator_loop::WorkerSubmission;
@@ -25,6 +26,12 @@ pub struct WorkerLoopConfig {
     pub model: ModelId,
     pub budget: LoopBudget,
     pub system_prompt: SystemPrompt,
+    /// The run's cancellation token: a child of the request token. The
+    /// honored value is the executor's per-dispatch
+    /// `ctx.cancellation.child_token()`, never the stored template value.
+    /// Both cancel paths - the loop-top stop and the in-flight
+    /// `AgentLoopError::Cancelled` - converge on `WorkerOutcome::Interrupted`.
+    pub cancellation: CancellationToken,
 }
 
 /// What a worker run produced, mirroring the S71 `CoordinatorOutcome` pattern.
@@ -133,6 +140,7 @@ impl WorkerLoop {
         let config = self.agent_loop_config();
         let outcome = match AgentLoop::new(&session)
             .with_config(config)
+            .with_cancellation(self.config.cancellation.clone())
             .run(&task.description)
             .await
         {
@@ -170,23 +178,33 @@ fn session_build_error_to_outcome(error: &ConfigError) -> WorkerOutcome {
 /// Map an `AgentLoopError` from the worker's loop run to a [`WorkerOutcome`].
 ///
 /// The substrate's `AgentLoopError` wraps `SessionError`, which wraps
-/// `ProviderError`. Where `ProviderError` carries a distinction the
+/// `ProviderError`. Cancellation is an external signal rather than a worker
+/// failure, so it maps to `Interrupted` like the loop-top stop path. Where
+/// the remaining errors carry a `ProviderError` distinction the
 /// `FailureCategory` enum can name, the mapping preserves it. Everything
-/// else collapses to `AgentError`: cancellation is an external signal
-/// rather than a worker failure, invalid config is a startup defect, and
+/// else collapses to `AgentError`: invalid config is a startup defect, and
 /// the remaining `ProviderError` variants (stream errors, HTTP errors,
 /// invalid requests) have no dedicated `FailureCategory`.
 fn agent_loop_error_to_outcome(error: &agent_driver_rs::AgentLoopError) -> WorkerOutcome {
-    let category = match error.as_provider_error() {
-        Some(ProviderError::Auth { .. }) => FailureCategory::ProviderAuthError,
-        Some(ProviderError::Timeout(_)) => FailureCategory::AgentTimeout,
-        Some(ProviderError::ContextWindowExceeded { .. }) => FailureCategory::ContextOverflow,
-        Some(ProviderError::ModelNotFound { .. }) => FailureCategory::ProviderNotFound,
-        Some(ProviderError::RateLimited { .. }) => FailureCategory::ProviderOverloaded,
-        _ => FailureCategory::AgentError,
-    };
-    tracing::warn!("worker agent loop failed: {error}");
-    WorkerOutcome::Failed(category)
+    match error {
+        agent_driver_rs::AgentLoopError::Cancelled => {
+            WorkerOutcome::Interrupted(InterruptionReason::Unclassified("cancelled".to_owned()))
+        }
+        error => {
+            let category = match error.as_provider_error() {
+                Some(ProviderError::Auth { .. }) => FailureCategory::ProviderAuthError,
+                Some(ProviderError::Timeout(_)) => FailureCategory::AgentTimeout,
+                Some(ProviderError::ContextWindowExceeded { .. }) => {
+                    FailureCategory::ContextOverflow
+                }
+                Some(ProviderError::ModelNotFound { .. }) => FailureCategory::ProviderNotFound,
+                Some(ProviderError::RateLimited { .. }) => FailureCategory::ProviderOverloaded,
+                _ => FailureCategory::AgentError,
+            };
+            tracing::warn!("worker agent loop failed: {error}");
+            WorkerOutcome::Failed(category)
+        }
+    }
 }
 
 /// Map the substrate's stop reason to a [`WorkerOutcome`] when the worker

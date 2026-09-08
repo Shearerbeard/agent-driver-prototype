@@ -6,6 +6,7 @@ use std::sync::Arc;
 use agent_driver_rs::agent::{AgentEvent, AgentLoop, AgentLoopConfig, AgentObserver};
 use agent_driver_rs::{DynTool, ModelId, Provider, Session, SessionBuilder, SystemPrompt};
 use async_trait::async_trait;
+use tokio_util::sync::CancellationToken;
 
 use crate::config::ToolVisibility;
 use crate::context::PinnedGoal;
@@ -335,6 +336,10 @@ pub struct CoordinatorLoop {
     runs: RunStore,
     worker_sections: WorkerSections,
     observer: Option<Arc<dyn AgentObserver>>,
+    /// The run's cancellation token. `None` runs uncancellable in practice:
+    /// the substrate falls back to the session's child token, which nothing
+    /// outside the spawned task holds.
+    cancellation: Option<CancellationToken>,
 }
 
 impl CoordinatorLoop {
@@ -375,6 +380,7 @@ impl CoordinatorLoop {
             runs,
             worker_sections: config.worker_sections,
             observer: None,
+            cancellation: None,
         })
     }
 
@@ -382,6 +388,18 @@ impl CoordinatorLoop {
     #[must_use]
     pub fn with_observer(mut self, observer: Arc<dyn AgentObserver>) -> Self {
         self.observer = Some(observer);
+        self
+    }
+
+    /// Arm the run with a cooperative cancellation token: one token covers
+    /// the coordinator loop and every worker it dispatches.
+    ///
+    /// Arming duty: `build_request` mints the request token BEFORE
+    /// constructing the loop, arms the loop with a child of it, and returns
+    /// the parent in `ShimRequest`.
+    #[must_use]
+    pub fn with_cancellation(mut self, token: CancellationToken) -> Self {
+        self.cancellation = Some(token);
         self
     }
 
@@ -439,6 +457,9 @@ impl CoordinatorLoop {
         };
 
         let mut agent = AgentLoop::new(&self.session).with_config(config);
+        if let Some(token) = &self.cancellation {
+            agent = agent.with_cancellation(token.clone());
+        }
         if let Some(observer) = &self.observer {
             agent = agent.with_observer(SharedObserver(Arc::clone(observer)));
         }

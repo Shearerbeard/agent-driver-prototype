@@ -52,6 +52,7 @@ use agent_driver_prototype::sse_shim::{
 use agent_driver_rs::config::ProviderConfig;
 use agent_driver_rs::provider::BedrockProvider;
 use agent_driver_rs::{ModelId, Provider, SystemPrompt};
+use tokio_util::sync::CancellationToken;
 
 #[tokio::main]
 async fn main() {
@@ -201,6 +202,7 @@ async fn build_state(args: &ShimCliArgs) -> Result<ShimState, ShimError> {
         model: model.clone(),
         budget: worker_budget,
         system_prompt: worker_preamble,
+        cancellation: CancellationToken::new(),
     };
 
     // Coordinator budget: max_planning_cycles → turn depth (4 cycles → 12
@@ -924,6 +926,7 @@ mod tests {
             model: model.clone(),
             budget: LoopBudget::CANONICAL,
             system_prompt: SystemPrompt::empty(),
+            cancellation: CancellationToken::new(),
         };
         Arc::new(ShimState::from_parts(
             provider,
@@ -1022,14 +1025,9 @@ mod tests {
     /// A chat still mid-stream when the signal lands must still export its
     /// span.
     ///
-    /// Both teardown shapes the S75 rep-1 runs produced are live at once. The
-    /// first client is severed mid-stream, the way the adapter's HTTP read
-    /// timeout severs one, which detaches the coordinator task: dropping a
-    /// `JoinHandle` does not stop the task, so it kept running with its span
-    /// open and the span died with the process. The second client is still
-    /// attached with the stream mid-flight, which is the shape a harness agent
-    /// timeout leaves behind. Neither span can be exported while its task
-    /// lives, so the shutdown has to end both tasks before the flush.
+    /// Both teardown shapes are exercised: the severed client's run ends via
+    /// the disconnect backstop inside its settle window (S90), so only the
+    /// still-attached run needs the shutdown abort. Both spans still export.
     #[tokio::test(flavor = "multi_thread")]
     async fn a_chat_still_open_at_shutdown_exports_its_span() {
         use opentelemetry::trace::TracerProvider as _;
@@ -1084,13 +1082,13 @@ mod tests {
         drop(guard);
         let shutdown = started.elapsed();
 
-        // Both runs have to have been live at the signal, or the export below
-        // proves nothing: a task that had already ended would have closed its
-        // span without the abort.
+        // Why `aborted: 1`: the backstop already ended the severed run,
+        // leaving the shutdown abort only the harness-timeout shape.
         assert_eq!(
             outcome,
-            ShutdownAbort::Settled { aborted: 2 },
-            "both coordinator runs must still be in flight when the signal lands"
+            ShutdownAbort::Settled { aborted: 1 },
+            "only the still-attached run needs the shutdown abort because the \
+             disconnect backstop already ended the severed run (S90)"
         );
         assert!(
             shutdown < Duration::from_secs(5),

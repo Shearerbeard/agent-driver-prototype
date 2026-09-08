@@ -21,6 +21,7 @@ use std::time::Duration;
 use agent_driver_rs::Provider;
 use agent_driver_rs::provider::mock::{MockProvider, mock_text_response, mock_tool_call_response};
 use agent_driver_rs::types::{ModelId, SystemPrompt};
+use tokio_util::sync::CancellationToken;
 
 use agent_driver_prototype::artifacts::InlineThreshold;
 use agent_driver_prototype::bounding::ToolListLimit;
@@ -147,6 +148,7 @@ fn shim_state(provider: Arc<dyn Provider>, artifact_root: PathBuf) -> Arc<ShimSt
         model: model.clone(),
         budget: LoopBudget::new(8).expect("non-zero worker budget"),
         system_prompt: SystemPrompt::new("You are a worker. Submit your result."),
+        cancellation: CancellationToken::new(),
     };
     Arc::new(ShimState::from_parts(
         provider,
@@ -488,5 +490,248 @@ async fn health_returns_200() {
         response.status().is_success(),
         "GET /health returned {} — expected 200",
         response.status()
+    );
+}
+
+// ---------------------------------------------------------------------------
+// S90 burn-window test: a client disconnect must stop the provider calls
+// ---------------------------------------------------------------------------
+
+use std::future::Future;
+use std::pin::Pin;
+use std::sync::atomic::{AtomicUsize, Ordering};
+
+use agent_driver_prototype::sse_shim::ShutdownAbort;
+use agent_driver_rs::provider::{ModelInfo, ProviderKind};
+use agent_driver_rs::{
+    CompletionRequest, CompletionStream, ProviderCapabilities, ProviderContext, ProviderError,
+    ProviderInfo, StreamHandle,
+};
+use futures::StreamExt as _;
+
+/// A provider that answers every call with a further `create_plan` tool call
+/// and counts the calls it has served.
+///
+/// Non-exhausting by construction - a `MockProvider` queue panics on
+/// exhaustion, which pre-fix would have ended the detached task and faked a
+/// pass. The `Arc<AtomicUsize>` counter from [`BurnProvider::new`] is the
+/// observable the assertion reads.
+struct BurnProvider {
+    calls: Arc<AtomicUsize>,
+    info: ProviderInfo,
+}
+
+impl BurnProvider {
+    /// Build the provider together with the call counter it increments.
+    fn new() -> (Self, Arc<AtomicUsize>) {
+        let calls = Arc::new(AtomicUsize::new(0));
+        // `ProviderCapabilities` is `#[non_exhaustive]`, so it cannot be
+        // built with a struct literal outside the pin; start from the
+        // derived `Default` and flip the capabilities the burn path needs.
+        let mut capabilities = ProviderCapabilities::default();
+        capabilities.streaming = true;
+        capabilities.tools = true;
+        (
+            Self {
+                calls: Arc::clone(&calls),
+                info: ProviderInfo {
+                    kind: ProviderKind::Anthropic,
+                    name: "Burn",
+                    capabilities,
+                },
+            },
+            calls,
+        )
+    }
+}
+
+impl Provider for BurnProvider {
+    fn info(&self) -> &ProviderInfo {
+        &self.info
+    }
+
+    fn complete_stream(
+        &self,
+        _request: CompletionRequest,
+        ctx: ProviderContext,
+    ) -> Pin<Box<dyn Future<Output = Result<StreamHandle, ProviderError>> + Send + '_>> {
+        let n = self.calls.fetch_add(1, Ordering::SeqCst) + 1;
+        let events =
+            mock_tool_call_response(&format!("c{n}"), "create_plan", &burn_plan_args_json(n));
+        Box::pin(async move {
+            let stream: CompletionStream =
+                Box::pin(futures::stream::iter(events.into_iter().map(Ok)));
+            Ok(StreamHandle::new(
+                stream,
+                ctx.cancellation,
+                ctx.correlation_id,
+            ))
+        })
+    }
+
+    fn list_models(
+        &self,
+        _ctx: ProviderContext,
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<ModelInfo>, ProviderError>> + Send + '_>> {
+        Box::pin(async { Ok(vec![]) })
+    }
+}
+
+/// The `create_plan` arguments for burn call `n`, serialized: one leaf task
+/// on the configured worker so the plan validates against the roster; the
+/// goal embeds `n` so plan ids stay distinct however long the loop burns.
+fn burn_plan_args_json(n: usize) -> String {
+    let args = CreatePlanArgs {
+        goal: format!("burn window probe {n}"),
+        steps: vec![StepInput::LeafTask {
+            task: format!("Burn turn {n}"),
+            worker: Some("operations".to_owned()),
+        }],
+        planning_rationale: "Keep the loop calling so the burn window stays observable".to_owned(),
+    };
+    serde_json::to_string(&args).expect("plan args serialize")
+}
+
+/// A mirror of [`shim_state`] with budgets no run can reach: the shared
+/// fixture's budget of 8 would stop the loop gracefully and fake a pass.
+fn burn_state(provider: Arc<dyn Provider>, artifact_root: PathBuf) -> Arc<ShimState> {
+    let model = model();
+    let worker_config = WorkerLoopConfig {
+        provider: Arc::clone(&provider),
+        model: model.clone(),
+        budget: LoopBudget::new(1_000_000).expect("non-zero worker budget"),
+        system_prompt: SystemPrompt::new("You are a worker. Submit your result."),
+        cancellation: CancellationToken::new(),
+    };
+    Arc::new(ShimState::from_parts(
+        provider,
+        model,
+        SystemPrompt::new("You coordinate one continuous loop."),
+        LoopBudget::new(1_000_000).expect("non-zero coordinator budget"),
+        SidecarClient::disconnected(),
+        artifact_root,
+        worker_config,
+        test_sections(),
+        InlineThreshold::DEFAULT,
+        PathBuf::from("/tmp/sse-shim-integration-test.toml"),
+    ))
+}
+
+/// A client disconnect mid-SSE must stop the coordinator within a bounded
+/// window: no further provider calls, and no task left live.
+#[tokio::test]
+async fn client_disconnect_stops_provider_calls_within_the_bounded_window() {
+    let (provider, calls) = BurnProvider::new();
+    let provider: Arc<dyn Provider> = Arc::new(provider);
+    let dir = tempfile::TempDir::new().expect("temp dir for artifact root");
+    let state = burn_state(provider, dir.path().to_path_buf());
+
+    // Clone the live-requests handle BEFORE `router(state)` consumes the
+    // state: it is the observable for "the loop already ended on its own".
+    let live = Arc::clone(state.live_requests());
+    let app = router(state);
+
+    // Bind to an ephemeral port on localhost and serve in a spawned task.
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind to ephemeral port");
+    let port = listener.local_addr().expect("local addr").port();
+    tokio::spawn(async move {
+        let _ = axum::serve(listener, app).await;
+    });
+
+    // `pool_max_idle_per_host(0)`: a pooled idle connection would keep the
+    // body alive past the drop. The disconnect below must close the
+    // connection outright.
+    let client = reqwest::Client::builder()
+        .pool_max_idle_per_host(0)
+        .build()
+        .expect("reqwest client builds");
+    let request_body = serde_json::json!({
+        "model": "aura-terminalbench",
+        "messages": [{"role": "user", "content": "Count the errors by service"}],
+        "stream": true,
+    });
+
+    let response = tokio::time::timeout(
+        Duration::from_secs(30),
+        client
+            .post(format!("http://127.0.0.1:{port}/v1/chat/completions"))
+            .json(&request_body)
+            .send(),
+    )
+    .await
+    .expect("request did not start within 30s — stream failed to respond")
+    .expect("POST /v1/chat/completions failed");
+    assert!(
+        response.status().is_success(),
+        "HTTP status {} — expected 200",
+        response.status()
+    );
+
+    // Sync point: read the body INCREMENTALLY until the first coordinator
+    // `aura.tool_start` for `create_plan` arrives, so the loop is provably
+    // mid-run before the client drops. Each chunk is appended to one buffer
+    // and the accumulated text re-parsed — simple and correct for a single
+    // sync point.
+    let mut stream = response.bytes_stream();
+    let mut accumulated = String::new();
+    let saw_create_plan_start = tokio::time::timeout(Duration::from_secs(30), async {
+        while let Some(chunk) = stream.next().await {
+            let chunk = chunk.expect("reading response body chunk failed");
+            accumulated.push_str(&String::from_utf8_lossy(&chunk));
+            let reached = parse_sse_frames(&accumulated).iter().any(|f| {
+                f.event.as_deref() == Some("aura.tool_start")
+                    && serde_json::from_str::<serde_json::Value>(&f.data)
+                        .is_ok_and(|v| v["tool_name"].as_str() == Some("create_plan"))
+            });
+            if reached {
+                return true;
+            }
+        }
+        false
+    })
+    .await
+    .expect("sync point did not arrive within 30s");
+    assert!(
+        saw_create_plan_start,
+        "the stream ended before the first aura.tool_start for 'create_plan'"
+    );
+
+    // Sanity prelude: the loop is provably running.
+    let at_sync = calls.load(Ordering::SeqCst);
+    assert!(
+        at_sync >= 1,
+        "provider call counter was {at_sync} at the sync point — the loop is not running"
+    );
+
+    // The disconnect: stop reading and drop the stream AND the response.
+    // `bytes_stream` consumes the response, so the stream IS the response
+    // client-side; dropping it drops both. With no pooled idle connection,
+    // this closes the connection outright.
+    drop(stream);
+
+    // Observation window: two samples, sized for loaded CI. A loop that is
+    // still live keeps calling the provider and the count climbs; a loop
+    // that stopped on the disconnect freezes the count.
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    let after_window = calls.load(Ordering::SeqCst);
+    tokio::time::sleep(Duration::from_millis(750)).await;
+    let after_gap = calls.load(Ordering::SeqCst);
+    assert_eq!(
+        after_window, after_gap,
+        "the provider kept being called after the client disconnect \
+         (count at the 2s sample: {after_window}, \
+         count at the 750ms-later sample: {after_gap})"
+    );
+
+    // The coordinator task must have ended ON ITS OWN within the burn
+    // window: `NothingLive`. Pre-fix this is `Settled { aborted: 1 }` — the
+    // task was still live after the disconnect, which IS the burn window.
+    assert_eq!(
+        live.abort_and_settle(Duration::from_secs(2)).await,
+        ShutdownAbort::NothingLive,
+        "the coordinator task was still live 2s after the client disconnect — \
+         the burn window never closed"
     );
 }

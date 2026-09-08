@@ -105,6 +105,7 @@ fn worker_config(responses: Vec<Vec<agent_driver_rs::StreamEvent>>) -> WorkerLoo
         model: model(),
         budget: LoopBudget::new(8).expect("non-zero budget"),
         system_prompt: SystemPrompt::new("You are a worker. Call submit_result when done."),
+        cancellation: CancellationToken::new(),
     }
 }
 
@@ -391,6 +392,7 @@ async fn budget_exhausted_maps_to_depth_exhausted() {
         model: model(),
         budget: LoopBudget::new(1).expect("non-zero budget"),
         system_prompt: SystemPrompt::new("You are a worker."),
+        cancellation: CancellationToken::new(),
     };
 
     let dir = tempfile::TempDir::new().expect("temp dir");
@@ -553,6 +555,7 @@ async fn worker_loop_runs_at_the_section_turn_depth_not_the_run_wide_budget() {
         model: model(),
         budget: LoopBudget::new(8).expect("non-zero budget"),
         system_prompt: SystemPrompt::new("You are a worker."),
+        cancellation: CancellationToken::new(),
     };
 
     let dir = tempfile::TempDir::new().expect("temp dir");

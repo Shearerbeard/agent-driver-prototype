@@ -137,7 +137,6 @@ limit means deleting its line:
 - Ready tasks dispatch strictly one at a time, never concurrently — `src/dag_executor/executor.rs` (`for task_id in ready`).
 - A failed task is recorded and its descendants blocked; nothing retries it — `src/dag_executor/executor.rs` (every filing is `Attempt::new(1)`).
 - The only run breaker is the turn budget; no wall-clock deadline bounds a run or a task — `src/coordinator_loop/budget.rs`.
-- A dispatched run cannot be cancelled; the only abort path is server shutdown — `src/sse_shim/live_requests.rs`.
 - Nothing a run records survives the process: plans, executions, and task records are in-memory only — `src/coordinator_loop/run_store.rs`.
 - A worker's prompt is its task description alone; the ported prior-work frame is not wired into live dispatch — `src/dag_executor/worker.rs`.
 - Conversation history folds into planning: the trailing user message is the query and the sanitized prior turns enter the planning wrapper once — `src/sse_shim/server.rs`, `src/coordinator_loop/driver.rs`.
