@@ -48,6 +48,10 @@ thiserror = "1"
 # signal handling for the shim. Also a dev-dep so the integration-test
 # crate can name `tokio` directly; features unify.
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "fs", "signal"] }
+# `tokio_util::sync::CancellationToken` for the run-cancellation surface:
+# production code names the type and the agent-driver-rs pin does not
+# re-export it, so the prototype depends on tokio-util directly.
+tokio-util = "0.7"
 tracing = "0.1"
 
 # --- S73: SSE shim server deps ---
@@ -88,4 +92,3 @@ agent-driver-rs = { git = "https://github.com/Shearerbeard/agent-driver-rs", rev
 insta = { version = "1", features = ["json"] }
 tempfile = "3"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "test-util"] }
-tokio-util = "0.7"

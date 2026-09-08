@@ -21,6 +21,7 @@ use std::time::Duration;
 use agent_driver_rs::Provider;
 use agent_driver_rs::provider::mock::{MockProvider, mock_text_response, mock_tool_call_response};
 use agent_driver_rs::types::{ModelId, SystemPrompt};
+use tokio_util::sync::CancellationToken;
 
 use agent_driver_prototype::artifacts::InlineThreshold;
 use agent_driver_prototype::bounding::ToolListLimit;
@@ -147,6 +148,7 @@ fn shim_state(provider: Arc<dyn Provider>, artifact_root: PathBuf) -> Arc<ShimSt
         model: model.clone(),
         budget: LoopBudget::new(8).expect("non-zero worker budget"),
         system_prompt: SystemPrompt::new("You are a worker. Submit your result."),
+        cancellation: CancellationToken::new(),
     };
     Arc::new(ShimState::from_parts(
         provider,

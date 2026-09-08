@@ -6,6 +6,7 @@ use std::sync::Arc;
 use agent_driver_rs::agent::{AgentEvent, AgentLoop, AgentLoopConfig, AgentObserver};
 use agent_driver_rs::{DynTool, ModelId, Provider, Session, SessionBuilder, SystemPrompt};
 use async_trait::async_trait;
+use tokio_util::sync::CancellationToken;
 
 use crate::config::ToolVisibility;
 use crate::context::PinnedGoal;
@@ -335,6 +336,12 @@ pub struct CoordinatorLoop {
     runs: RunStore,
     worker_sections: WorkerSections,
     observer: Option<Arc<dyn AgentObserver>>,
+    /// The run's cancellation token, armed with
+    /// [`with_cancellation`](Self::with_cancellation); `None` runs
+    /// uncancellable in practice — the substrate loop falls back to the
+    /// session's child token, which nothing outside the spawned task
+    /// holds.
+    cancellation: Option<CancellationToken>,
 }
 
 impl CoordinatorLoop {
@@ -375,6 +382,7 @@ impl CoordinatorLoop {
             runs,
             worker_sections: config.worker_sections,
             observer: None,
+            cancellation: None,
         })
     }
 
@@ -382,6 +390,25 @@ impl CoordinatorLoop {
     #[must_use]
     pub fn with_observer(mut self, observer: Arc<dyn AgentObserver>) -> Self {
         self.observer = Some(observer);
+        self
+    }
+
+    /// Arm the run with a cooperative cancellation token.
+    ///
+    /// One token cancels the whole run: the coordinator loop and every
+    /// worker task it dispatches. An unarmed loop does NOT run uncancellable
+    /// by substrate contract: the pin's `AgentLoop` falls back to
+    /// `session.child_token()` (pin driver.rs:132-136). The prototype's
+    /// unarmed loop is uncancellable only because nothing outside the
+    /// spawned task holds the `Session`, so nothing can reach that fallback
+    /// child token.
+    ///
+    /// Arming duty: `build_request` must mint the request token BEFORE
+    /// constructing the loop, arm the loop with a child of it, and return
+    /// the parent in `ShimRequest`.
+    #[must_use]
+    pub fn with_cancellation(mut self, token: CancellationToken) -> Self {
+        self.cancellation = Some(token);
         self
     }
 

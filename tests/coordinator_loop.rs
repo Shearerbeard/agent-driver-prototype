@@ -19,6 +19,7 @@ use agent_driver_rs::provider::{
 use agent_driver_rs::streaming::{CollectedResponse, StreamHandle};
 use agent_driver_rs::types::{ContentBlock, Message, ModelId, Role, SystemPrompt};
 use async_trait::async_trait;
+use tokio_util::sync::CancellationToken;
 
 use agent_driver_prototype::artifacts::{ArtifactStore, InlineThreshold};
 use agent_driver_prototype::bounding::{ErrorPreviewWidth, ToolListLimit};
@@ -167,6 +168,7 @@ async fn coordinator_with_provider(
         model: model(),
         budget: LoopBudget::new(8).expect("non-zero worker budget"),
         system_prompt: SystemPrompt::new("You are a worker. Submit your result."),
+        cancellation: CancellationToken::new(),
     };
     let executor: Arc<dyn PlanExecutor> = Arc::new(DagExecutor::new(
         SidecarClient::disconnected(),

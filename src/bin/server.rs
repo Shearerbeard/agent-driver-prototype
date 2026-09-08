@@ -52,6 +52,7 @@ use agent_driver_prototype::sse_shim::{
 use agent_driver_rs::config::ProviderConfig;
 use agent_driver_rs::provider::BedrockProvider;
 use agent_driver_rs::{ModelId, Provider, SystemPrompt};
+use tokio_util::sync::CancellationToken;
 
 #[tokio::main]
 async fn main() {
@@ -201,6 +202,7 @@ async fn build_state(args: &ShimCliArgs) -> Result<ShimState, ShimError> {
         model: model.clone(),
         budget: worker_budget,
         system_prompt: worker_preamble,
+        cancellation: CancellationToken::new(),
     };
 
     // Coordinator budget: max_planning_cycles → turn depth (4 cycles → 12
@@ -924,6 +926,7 @@ mod tests {
             model: model.clone(),
             budget: LoopBudget::CANONICAL,
             system_prompt: SystemPrompt::empty(),
+            cancellation: CancellationToken::new(),
         };
         Arc::new(ShimState::from_parts(
             provider,

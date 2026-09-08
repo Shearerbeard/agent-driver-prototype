@@ -17,6 +17,8 @@ use std::time::Duration;
 
 use tokio::task::AbortHandle;
 
+use super::session::ShimSessionId;
+
 /// How often [`LiveRequests::abort_and_settle`] rechecks whether the tasks it
 /// aborted have gone.
 ///
@@ -24,6 +26,52 @@ use tokio::task::AbortHandle;
 /// parked on a provider call is the very next scheduler pass. The interval only
 /// has to be short against the settle window the caller allows.
 const SETTLE_POLL_INTERVAL: Duration = Duration::from_millis(10);
+
+/// The bounded settle window the disconnect backstop gives the cooperative
+/// cancel to end a run before it aborts the task through its [`AbortHandle`].
+///
+/// This is the shim's observable bounded-window contract: the
+/// integration-test crate names this constant when it asserts the backstop's
+/// timing, which is why it is `pub` rather than `pub(crate)`.
+///
+/// This lives here rather than reusing the server binary's
+/// `ABORT_SETTLE_WINDOW` because the binary is a separate crate the library
+/// cannot import from. Half a second matches that window's scale: far above
+/// the [`SETTLE_POLL_INTERVAL`] detection granularity, long enough for a run
+/// parked on a provider call to unwind cooperatively, and short against the
+/// provider calls it caps.
+pub const DISCONNECT_BACKSTOP_WINDOW: Duration = Duration::from_millis(500);
+
+/// Spawn the disconnect backstop for one ended request.
+///
+/// Contract: the run's cancellation token has ALREADY fired when this runs —
+/// the coordinator task is unwinding cooperatively, or is about to. The
+/// backstop sleeps [`DISCONNECT_BACKSTOP_WINDOW`]; when the window elapses
+/// and the task is still live (`!is_finished()`), it aborts the task through
+/// `abort_handle` and logs which path ended the run — the cooperative exit
+/// or the backstop abort. A task that finished inside the window costs the
+/// sleeper task and nothing else.
+///
+/// The `session_id` exists for that log line: logging which path ended the
+/// run needs the session id to attribute the end to this request's session.
+#[expect(
+    dead_code,
+    reason = "skeleton: the stream's Drop spawns the backstop when the fill lands"
+)]
+pub(crate) fn spawn_disconnect_backstop(
+    #[expect(
+        unused_variables,
+        reason = "skeleton: the body aborts through the handle when the fill lands"
+    )]
+    abort_handle: AbortHandle,
+    #[expect(
+        unused_variables,
+        reason = "skeleton: the body logs the session id when the fill lands"
+    )]
+    session_id: ShimSessionId,
+) {
+    todo!("Stage 4: sleep DISCONNECT_BACKSTOP_WINDOW, then abort the task if it is still live")
+}
 
 /// What one shutdown abort did.
 ///

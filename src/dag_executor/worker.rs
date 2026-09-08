@@ -5,6 +5,7 @@ use std::sync::Arc;
 use agent_driver_rs::agent::{AgentLoop, AgentLoopConfig, LoopStopReason};
 use agent_driver_rs::error::ProviderError;
 use agent_driver_rs::{ConfigError, ModelId, Provider, SessionBuilder, SystemPrompt};
+use tokio_util::sync::CancellationToken;
 
 use crate::artifacts::ArtifactStore;
 use crate::coordinator_loop::WorkerSubmission;
@@ -25,6 +26,26 @@ pub struct WorkerLoopConfig {
     pub model: ModelId,
     pub budget: LoopBudget,
     pub system_prompt: SystemPrompt,
+    /// The run's cancellation token: a child of the request's token, shared
+    /// by every worker the executor dispatches (dispatch is strictly
+    /// sequential, so at most one worker consumes it at a time).
+    ///
+    /// The value STORED here is inert scaffolding at standalone construction
+    /// sites. The honored source in production is the executor deriving
+    /// `ctx.cancellation.child_token()` per dispatch, not whatever value a
+    /// standalone construction site stored.
+    ///
+    /// This is the SECONDARY stop mechanism. The primary is the coordinator
+    /// pin dropping the `execute` future, which drops the in-flight worker
+    /// future and its provider stream with it; the token converts an
+    /// external cancel into a clean `WorkerOutcome::Interrupted` when the
+    /// worker is still polled to its next await instead. That clean mapping
+    /// holds only on the loop-top stop path
+    /// (`Ok(LoopStopReason::Cancelled)` -> `Interrupted`): the
+    /// `Err(AgentLoopError::Cancelled)` path currently maps through
+    /// `agent_loop_error_to_outcome` to `Failed(AgentError)`, and the fill
+    /// adds a `Cancelled` arm there mapping to `Interrupted`.
+    pub cancellation: CancellationToken,
 }
 
 /// What a worker run produced, mirroring the S71 `CoordinatorOutcome` pattern.

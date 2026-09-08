@@ -41,7 +41,7 @@ pub use events::{
     FinishReason, SSE_DONE, SessionInfoPayload,
 };
 pub use events::{TaskCompletedPayload, TaskStartedPayload, ToolCompletePayload, ToolStartPayload};
-pub use live_requests::{LiveRequests, ShutdownAbort};
+pub use live_requests::{DISCONNECT_BACKSTOP_WINDOW, LiveRequests, ShutdownAbort};
 pub use observer::ShimObserver;
 pub use otel::{OtelConfig, OtelEndpoint, OtelGuard};
 pub use server::{
