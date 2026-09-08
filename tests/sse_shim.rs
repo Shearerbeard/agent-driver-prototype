@@ -496,10 +496,6 @@ async fn health_returns_200() {
 // ---------------------------------------------------------------------------
 // S90 burn-window test: a client disconnect must stop the provider calls
 // ---------------------------------------------------------------------------
-//
-// Appended in S90 Stage 3. The imports below are module-level and live here
-// (rather than in the header above) so this change stays append-only: the
-// S73 tests above are untouched.
 
 use std::future::Future;
 use std::pin::Pin;
@@ -516,17 +512,10 @@ use futures::StreamExt as _;
 /// A provider that answers every call with a further `create_plan` tool call
 /// and counts the calls it has served.
 ///
-/// Why not a `MockProvider` queue: the mock panics on exhaustion, and an
-/// exhausted queue would END the detached coordinator task pre-fix — the
-/// panic would freeze the count and fake a pass. This provider is
-/// non-exhausting by construction (the tool-call-forever shape: every
-/// response asks for a further tool call), so nothing but the disconnect can
-/// stop the calls. The `Arc<AtomicUsize>` handed back by
-/// [`BurnProvider::new`] is the observable the burn-window assertion reads.
-///
-/// Each response's `goal` embeds the call number ("burn window probe {n}"),
-/// so every registered plan derives a distinct [`PlanId`] and the `RunStore`
-/// never sees a colliding registration however long the loop burns.
+/// Non-exhausting by construction - a `MockProvider` queue panics on
+/// exhaustion, which pre-fix would have ended the detached task and faked a
+/// pass. The `Arc<AtomicUsize>` counter from [`BurnProvider::new`] is the
+/// observable the assertion reads.
 struct BurnProvider {
     calls: Arc<AtomicUsize>,
     info: ProviderInfo,
@@ -588,11 +577,9 @@ impl Provider for BurnProvider {
     }
 }
 
-/// The `create_plan` arguments for burn call `n`, serialized.
-///
-/// One leaf task assigned to the configured "operations" worker, mirroring
-/// [`one_task_plan_args`], so the plan validates against the roster. The
-/// goal embeds `n`, which is what keeps the plan ids distinct.
+/// The `create_plan` arguments for burn call `n`, serialized: one leaf task
+/// on the configured worker so the plan validates against the roster; the
+/// goal embeds `n` so plan ids stay distinct however long the loop burns.
 fn burn_plan_args_json(n: usize) -> String {
     let args = CreatePlanArgs {
         goal: format!("burn window probe {n}"),
@@ -605,12 +592,8 @@ fn burn_plan_args_json(n: usize) -> String {
     serde_json::to_string(&args).expect("plan args serialize")
 }
 
-/// Mirror [`shim_state`] with budgets no run can reach.
-///
-/// The shared fixture's budget of 8 would stop the loop gracefully and fake a
-/// pass; with 1,000,000 turns on BOTH the coordinator and the worker, only
-/// the disconnect can end the run. `LoopBudget::new` accepts any non-zero
-/// value, so this cannot fail.
+/// A mirror of [`shim_state`] with budgets no run can reach: the shared
+/// fixture's budget of 8 would stop the loop gracefully and fake a pass.
 fn burn_state(provider: Arc<dyn Provider>, artifact_root: PathBuf) -> Arc<ShimState> {
     let model = model();
     let worker_config = WorkerLoopConfig {
@@ -636,12 +619,6 @@ fn burn_state(provider: Arc<dyn Provider>, artifact_root: PathBuf) -> Arc<ShimSt
 
 /// A client disconnect mid-SSE must stop the coordinator within a bounded
 /// window: no further provider calls, and no task left live.
-///
-/// PRE-FAILING (S90 Stage 3): today the stream drop only drops the SSE pump
-/// and the loop's `JoinHandle`, which DETACHES the coordinator task — the
-/// loop keeps calling the provider until SIGTERM. Expected red for the right
-/// reason: the call count climbs after the disconnect, and
-/// `abort_and_settle` finds the task still live (`Settled { aborted: 1 }`).
 #[tokio::test]
 async fn client_disconnect_stops_provider_calls_within_the_bounded_window() {
     let (provider, calls) = BurnProvider::new();

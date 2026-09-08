@@ -26,24 +26,11 @@ pub struct WorkerLoopConfig {
     pub model: ModelId,
     pub budget: LoopBudget,
     pub system_prompt: SystemPrompt,
-    /// The run's cancellation token: a child of the request's token, shared
-    /// by every worker the executor dispatches (dispatch is strictly
-    /// sequential, so at most one worker consumes it at a time).
-    ///
-    /// The value STORED here is inert scaffolding at standalone construction
-    /// sites. The honored source in production is the executor deriving
-    /// `ctx.cancellation.child_token()` per dispatch, not whatever value a
-    /// standalone construction site stored.
-    ///
-    /// This is the SECONDARY stop mechanism. The primary is the coordinator
-    /// pin dropping the `execute` future, which drops the in-flight worker
-    /// future and its provider stream with it; the token converts an
-    /// external cancel into a clean `WorkerOutcome::Interrupted` when the
-    /// worker is still polled to its next await instead. Both cancel paths
-    /// converge on `WorkerOutcome::Interrupted` — the loop-top stop path via
-    /// `Ok(LoopStopReason::Cancelled)`, and the in-flight
-    /// `Err(AgentLoopError::Cancelled)` via the `Cancelled` arm in
-    /// `agent_loop_error_to_outcome`.
+    /// The run's cancellation token: a child of the request token. The
+    /// honored value is the executor's per-dispatch
+    /// `ctx.cancellation.child_token()`, never the stored template value.
+    /// Both cancel paths - the loop-top stop and the in-flight
+    /// `AgentLoopError::Cancelled` - converge on `WorkerOutcome::Interrupted`.
     pub cancellation: CancellationToken,
 }
 

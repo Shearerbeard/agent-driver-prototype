@@ -336,11 +336,9 @@ pub struct CoordinatorLoop {
     runs: RunStore,
     worker_sections: WorkerSections,
     observer: Option<Arc<dyn AgentObserver>>,
-    /// The run's cancellation token, armed with
-    /// [`with_cancellation`](Self::with_cancellation); `None` runs
-    /// uncancellable in practice — the substrate loop falls back to the
-    /// session's child token, which nothing outside the spawned task
-    /// holds.
+    /// The run's cancellation token. `None` runs uncancellable in practice:
+    /// the substrate falls back to the session's child token, which nothing
+    /// outside the spawned task holds.
     cancellation: Option<CancellationToken>,
 }
 
@@ -393,18 +391,11 @@ impl CoordinatorLoop {
         self
     }
 
-    /// Arm the run with a cooperative cancellation token.
+    /// Arm the run with a cooperative cancellation token: one token covers
+    /// the coordinator loop and every worker it dispatches.
     ///
-    /// One token cancels the whole run: the coordinator loop and every
-    /// worker task it dispatches. An unarmed loop does NOT run uncancellable
-    /// by substrate contract: the pin's `AgentLoop` falls back to
-    /// `session.child_token()` (pin driver.rs:132-136). The prototype's
-    /// unarmed loop is uncancellable only because nothing outside the
-    /// spawned task holds the `Session`, so nothing can reach that fallback
-    /// child token.
-    ///
-    /// Arming duty: `build_request` must mint the request token BEFORE
-    /// constructing the loop, arm the loop with a child of it, and return
+    /// Arming duty: `build_request` mints the request token BEFORE
+    /// constructing the loop, arms the loop with a child of it, and returns
     /// the parent in `ShimRequest`.
     #[must_use]
     pub fn with_cancellation(mut self, token: CancellationToken) -> Self {

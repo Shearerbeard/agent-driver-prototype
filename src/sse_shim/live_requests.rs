@@ -29,40 +29,23 @@ use super::session::ShimSessionId;
 /// has to be short against the settle window the caller allows.
 const SETTLE_POLL_INTERVAL: Duration = Duration::from_millis(10);
 
-/// The bounded settle window the disconnect backstop gives the cooperative
-/// cancel to end a run before it aborts the task through its [`AbortHandle`].
-///
-/// This is the shim's observable bounded-window contract: the
-/// integration-test crate names this constant when it asserts the backstop's
-/// timing, which is why it is `pub` rather than `pub(crate)`.
-///
-/// This lives here rather than reusing the server binary's
-/// `ABORT_SETTLE_WINDOW` because the binary is a separate crate the library
-/// cannot import from. Half a second matches that window's scale: far above
-/// the [`SETTLE_POLL_INTERVAL`] detection granularity, long enough for a run
-/// parked on a provider call to unwind cooperatively, and short against the
-/// provider calls it caps.
+/// The settle window the disconnect backstop gives the cooperative cancel
+/// before it aborts the task through its [`AbortHandle`]: far above the
+/// [`SETTLE_POLL_INTERVAL`] granularity, long enough for a parked
+/// provider call to unwind, short against the provider calls it caps.
 pub const DISCONNECT_BACKSTOP_WINDOW: Duration = Duration::from_millis(500);
 
 /// Spawn the disconnect backstop for one ended request.
 ///
-/// Contract: the run's cancellation token has ALREADY fired when this runs —
-/// the coordinator task is unwinding cooperatively, or is about to. The
-/// backstop sleeps [`DISCONNECT_BACKSTOP_WINDOW`]; when the window elapses
-/// and the task is still live (`!is_finished()`), it aborts the task through
-/// `abort_handle` and logs which path ended the run — the cooperative exit
-/// or the backstop abort. A task that finished inside the window costs the
-/// sleeper task and nothing else.
-///
-/// The `session_id` exists for that log line: logging which path ended the
-/// run needs the session id to attribute the end to this request's session.
+/// Contract: the run's cancellation token has already fired when this
+/// runs. The backstop sleeps [`DISCONNECT_BACKSTOP_WINDOW`], then aborts
+/// the task through `abort_handle` if it is still live, logging which
+/// path ended the run; the session id attributes that log line.
 pub(crate) fn spawn_disconnect_backstop(abort_handle: AbortHandle, session_id: ShimSessionId) {
     tokio::spawn(async move {
         tokio::time::sleep(DISCONNECT_BACKSTOP_WINDOW).await;
         if abort_handle.is_finished() {
-            // The run ended on its own inside the window: the cooperative
-            // cancel won, the span closed, and there is nothing left to do
-            // beyond costing this sleeper task.
+            // The cooperative cancel won inside the window; nothing to abort.
             tracing::debug!(
                 session_id = %session_id,
                 "run ended cooperatively inside the disconnect backstop window"

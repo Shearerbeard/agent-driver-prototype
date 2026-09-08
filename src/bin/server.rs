@@ -1025,24 +1025,9 @@ mod tests {
     /// A chat still mid-stream when the signal lands must still export its
     /// span.
     ///
-    /// Both teardown shapes the S75 rep-1 runs produced are exercised here.
-    /// The first client is severed mid-stream, the way the adapter's HTTP read
-    /// timeout severs one. Before S90 that drop detached the coordinator task:
-    /// dropping a `JoinHandle` did not stop the task, so it kept running with
-    /// its span open until the shutdown abort ended it (S87 pinned both runs
-    /// live at the signal). S90 makes the drop fire cancellation and arm a
-    /// bounded per-request backstop instead, so the severed run ends inside
-    /// the settle window. A run parked in the provider-call setup await
-    /// cannot hear the token — the pin races cancellation only around stream
-    /// collection and tool execution — so what ends a stalled run is the
-    /// backstop's abort a settle window after the drop: the S87 abort
-    /// mechanism, demoted to a per-request backstop. Either way the span
-    /// closes before the flush. The second client is still attached
-    /// with the stream mid-flight, the shape a harness agent timeout leaves
-    /// behind; its span cannot be exported while its task lives, so the
-    /// shutdown abort has to end that task before the flush. The export
-    /// assertions below therefore still cover both teardown shapes: one span
-    /// closed by the disconnect backstop, one by the shutdown abort.
+    /// Both teardown shapes are exercised: the severed client's run ends via
+    /// the disconnect backstop inside its settle window (S90), so only the
+    /// still-attached run needs the shutdown abort. Both spans still export.
     #[tokio::test(flavor = "multi_thread")]
     async fn a_chat_still_open_at_shutdown_exports_its_span() {
         use opentelemetry::trace::TracerProvider as _;
@@ -1097,11 +1082,8 @@ mod tests {
         drop(guard);
         let shutdown = started.elapsed();
 
-        // Only the still-attached run has to be live at the signal: the
-        // disconnect backstop already ended the severed stalled run inside its
-        // settle window (S90), closing its span then (the batch exporter hands
-        // it over at the guard's flush), so the shutdown abort has just the
-        // harness-timeout shape left to end.
+        // Why `aborted: 1`: the backstop already ended the severed run,
+        // leaving the shutdown abort only the harness-timeout shape.
         assert_eq!(
             outcome,
             ShutdownAbort::Settled { aborted: 1 },

@@ -241,10 +241,8 @@ impl ShimState {
         query: &str,
         history: ChatHistory,
     ) -> Result<ShimRequest, ShimError> {
-        // 0. The request's cancellation token. The parent rides out on the
-        //    `ShimRequest` (the SSE stream's `Drop` fires it); the loop at
-        //    step 11 is armed with a child of it, so the run stops whenever
-        //    the parent does.
+        // 0. The parent token rides out on the `ShimRequest` (the stream's
+        //    `Drop` fires it); the loop is armed with a child (step 11).
         let cancellation = CancellationToken::new();
         // 1. Fresh session id.
         let session_id = ShimSessionId::generate();
@@ -377,11 +375,8 @@ impl ShimState {
 
 /// Whether a coordinator run ended because its client disconnected.
 ///
-/// The substrate reports cooperative cancellation as
-/// `AgentLoopError::Cancelled` (`#[non_exhaustive]`), which the run wrapper
-/// sees wrapped in [`CoordinatorRunError::AgentLoop`]. `matches!`'s implicit
-/// fallback covers the sibling `Session` variant and any future substrate
-/// variant, so this stays a detection predicate, never an exhaustive match.
+/// The substrate error is `#[non_exhaustive]`, so this stays a detection
+/// predicate, never an exhaustive match.
 fn is_client_cancellation(error: &CoordinatorRunError) -> bool {
     matches!(
         error,
