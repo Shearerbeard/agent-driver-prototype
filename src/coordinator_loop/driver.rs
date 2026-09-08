@@ -466,6 +466,9 @@ impl CoordinatorLoop {
         };
 
         let mut agent = AgentLoop::new(&self.session).with_config(config);
+        if let Some(token) = &self.cancellation {
+            agent = agent.with_cancellation(token.clone());
+        }
         if let Some(observer) = &self.observer {
             agent = agent.with_observer(SharedObserver(Arc::clone(observer)));
         }
