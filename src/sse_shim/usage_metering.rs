@@ -109,6 +109,16 @@ impl Provider for UsageMeteringProvider {
         let sink = Arc::clone(&self.sink);
         let last = self.last.clone();
         Box::pin(async move {
+            // N4 (Gate A round 2): a lane's cell describes THIS call only.
+            // Clear it at the start of every call, then let the terminal
+            // `Completed` populate it. A final turn that reports no usage -
+            // or a stream that fails before completing - therefore reads
+            // as unknown occupancy (None), never an earlier turn's numbers.
+            if let Some(last) = &last {
+                *last
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+            }
             let handle = inner.complete_stream(request, ctx).await?;
             // Preserve the inner stream's cancellation token and correlation
             // id so the returned handle behaves identically to the inner one,
@@ -151,9 +161,10 @@ impl Provider for UsageMeteringProvider {
 /// The sink is a std mutex written from this synchronous `poll_next`,
 /// where sibling lanes may poll concurrently (the pin's `join_all`); the
 /// guard covers a field update only and is never held across an await.
-/// A call whose `Completed` carries no usage writes nothing to the lane
-/// cell, so the cell keeps that agent's last REPORTED turn rather than
-/// borrowing another agent's.
+/// A call whose `Completed` carries no usage leaves the lane cell empty
+/// (cleared at the call's start): the final turn's occupancy is unknown,
+/// reported as zero, and never an earlier turn's numbers masquerading as
+/// the final turn (Gate A round-2 finding N4).
 struct MeteredStream {
     inner: CompletionStream,
     sink: Arc<std::sync::Mutex<UsageAccumulator>>,
@@ -389,16 +400,25 @@ mod tests {
             "the worker lane holds its own call, not the coordinator's"
         );
 
-        // A call whose Completed carries no usage leaves both cells alone
-        // (the stock mock helpers set usage: None - reuse the raw mock).
+        // N4: a call whose Completed carries no usage CLEARS the lane's
+        // cell (cleared at call start, populated only by this call's
+        // usage) - the final turn's occupancy reads unknown, never the
+        // earlier turn's numbers.
         let h3 = worker.complete_stream(request(), ctx()).await.unwrap();
         let _ = h3.collect().await.unwrap();
         assert_eq!(
             *worker_cell
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner),
-            Some((60, 6)),
-            "a usage-less call keeps the lane's last REPORTED turn"
+            None,
+            "a usage-less final turn leaves the lane cell empty"
+        );
+        // The coordinator lane is untouched by the worker's calls.
+        assert_eq!(
+            *coordinator_cell
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+            Some((30, 3))
         );
 
         let acc = sink
@@ -406,6 +426,55 @@ mod tests {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         assert_eq!(acc.prompt_tokens(), 90);
         assert_eq!(acc.completion_tokens(), 9);
+    }
+
+    /// N4 (Gate A round 2): a stream that never reaches `Completed`
+    /// (dropped or failed mid-call) also leaves the lane cell empty - the
+    /// loop's completion then reports unknown occupancy, not the previous
+    /// turn's.
+    #[tokio::test]
+    async fn a_dropped_stream_clears_the_lane_cell() {
+        let mock = MockProvider::new(vec![
+            text_response_with_usage(
+                "first",
+                TokenUsage {
+                    input_tokens: 60,
+                    output_tokens: 6,
+                },
+            ),
+            text_response_with_usage(
+                "never drained",
+                TokenUsage {
+                    input_tokens: 10,
+                    output_tokens: 1,
+                },
+            ),
+        ]);
+        let sink = shared_accumulator();
+        let cell: FinalTurnCell = Arc::new(std::sync::Mutex::new(None));
+        let lane =
+            UsageMeteringProvider::new_lane(Arc::new(mock), Arc::clone(&sink), Arc::clone(&cell));
+
+        let h1 = lane.complete_stream(request(), ctx()).await.unwrap();
+        let _ = h1.collect().await.unwrap();
+        assert_eq!(
+            *cell
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+            Some((60, 6))
+        );
+
+        // The second call starts (cell cleared at entry) but its stream is
+        // dropped before the terminal Completed is ever polled.
+        let h2 = lane.complete_stream(request(), ctx()).await.unwrap();
+        drop(h2);
+        assert_eq!(
+            *cell
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+            None,
+            "a call that never completed leaves the lane cell empty"
+        );
     }
 
     /// `list_models` delegates to the inner provider.

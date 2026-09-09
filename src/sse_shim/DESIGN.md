@@ -337,12 +337,20 @@ worker thinking as `aura.orchestrator.worker_reasoning`.
 per turn are legal; aura-e2e reads routing fields from the first), mapping
 goal, the FLATTENED step count, and `planning_rationale`, with
 `routing_mode` always `orchestrated`. `aura.context_usage` reports
-per-agent final-turn occupancy read from the metering sink's latest call at
-each agent's loop completion — correct because provider streams run
-sequentially within a request. Worker `TextDelta` deliberately maps to no
-event: worker text is working output, not the assistant answer (C3's
-byte-clean rule applied to workers); results reach the stream via
-`task_completed`.
+per-agent final-turn occupancy from PER-LANE cells: the coordinator and
+each worker task run on their own `UsageMeteringProvider` lane
+(`new_lane`), whose private final-turn cell is cleared at each call's
+start and populated only by that call's terminal usage - so a final turn
+that reports no usage, or a stream that fails before completing, reads as
+unknown occupancy (emitted zero), never another agent's or an earlier
+turn's numbers. Lanes exist because provider streams do NOT run
+sequentially within a request: the pin's driver executes same-response
+sibling tools under `join_all`, so two `execute` calls can drive workers
+concurrently; the shared totals sink is a std mutex for the same reason
+(written from the synchronous `poll_next`). Worker `TextDelta`
+deliberately maps to no event: worker text is working output, not the
+assistant answer (C3's byte-clean rule applied to workers); results reach
+the stream via `task_completed`.
 
 **R3 - OTEL exporter lifecycle.**
 Resolved by C6. `OtelGuard` stores `Option<SdkTracerProvider>`; `Drop` calls
