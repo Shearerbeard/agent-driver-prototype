@@ -950,17 +950,28 @@ async fn s102_named_events_reach_the_stream() {
             }
         }
     }
-    let task_completed = position("aura.orchestrator.task_completed", &|_| true);
-    if let (Some(start), Some(complete), Some(t_started), Some(t_completed)) = (
-        worker_tool_start,
-        worker_tool_complete,
-        task_started,
-        task_completed,
-    ) && !(t_started < start && start < complete && complete < t_completed)
-    {
-        failures.push(format!(
-            "(b) worker tool events outside the task window: task_started@{t_started}, start@{start}, complete@{complete}, task_completed@{t_completed}"
-        ));
+    // N3 (Gate A round 1): a missing boundary IS a failure - the check no
+    // longer passes vacuously - and both boundaries must carry task 0's
+    // identity, not just any task's.
+    let task_started0 = position("aura.orchestrator.task_started", &|v| {
+        v["task_id"].as_u64() == Some(0) && v["worker_id"].as_str() == Some("operations")
+    });
+    let task_completed0 = position("aura.orchestrator.task_completed", &|v| {
+        v["task_id"].as_u64() == Some(0) && v["success"].as_bool() == Some(true)
+    });
+    match (task_started0, task_completed0) {
+        (Some(t_started), Some(t_completed)) => {
+            if let (Some(start), Some(complete)) = (worker_tool_start, worker_tool_complete)
+                && !(t_started < start && start < complete && complete < t_completed)
+            {
+                failures.push(format!(
+                    "(b) worker tool events outside the task window: task_started@{t_started}, start@{start}, complete@{complete}, task_completed@{t_completed}"
+                ));
+            }
+        }
+        _ => failures.push(format!(
+            "(b) task-window boundaries missing for task 0: task_started@{task_started0:?}, task_completed@{task_completed0:?}"
+        )),
     }
 
     // (c) reasoning surfaces as NAMED events: worker thinking under

@@ -18,19 +18,33 @@ use crate::types::{FailureCategory, Task};
 
 use super::tools::{CapturePaneTool, KeystrokesTool, ReadArtifactTool};
 
-/// Mints the per-task observer a worker loop attaches to its `AgentLoop`.
+/// One task run's observation lane: the observer the worker loop attaches,
+/// and the provider the loop should run on.
+///
+/// Both pieces are per-task by the same token: the observer tags its
+/// events with the task and worker identity, and the provider carries any
+/// per-agent metering state (the shim's usage lanes), so a lane's
+/// final-turn attribution stays correct even when sibling tool calls run
+/// concurrently.
+pub struct WorkerLane {
+    pub observer: Arc<dyn AgentObserver>,
+    pub provider: Arc<dyn Provider>,
+}
+
+/// Mints the per-task observation lane a worker loop runs on.
 ///
 /// The factory (not a bare observer) rides in [`WorkerLoopConfig`] because
-/// the observer is per-task: it needs the task id and the worker's agent id,
+/// the lane is per-task: it needs the task id and the worker's agent id,
 /// which the executor resolves per dispatch. The shim implements this to
-/// hand back a `ShimWorkerObserver` wired to the request's SSE channel;
-/// `None` (tests, the standalone bins) runs workers unobserved, exactly as
-/// before S102.
+/// return a `ShimWorkerObserver` plus its metered provider lane, both
+/// wired to the request's SSE channel and usage accounting; `None`
+/// (tests, the standalone bins) runs workers unobserved on the template
+/// provider, exactly as before S102.
 pub trait WorkerObserverFactory: Send + Sync {
-    /// The observer for one task run: `task_id` identifies the plan task
-    /// and `worker_id` the assigned worker (the executor's own resolution,
+    /// The lane for one task run: `task_id` identifies the plan task and
+    /// `worker_id` the assigned worker (the executor's own resolution,
     /// e.g. `"default"` for an unassigned task).
-    fn observer_for(&self, task_id: usize, worker_id: &str) -> Arc<dyn AgentObserver>;
+    fn lane_for(&self, task_id: usize, worker_id: &str) -> WorkerLane;
 }
 
 /// Forwards loop events to a shared observer handle, so an `Arc<dyn
@@ -64,9 +78,11 @@ pub struct WorkerLoopConfig {
     /// `AgentLoopError::Cancelled` - converge on `WorkerOutcome::Interrupted`.
     pub cancellation: CancellationToken,
     /// Optional per-task observer factory (S102): the executor resolves the
-    /// task and worker identity, the factory mints the observer, and the
-    /// worker loop attaches it to its `AgentLoop` so worker tool calls and
-    /// reasoning reach the SSE stream. `None` observes nothing.
+    /// task and worker identity, the factory mints the lane (observer plus
+    /// provider), and the worker loop attaches the observer and runs on the
+    /// lane's provider so worker tool calls, reasoning, and final-turn
+    /// context reach the SSE stream. `None` runs unobserved on the template
+    /// provider.
     pub observer_factory: Option<Arc<dyn WorkerObserverFactory>>,
 }
 
@@ -161,8 +177,24 @@ impl WorkerLoop {
         let submit_result: agent_driver_rs::DynTool =
             Arc::new(SubmitResultTool::new(submission_slot.clone()));
 
+        // S102: mint the per-task lane up front — its provider replaces the
+        // template for this run, and its observer attaches to the loop. The
+        // worker id mirrors the executor's own resolution (task.worker,
+        // falling back to "default") so lifecycle and tool events agree on
+        // the agent identity.
+        let worker_id = task.worker.as_deref().unwrap_or("default");
+        let lane = self
+            .config
+            .observer_factory
+            .as_ref()
+            .map(|factory| factory.lane_for(task.id, worker_id));
+        let provider = match &lane {
+            Some(lane) => Arc::clone(&lane.provider),
+            None => Arc::clone(&self.config.provider),
+        };
+
         let session = match SessionBuilder::new()
-            .provider(Arc::clone(&self.config.provider))
+            .provider(provider)
             .model(self.config.model.clone())
             .system_prompt(self.config.system_prompt.clone())
             .tools([keystrokes, capture_pane, read_artifact, submit_result])
@@ -177,15 +209,8 @@ impl WorkerLoop {
         let mut agent_loop = AgentLoop::new(&session)
             .with_config(config)
             .with_cancellation(self.config.cancellation.clone());
-        // S102: attach the per-task observer when a factory is configured.
-        // The worker id mirrors the executor's own resolution (task.worker,
-        // falling back to "default") so lifecycle and tool events agree on
-        // the agent identity.
-        if let Some(factory) = &self.config.observer_factory {
-            let worker_id = task.worker.as_deref().unwrap_or("default");
-            agent_loop = agent_loop.with_observer(SharedWorkerObserver(
-                factory.observer_for(task.id, worker_id),
-            ));
+        if let Some(lane) = lane {
+            agent_loop = agent_loop.with_observer(SharedWorkerObserver(lane.observer));
         }
         let outcome = match agent_loop.run(&task.description).await {
             Ok(outcome) => outcome,

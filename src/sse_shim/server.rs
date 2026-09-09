@@ -250,10 +250,15 @@ impl ShimState {
         let session_id = ShimSessionId::generate();
         // 2. Fresh per-request usage sink (C1).
         let usage = shared_accumulator();
-        // 3. Metered provider wrapping the shared base provider (C1).
-        let metered = Arc::new(UsageMeteringProvider::new(
+        // 3. The coordinator's metering lane: totals flow to the shared
+        //    sink (C1), and the lane's private final-turn cell backs the
+        //    coordinator's `aura.context_usage` (S102 per-agent
+        //    attribution; the worker lanes mint their own cells).
+        let coordinator_final_turn = Arc::new(std::sync::Mutex::new(None));
+        let metered = Arc::new(UsageMeteringProvider::new_lane(
             Arc::clone(&self.base_provider),
             Arc::clone(&usage),
+            Arc::clone(&coordinator_final_turn),
         )) as Arc<dyn Provider>;
         // 4. Bounded event channel (C10).
         let (event_tx, event_rx) = tokio::sync::mpsc::channel::<AuraEvent>(EVENT_CHANNEL_CAPACITY);
@@ -285,6 +290,7 @@ impl ShimState {
             chat_completion_id,
             created,
             Arc::clone(&usage),
+            coordinator_final_turn,
             event_tx.clone(),
         )) as Arc<dyn AgentObserver>;
         // 6. ShimDagObserver (C2), sharing the event channel.
@@ -303,6 +309,7 @@ impl ShimState {
             session_id,
             event_tx.clone(),
             Arc::clone(&usage),
+            Arc::clone(&self.base_provider),
         )) as Arc<dyn WorkerObserverFactory>;
         let worker_config = WorkerLoopConfig {
             provider: Arc::clone(&metered),

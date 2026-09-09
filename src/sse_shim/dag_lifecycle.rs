@@ -11,15 +11,15 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::Mutex;
 
-use agent_driver_rs::agent::AgentObserver;
+use agent_driver_rs::Provider;
 use async_trait::async_trait;
-use tokio::sync::Mutex as AsyncMutex;
 use tokio::sync::mpsc::Sender;
 
-use crate::dag_executor::{DagLifecycleObserver, WorkerObserverFactory};
+use crate::dag_executor::{DagLifecycleObserver, WorkerLane, WorkerObserverFactory};
 use crate::sse_shim::events::{AuraEvent, TaskCompletedPayload, TaskStartedPayload};
 use crate::sse_shim::observer::ShimWorkerObserver;
 use crate::sse_shim::session::{ShimSessionId, UsageAccumulator};
+use crate::sse_shim::usage_metering::{FinalTurnCell, UsageMeteringProvider};
 
 /// The shim's implementation of [`DagLifecycleObserver`].
 ///
@@ -138,17 +138,22 @@ impl DagLifecycleObserver for ShimDagObserver {
     }
 }
 
-/// The shim's [`WorkerObserverFactory`]: mints one [`ShimWorkerObserver`]
-/// per task run, carrying the request's session id, event channel, and
-/// shared usage sink.
+/// The shim's [`WorkerObserverFactory`]: mints one worker lane per task
+/// run - a [`ShimWorkerObserver`] plus the lane's metered provider - over
+/// the request's session id, event channel, shared totals sink, and base
+/// provider.
 ///
 /// Constructed once per `/v1/chat/completions` request in
-/// `build_request`; the executor asks for an observer per dispatch, and
-/// the worker loop attaches it to its `AgentLoop`.
+/// `build_request`; the worker loop runs on the lane's provider (so the
+/// lane's final-turn cell tracks that task's own calls) and attaches the
+/// lane's observer to its `AgentLoop`. The lane provider wraps the BASE
+/// provider, never the coordinator's metered instance, so totals are
+/// counted exactly once per call.
 pub struct ShimWorkerObserverFactory {
     session_id: ShimSessionId,
     event_tx: Sender<AuraEvent>,
-    usage: Arc<AsyncMutex<UsageAccumulator>>,
+    usage: Arc<Mutex<UsageAccumulator>>,
+    base_provider: Arc<dyn Provider>,
 }
 
 impl ShimWorkerObserverFactory {
@@ -157,25 +162,34 @@ impl ShimWorkerObserverFactory {
     pub fn new(
         session_id: ShimSessionId,
         event_tx: Sender<AuraEvent>,
-        usage: Arc<AsyncMutex<UsageAccumulator>>,
+        usage: Arc<Mutex<UsageAccumulator>>,
+        base_provider: Arc<dyn Provider>,
     ) -> Self {
         Self {
             session_id,
             event_tx,
             usage,
+            base_provider,
         }
     }
 }
 
 impl WorkerObserverFactory for ShimWorkerObserverFactory {
-    fn observer_for(&self, task_id: usize, worker_id: &str) -> Arc<dyn AgentObserver> {
-        Arc::new(ShimWorkerObserver::new(
+    fn lane_for(&self, task_id: usize, worker_id: &str) -> WorkerLane {
+        let final_turn: FinalTurnCell = Arc::new(Mutex::new(None));
+        let provider = Arc::new(UsageMeteringProvider::new_lane(
+            Arc::clone(&self.base_provider),
+            Arc::clone(&self.usage),
+            Arc::clone(&final_turn),
+        )) as Arc<dyn Provider>;
+        let observer = Arc::new(ShimWorkerObserver::new(
             self.session_id,
             task_id,
             worker_id,
-            Arc::clone(&self.usage),
+            final_turn,
             self.event_tx.clone(),
-        ))
+        ));
+        WorkerLane { observer, provider }
     }
 }
 
@@ -275,9 +289,10 @@ mod tests {
                 ShimSessionId::generate(),
                 tx,
                 crate::sse_shim::session::shared_accumulator(),
+                Arc::new(agent_driver_rs::mock::MockProvider::new(Vec::new())),
             );
-            let observer = factory.observer_for(9, "debugger");
-            observer
+            let lane = factory.lane_for(9, "debugger");
+            lane.observer
                 .on_event(&agent_driver_rs::agent::AgentEvent::ToolCallStart {
                     id: agent_driver_rs::ToolCallId::new("t"),
                     name: agent_driver_rs::ToolName::new("capture-pane").unwrap(),

@@ -27,35 +27,70 @@ use agent_driver_rs::provider::{CompletionRequest, ModelInfo, ProviderContext, P
 use agent_driver_rs::streaming::{CompletionStream, StreamEvent, StreamHandle};
 
 use futures::Stream;
-use tokio::sync::Mutex;
 
 use super::session::UsageAccumulator;
 
-/// A provider decorator that meters token usage into a request-scoped sink.
+/// The per-agent final-turn usage cell one metering lane reports:
+/// `(context_tokens, response_tokens)`, or `None` before that lane's
+/// first usage-bearing call.
+pub type FinalTurnCell = Arc<std::sync::Mutex<Option<(u64, u64)>>>;
+
+/// A provider decorator that meters token usage into a request-scoped sink
+/// and, on lanes created with [`new_lane`](Self::new_lane), records the
+/// lane's own final-turn usage in a private cell.
 ///
-/// One `UsageMeteringProvider` per `/v1/chat/completions` request, wrapping
-/// the shared base provider from `ShimState`. The sink is the same
-/// `Arc<Mutex<UsageAccumulator>>` the observer reads at `LoopComplete`.
+/// One `UsageMeteringProvider` per LANE (the coordinator's loop, or one
+/// worker task run), wrapping the shared base provider from `ShimState`.
+/// The sink is the request-wide `Arc<std::sync::Mutex<UsageAccumulator>>` every lane
+/// adds its totals to (the observer reads it at `LoopComplete` for
+/// `aura.usage`); the final-turn cell is private to the lane, so an
+/// agent's `aura.context_usage` reports that agent's own last call even
+/// when sibling tools run concurrently (the pin's `join_all`) or when a
+/// later agent's call reports no usage.
 ///
 /// The decorator is separate from the DAG-lifecycle sink (C2): usage
 /// metering intercepts the provider stream; lifecycle events come from the
 /// DAG executor. Different concerns, different seams.
 pub struct UsageMeteringProvider {
     inner: Arc<dyn Provider>,
-    sink: Arc<Mutex<UsageAccumulator>>,
+    sink: Arc<std::sync::Mutex<UsageAccumulator>>,
+    last: Option<FinalTurnCell>,
 }
 
 impl UsageMeteringProvider {
-    /// Wrap a base provider with a request-scoped usage sink.
+    /// Wrap a base provider with a request-scoped usage sink, recording
+    /// totals only (no lane cell). Used where no agent reads final-turn
+    /// occupancy.
     #[must_use]
-    pub fn new(inner: Arc<dyn Provider>, sink: Arc<Mutex<UsageAccumulator>>) -> Self {
-        Self { inner, sink }
+    pub fn new(inner: Arc<dyn Provider>, sink: Arc<std::sync::Mutex<UsageAccumulator>>) -> Self {
+        Self {
+            inner,
+            sink,
+            last: None,
+        }
+    }
+
+    /// Wrap a base provider for one agent lane: totals still flow to the
+    /// shared sink, and the lane's final-turn usage lands in `last`, which
+    /// the lane's observer reads at its loop completion for
+    /// `aura.context_usage`.
+    #[must_use]
+    pub fn new_lane(
+        inner: Arc<dyn Provider>,
+        sink: Arc<std::sync::Mutex<UsageAccumulator>>,
+        last: FinalTurnCell,
+    ) -> Self {
+        Self {
+            inner,
+            sink,
+            last: Some(last),
+        }
     }
 
     /// The request-scoped usage sink. The observer reads this at
     /// `LoopComplete` to emit the terminal `aura.usage` event.
     #[must_use]
-    pub fn sink(&self) -> &Arc<Mutex<UsageAccumulator>> {
+    pub fn sink(&self) -> &Arc<std::sync::Mutex<UsageAccumulator>> {
         &self.sink
     }
 }
@@ -72,6 +107,7 @@ impl Provider for UsageMeteringProvider {
     ) -> Pin<Box<dyn Future<Output = Result<StreamHandle, ProviderError>> + Send + '_>> {
         let inner = Arc::clone(&self.inner);
         let sink = Arc::clone(&self.sink);
+        let last = self.last.clone();
         Box::pin(async move {
             let handle = inner.complete_stream(request, ctx).await?;
             // Preserve the inner stream's cancellation token and correlation
@@ -83,6 +119,7 @@ impl Provider for UsageMeteringProvider {
             let metered = MeteredStream {
                 inner: stream,
                 sink,
+                last,
             };
             Ok(StreamHandle::new(
                 Box::pin(metered),
@@ -102,7 +139,8 @@ impl Provider for UsageMeteringProvider {
 }
 
 /// A stream wrapper that meters the terminal `StreamEvent::Completed` usage
-/// into the request-scoped sink before forwarding the event.
+/// into the request-scoped sink (and the lane's final-turn cell, when the
+/// lane carries one) before forwarding the event.
 ///
 /// Metering happens at the point usage metadata actually arrives (the
 /// `Completed` event), once per stream, with no estimation and no
@@ -110,18 +148,16 @@ impl Provider for UsageMeteringProvider {
 /// `Started` metadata (which some providers also populate) is deliberately
 /// not read.
 ///
-/// The sink is a `tokio::sync::Mutex`, but the write site is the synchronous
-/// `poll_next`. The lock is acquired with `try_lock`: the coordinator and
-/// worker loops drive provider streams sequentially (the `DagExecutor`'s
-/// ready-task loop awaits each worker, and the coordinator's own stream
-/// completes before any tool runs), so at most one stream is active per
-/// request, and the observer reads the sink only at `LoopComplete` after the
-/// stream has ended. The lock is therefore never contended at the write site;
-/// the `expect` names that invariant so a future parallelization that breaks
-/// it fails loud rather than silently undercounting.
+/// The sink is a std mutex written from this synchronous `poll_next`,
+/// where sibling lanes may poll concurrently (the pin's `join_all`); the
+/// guard covers a field update only and is never held across an await.
+/// A call whose `Completed` carries no usage writes nothing to the lane
+/// cell, so the cell keeps that agent's last REPORTED turn rather than
+/// borrowing another agent's.
 struct MeteredStream {
     inner: CompletionStream,
-    sink: Arc<Mutex<UsageAccumulator>>,
+    sink: Arc<std::sync::Mutex<UsageAccumulator>>,
+    last: Option<FinalTurnCell>,
 }
 
 impl Stream for MeteredStream {
@@ -134,11 +170,21 @@ impl Stream for MeteredStream {
             Poll::Ready(Some(Err(error))) => Poll::Ready(Some(Err(error))),
             Poll::Ready(Some(Ok(StreamEvent::Completed { metadata }))) => {
                 if let Some(usage) = metadata.usage {
-                    let mut acc = self.sink.try_lock().expect(
-                        "usage sink uncontended: provider streams run sequentially within a \
-                         request and the observer reads only at LoopComplete",
-                    );
-                    acc.add(usage);
+                    {
+                        let mut acc = self
+                            .sink
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner);
+                        acc.add(usage);
+                    }
+                    if let Some(last) = &self.last {
+                        *last
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some((
+                            u64::from(usage.input_tokens),
+                            u64::from(usage.output_tokens),
+                        ));
+                    }
                 }
                 Poll::Ready(Some(Ok(StreamEvent::Completed { metadata })))
             }
@@ -220,7 +266,9 @@ mod tests {
         // metered.
         let _ = handle.collect().await.unwrap();
 
-        let acc = sink.lock().await;
+        let acc = sink
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         assert_eq!(acc.prompt_tokens(), 10);
         assert_eq!(acc.completion_tokens(), 5);
         assert_eq!(acc.total_tokens(), 15);
@@ -254,7 +302,9 @@ mod tests {
         let h2 = metered.complete_stream(request(), ctx()).await.unwrap();
         let _ = h2.collect().await.unwrap();
 
-        let acc = sink.lock().await;
+        let acc = sink
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         assert_eq!(acc.prompt_tokens(), 30);
         assert_eq!(acc.completion_tokens(), 13);
     }
@@ -272,9 +322,90 @@ mod tests {
         let handle = metered.complete_stream(request(), ctx()).await.unwrap();
         let _ = handle.collect().await.unwrap();
 
-        let acc = sink.lock().await;
+        let acc = sink
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         assert_eq!(acc.prompt_tokens(), 0);
         assert_eq!(acc.completion_tokens(), 0);
+    }
+
+    /// N1 regression (Gate A round 1): two lanes over one shared sink keep
+    /// their own final-turn cells - a worker lane's usage never lands in
+    /// the coordinator lane's cell - while the shared totals carry both.
+    #[tokio::test]
+    async fn lanes_keep_separate_final_turn_cells_over_one_sink() {
+        let mock = MockProvider::new(vec![
+            text_response_with_usage(
+                "coordinator turn",
+                TokenUsage {
+                    input_tokens: 30,
+                    output_tokens: 3,
+                },
+            ),
+            text_response_with_usage(
+                "worker turn",
+                TokenUsage {
+                    input_tokens: 60,
+                    output_tokens: 6,
+                },
+            ),
+            agent_driver_rs::mock::mock_text_response("no usage on this turn"),
+        ]);
+        let base: Arc<dyn Provider> = Arc::new(mock);
+        let sink = shared_accumulator();
+        let coordinator_cell: FinalTurnCell = Arc::new(std::sync::Mutex::new(None));
+        let worker_cell: FinalTurnCell = Arc::new(std::sync::Mutex::new(None));
+
+        let coordinator = UsageMeteringProvider::new_lane(
+            Arc::clone(&base),
+            Arc::clone(&sink),
+            Arc::clone(&coordinator_cell),
+        );
+        let worker = UsageMeteringProvider::new_lane(
+            Arc::clone(&base),
+            Arc::clone(&sink),
+            Arc::clone(&worker_cell),
+        );
+
+        // Coordinator's turn, then the worker's - interleaved lanes over
+        // one sink, as sibling tool calls produce.
+        let h1 = coordinator.complete_stream(request(), ctx()).await.unwrap();
+        let _ = h1.collect().await.unwrap();
+        let h2 = worker.complete_stream(request(), ctx()).await.unwrap();
+        let _ = h2.collect().await.unwrap();
+
+        assert_eq!(
+            *coordinator_cell
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+            Some((30, 3)),
+            "the coordinator lane holds its own call"
+        );
+        assert_eq!(
+            *worker_cell
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+            Some((60, 6)),
+            "the worker lane holds its own call, not the coordinator's"
+        );
+
+        // A call whose Completed carries no usage leaves both cells alone
+        // (the stock mock helpers set usage: None - reuse the raw mock).
+        let h3 = worker.complete_stream(request(), ctx()).await.unwrap();
+        let _ = h3.collect().await.unwrap();
+        assert_eq!(
+            *worker_cell
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+            Some((60, 6)),
+            "a usage-less call keeps the lane's last REPORTED turn"
+        );
+
+        let acc = sink
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        assert_eq!(acc.prompt_tokens(), 90);
+        assert_eq!(acc.completion_tokens(), 9);
     }
 
     /// `list_models` delegates to the inner provider.

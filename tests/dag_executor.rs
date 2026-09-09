@@ -28,7 +28,7 @@ use agent_driver_prototype::coordinator_loop::{
     Attempt, CreatePlanArgs, ExecutionObservation, LoopBudget, PlanExecutor, RunStore,
     TaskObservation, WorkerRoster, WorkerSections,
 };
-use agent_driver_prototype::dag_executor::{DagExecutor, WorkerLoopConfig};
+use agent_driver_prototype::dag_executor::{DagExecutor, WorkerLane, WorkerLoopConfig};
 use agent_driver_prototype::mcp_client::SidecarClient;
 use agent_driver_prototype::producers::ToolInventory;
 use agent_driver_prototype::types::{FailureCategory, StepInput};
@@ -456,21 +456,27 @@ impl AgentObserver for RecordingWorkerObserver {
 }
 
 /// A factory that records every (task_id, worker_id) it is asked to observe
-/// and hands out [`RecordingWorkerObserver`]s sharing one event log.
+/// and hands out [`RecordingWorkerObserver`]s sharing one event log. Each
+/// lane returns the run's scripted provider, matching the shim's lane
+/// contract (the lane's provider serves the task's calls).
 struct RecordingObserverFactory {
     dispatches: Arc<std::sync::Mutex<Vec<(usize, String)>>>,
     events: Arc<std::sync::Mutex<Vec<&'static str>>>,
+    provider: Arc<dyn agent_driver_rs::Provider>,
 }
 
 impl WorkerObserverFactory for RecordingObserverFactory {
-    fn observer_for(&self, task_id: usize, worker_id: &str) -> Arc<dyn AgentObserver> {
+    fn lane_for(&self, task_id: usize, worker_id: &str) -> WorkerLane {
         self.dispatches
             .lock()
             .expect("dispatches lock poisoned")
             .push((task_id, worker_id.to_owned()));
-        Arc::new(RecordingWorkerObserver {
-            events: Arc::clone(&self.events),
-        })
+        WorkerLane {
+            observer: Arc::new(RecordingWorkerObserver {
+                events: Arc::clone(&self.events),
+            }),
+            provider: Arc::clone(&self.provider),
+        }
     }
 }
 
@@ -505,13 +511,17 @@ async fn worker_observer_factory_observes_the_dispatched_task() {
 
     let dispatches = Arc::new(std::sync::Mutex::new(Vec::new()));
     let events = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let scripted: Arc<dyn agent_driver_rs::Provider> = Arc::new(MockProvider::new(responses));
     let factory = Arc::new(RecordingObserverFactory {
         dispatches: Arc::clone(&dispatches),
         events: Arc::clone(&events),
+        provider: Arc::clone(&scripted),
     });
 
     let config = WorkerLoopConfig {
-        provider: Arc::new(MockProvider::new(responses)),
+        // The lane hands this same provider back per task; the template
+        // copy exists for the no-factory path.
+        provider: Arc::clone(&scripted),
         model: model(),
         budget: LoopBudget::new(8).expect("non-zero budget"),
         system_prompt: SystemPrompt::new("You are a worker."),

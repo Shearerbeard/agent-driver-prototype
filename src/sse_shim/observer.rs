@@ -36,7 +36,6 @@ use std::time::Instant;
 use agent_driver_rs::ToolCallId;
 use agent_driver_rs::agent::{AgentEvent, AgentObserver, LoopStopReason};
 use async_trait::async_trait;
-use tokio::sync::Mutex;
 use tokio::sync::mpsc::Sender;
 
 use super::events::{
@@ -78,6 +77,9 @@ struct PlanCapture {
 /// - a shared usage accumulator (read at `LoopComplete` for `aura.usage`;
 ///   written by the `UsageMeteringProvider` decorator, not by the
 ///   observer — C1),
+/// - the coordinator lane's final-turn usage cell (read at `LoopComplete`
+///   for `aura.context_usage`; written only by the coordinator's own
+///   metering lane, so a worker's usage is never attributed to "main"),
 /// - a bounded channel sender (events flow to the SSE stream handler —
 ///   C10).
 pub struct ShimObserver {
@@ -85,7 +87,8 @@ pub struct ShimObserver {
     model: String,
     chat_completion_id: String,
     created: u64,
-    usage: Arc<Mutex<UsageAccumulator>>,
+    usage: Arc<std::sync::Mutex<UsageAccumulator>>,
+    final_turn: super::usage_metering::FinalTurnCell,
     event_tx: Sender<AuraEvent>,
     /// Per-tool-call start instants (R5): the coordinator's `ToolCallStart`
     /// records `Instant::now()`, and the matching `ToolCallComplete` computes
@@ -106,16 +109,19 @@ impl ShimObserver {
     /// `"chatcmpl-<uuid>"`), stable across all chunks in the stream. The
     /// `created` timestamp is the Unix epoch seconds of the request start.
     /// The `event_tx` sender feeds the SSE stream handler.
-    /// The `usage` sink is shared with the `UsageMeteringProvider`
-    /// decorator (C1): the decorator writes token totals; the observer
-    /// reads them at `LoopComplete`.
+    /// The `usage` sink is shared with every metering lane's decorator
+    /// (C1): the decorators write token totals; the observer reads them at
+    /// `LoopComplete`. The `final_turn` cell is shared with the
+    /// COORDINATOR's lane only (`UsageMeteringProvider::new_lane`): the
+    /// observer reads it at `LoopComplete` for `aura.context_usage`.
     #[must_use]
     pub fn new(
         session_id: ShimSessionId,
         model: impl Into<String>,
         chat_completion_id: impl Into<String>,
         created: u64,
-        usage: Arc<Mutex<UsageAccumulator>>,
+        usage: Arc<std::sync::Mutex<UsageAccumulator>>,
+        final_turn: super::usage_metering::FinalTurnCell,
         event_tx: Sender<AuraEvent>,
     ) -> Self {
         Self {
@@ -124,6 +130,7 @@ impl ShimObserver {
             chat_completion_id: chat_completion_id.into(),
             created,
             usage,
+            final_turn,
             event_tx,
             tool_starts: std::sync::Mutex::new(HashMap::new()),
             plan_args: std::sync::Mutex::new(HashMap::new()),
@@ -243,29 +250,18 @@ impl ShimObserver {
     }
 
     /// Build the `plan_created` event for a successfully completed
-    /// `create_plan` call, or `None` when the mapped fields would violate
-    /// the payload's construction rules (an empty goal or rationale slipped
-    /// through the tool's own validation). `None` drops the named event and
-    /// logs; it never breaks the stream.
-    fn plan_created_event(&self, capture: PlanCapture) -> Option<AuraEvent> {
-        match PlanCreatedPayload::new(
+    /// `create_plan` call. The payload constructs unconditionally: the
+    /// string fields pass through unrestricted (aura's shapes; Gate A
+    /// round-1 finding N2), so a captured successful plan always emits.
+    fn plan_created_event(&self, capture: PlanCapture) -> AuraEvent {
+        AuraEvent::PlanCreated(PlanCreatedPayload::new(
             capture.goal,
             capture.task_count,
             capture.rationale,
             None,
             COORDINATOR_AGENT_ID,
             self.session_id.as_str(),
-        ) {
-            Ok(payload) => Some(AuraEvent::PlanCreated(payload)),
-            Err(error) => {
-                tracing::warn!(
-                    session_id = %self.session_id,
-                    %error,
-                    "dropping plan_created event: captured fields failed payload validation"
-                );
-                None
-            }
-        }
+        ))
     }
 
     /// The coordinator's `aura.context_usage` event: final-turn occupancy
@@ -350,9 +346,8 @@ impl AgentObserver for ShimObserver {
                         .lock()
                         .expect("plan_args lock poisoned")
                         .remove(id);
-                    if let Some(capture) = capture
-                        && let Some(event) = self.plan_created_event(capture)
-                    {
+                    if let Some(capture) = capture {
+                        let event = self.plan_created_event(capture);
                         self.emit(event).await;
                     }
                 }
@@ -365,23 +360,28 @@ impl AgentObserver for ShimObserver {
             }
             AgentEvent::LoopComplete { reason, .. } => {
                 // Emit the final aura.usage event from the accumulator that
-                // the UsageMeteringProvider decorator fed (C1), and read the
-                // same sink's latest call for the coordinator's final-turn
-                // context occupancy (S102: aura's server emits usage then
-                // context_usage at stream end).
-                let usage = self.usage.lock().await;
-                let (prompt, completion, (context_tokens, response_tokens)) = (
-                    usage.prompt_tokens(),
-                    usage.completion_tokens(),
-                    usage.last_usage().unwrap_or((0, 0)),
-                );
+                // every metering lane fed (C1), and the coordinator's
+                // `aura.context_usage` from its own lane cell (S102: aura's
+                // server emits usage then context_usage at stream end). Both
+                // guards drop before the first await.
+                let (prompt, completion) = {
+                    let usage = self
+                        .usage
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    (usage.prompt_tokens(), usage.completion_tokens())
+                };
+                let (context_tokens, response_tokens) = self
+                    .final_turn
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .unwrap_or((0, 0));
                 self.emit(AuraEvent::Usage(UsagePayload::from_totals(
                     prompt,
                     completion,
                     self.session_id.as_str(),
                 )))
                 .await;
-                drop(usage);
                 self.emit(self.context_usage_event(context_tokens, response_tokens))
                     .await;
 
@@ -422,7 +422,9 @@ pub struct ShimWorkerObserver {
     session_id: ShimSessionId,
     task_id: usize,
     worker_id: String,
-    usage: Arc<Mutex<UsageAccumulator>>,
+    /// This worker lane's final-turn usage cell, written only by the
+    /// lane's metering decorator and read at this loop's completion.
+    final_turn: super::usage_metering::FinalTurnCell,
     event_tx: Sender<AuraEvent>,
     /// Per-tool-call start instants (R5), same pattern as the coordinator's
     /// observer.
@@ -436,14 +438,14 @@ impl ShimWorkerObserver {
         session_id: ShimSessionId,
         task_id: usize,
         worker_id: impl Into<String>,
-        usage: Arc<Mutex<UsageAccumulator>>,
+        final_turn: super::usage_metering::FinalTurnCell,
         event_tx: Sender<AuraEvent>,
     ) -> Self {
         Self {
             session_id,
             task_id,
             worker_id: worker_id.into(),
-            usage,
+            final_turn,
             event_tx,
             tool_starts: std::sync::Mutex::new(HashMap::new()),
         }
@@ -461,12 +463,16 @@ impl ShimWorkerObserver {
     }
 
     /// The worker's `aura.context_usage` event: final-turn occupancy read
-    /// from the metering sink at this worker's loop completion. The sink's
-    /// latest call is this worker's final turn because provider streams run
-    /// sequentially within a request (see `UsageAccumulator::last_usage`).
+    /// from THIS lane's cell at this worker's loop completion. The cell is
+    /// private to the lane, so sibling workers running concurrently (the
+    /// pin's `join_all`) and the coordinator's later calls cannot
+    /// contaminate the attribution.
     async fn emit_context_usage(&self) {
-        let (context_tokens, response_tokens) =
-            self.usage.lock().await.last_usage().unwrap_or((0, 0));
+        let (context_tokens, response_tokens) = self
+            .final_turn
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .unwrap_or((0, 0));
         self.emit(AuraEvent::ContextUsage(
             ContextUsagePayload::from_final_turn(
                 context_tokens,
@@ -607,9 +613,28 @@ mod tests {
     use super::*;
     use crate::sse_shim::events::{EVENT_USAGE, SSE_DONE};
     use crate::sse_shim::session::{ShimSessionId, shared_accumulator};
+    use crate::sse_shim::usage_metering::FinalTurnCell;
     use agent_driver_rs::streaming::TokenUsage;
     use std::time::Duration;
     use tokio::sync::mpsc;
+
+    /// An empty final-turn cell.
+    fn empty_cell() -> FinalTurnCell {
+        Arc::new(std::sync::Mutex::new(None))
+    }
+
+    /// A final-turn cell holding one reported usage.
+    fn cell_with(input: u64, output: u64) -> FinalTurnCell {
+        Arc::new(std::sync::Mutex::new(Some((input, output))))
+    }
+
+    /// Add usage to a std-mutex accumulator sink (test-side stand-in for
+    /// the metering decorator's write).
+    fn feed_sink(sink: &Arc<std::sync::Mutex<UsageAccumulator>>, usage: TokenUsage) {
+        sink.lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .add(usage);
+    }
 
     async fn drain(rx: &mut mpsc::Receiver<AuraEvent>) -> Vec<AuraEvent> {
         let mut out = Vec::new();
@@ -627,11 +652,16 @@ mod tests {
     async fn loop_complete_emits_usage_then_finish_then_done() {
         let session_id = ShimSessionId::generate();
         let usage = shared_accumulator();
-        // Pre-feed the sink the way the UsageMeteringProvider would.
-        usage.lock().await.add(TokenUsage {
-            input_tokens: 100,
-            output_tokens: 40,
-        });
+        // Pre-feed the sink and the coordinator lane's cell the way the
+        // lane's UsageMeteringProvider would.
+        feed_sink(
+            &usage,
+            TokenUsage {
+                input_tokens: 100,
+                output_tokens: 40,
+            },
+        );
+        let final_turn = cell_with(100, 40);
 
         let (tx, mut rx) = mpsc::channel::<AuraEvent>(16);
         {
@@ -641,6 +671,7 @@ mod tests {
                 "chatcmpl-test",
                 123,
                 Arc::clone(&usage),
+                final_turn,
                 tx,
             );
             observer
@@ -703,6 +734,7 @@ mod tests {
                 "id",
                 0,
                 shared_accumulator(),
+                empty_cell(),
                 tx,
             );
             observer
@@ -744,6 +776,7 @@ mod tests {
                 "id",
                 0,
                 shared_accumulator(),
+                empty_cell(),
                 tx,
             );
             let id = agent_driver_rs::ToolCallId::new("call_1");
@@ -792,6 +825,7 @@ mod tests {
                 "id",
                 0,
                 shared_accumulator(),
+                empty_cell(),
                 tx,
             );
             observer
@@ -827,6 +861,7 @@ mod tests {
                 "id",
                 0,
                 shared_accumulator(),
+                empty_cell(),
                 tx,
             );
             let args = crate::coordinator_loop::CreatePlanArgs {
@@ -888,6 +923,62 @@ mod tests {
         );
     }
 
+    /// N2 regression (Gate A round 1): a successful `create_plan` whose
+    /// rationale is the empty string still emits `plan_created` - the
+    /// planning tool validates presence, not content, and aura's field is
+    /// an unrestricted string.
+    #[tokio::test]
+    async fn create_plan_with_empty_rationale_still_emits_plan_created() {
+        let (tx, mut rx) = mpsc::channel::<AuraEvent>(16);
+        {
+            let observer = ShimObserver::new(
+                ShimSessionId::generate(),
+                "m",
+                "id",
+                0,
+                shared_accumulator(),
+                empty_cell(),
+                tx,
+            );
+            let args = crate::coordinator_loop::CreatePlanArgs {
+                goal: "Goal with no rationale text".to_owned(),
+                steps: vec![crate::types::StepInput::LeafTask {
+                    task: "a".to_owned(),
+                    worker: None,
+                }],
+                planning_rationale: String::new(),
+            };
+            let input =
+                serde_json::to_value(&args).expect("CreatePlanArgs serializes to tool input");
+            let id = agent_driver_rs::ToolCallId::new("call_plan_empty");
+            let name = agent_driver_rs::ToolName::new("create_plan").unwrap();
+            observer
+                .on_event(&AgentEvent::ToolCallStart {
+                    id: id.clone(),
+                    name: name.clone(),
+                    input,
+                })
+                .await;
+            observer
+                .on_event(&AgentEvent::ToolCallComplete {
+                    id,
+                    name,
+                    result: "{\"plan_id\":\"p9\"}".to_owned(),
+                    is_error: false,
+                })
+                .await;
+        }
+        let events = drain(&mut rx).await;
+        let plan = events
+            .iter()
+            .find(|e| e.sse_event_name() == Some(crate::sse_shim::events::EVENT_PLAN_CREATED))
+            .expect("plan_created emitted for the empty-rationale plan");
+        let v: serde_json::Value = serde_json::from_str(&plan.sse_data()).unwrap();
+        assert_eq!(v["goal"].as_str(), Some("Goal with no rationale text"));
+        assert_eq!(v["routing_rationale"].as_str(), Some(""));
+        assert_eq!(v["task_count"].as_u64(), Some(1));
+    }
+
     /// S102: a FAILED `create_plan` (arguments rejected by the tool) emits
     /// no `plan_created` — the plan never existed.
     #[tokio::test]
@@ -900,6 +991,7 @@ mod tests {
                 "id",
                 0,
                 shared_accumulator(),
+                empty_cell(),
                 tx,
             );
             let id = agent_driver_rs::ToolCallId::new("call_plan");
@@ -938,18 +1030,35 @@ mod tests {
     async fn loop_complete_emits_context_usage_after_usage() {
         let session_id = ShimSessionId::generate();
         let usage = shared_accumulator();
-        usage.lock().await.add(TokenUsage {
-            input_tokens: 100,
-            output_tokens: 40,
-        });
-        usage.lock().await.add(TokenUsage {
-            input_tokens: 70,
-            output_tokens: 9,
-        });
+        feed_sink(
+            &usage,
+            TokenUsage {
+                input_tokens: 100,
+                output_tokens: 40,
+            },
+        );
+        // A worker lane's call (60/6) and the coordinator lane's final turn
+        // (70/9): all three land in the shared totals, but only the
+        // coordinator's lands in its own cell.
+        feed_sink(
+            &usage,
+            TokenUsage {
+                input_tokens: 60,
+                output_tokens: 6,
+            },
+        );
+        feed_sink(
+            &usage,
+            TokenUsage {
+                input_tokens: 70,
+                output_tokens: 9,
+            },
+        );
+        let final_turn = cell_with(70, 9);
 
         let (tx, mut rx) = mpsc::channel::<AuraEvent>(16);
         {
-            let observer = ShimObserver::new(session_id, "m", "id", 0, usage, tx);
+            let observer = ShimObserver::new(session_id, "m", "id", 0, usage, final_turn, tx);
             observer
                 .on_event(&AgentEvent::LoopComplete {
                     reason: LoopStopReason::EndTurn,
@@ -963,8 +1072,8 @@ mod tests {
 
         assert_eq!(names[0], Some(crate::sse_shim::events::EVENT_USAGE));
         let u: serde_json::Value = serde_json::from_str(&events[0].sse_data()).unwrap();
-        assert_eq!(u["prompt_tokens"].as_u64(), Some(170));
-        assert_eq!(u["completion_tokens"].as_u64(), Some(49));
+        assert_eq!(u["prompt_tokens"].as_u64(), Some(230));
+        assert_eq!(u["completion_tokens"].as_u64(), Some(55));
 
         assert_eq!(names[1], Some(crate::sse_shim::events::EVENT_CONTEXT_USAGE));
         let c: serde_json::Value = serde_json::from_str(&events[1].sse_data()).unwrap();
@@ -988,13 +1097,8 @@ mod tests {
     async fn worker_tool_call_maps_to_orchestrator_tool_events() {
         let (tx, mut rx) = mpsc::channel::<AuraEvent>(16);
         {
-            let observer = ShimWorkerObserver::new(
-                ShimSessionId::generate(),
-                4,
-                "operator",
-                shared_accumulator(),
-                tx,
-            );
+            let observer =
+                ShimWorkerObserver::new(ShimSessionId::generate(), 4, "operator", empty_cell(), tx);
             let id = agent_driver_rs::ToolCallId::new("w_call_1");
             let name = agent_driver_rs::ToolName::new("keystrokes").unwrap();
             observer
@@ -1049,13 +1153,8 @@ mod tests {
     async fn worker_thinking_maps_to_worker_reasoning_and_text_to_nothing() {
         let (tx, mut rx) = mpsc::channel::<AuraEvent>(16);
         {
-            let observer = ShimWorkerObserver::new(
-                ShimSessionId::generate(),
-                2,
-                "verifier",
-                shared_accumulator(),
-                tx,
-            );
+            let observer =
+                ShimWorkerObserver::new(ShimSessionId::generate(), 2, "verifier", empty_cell(), tx);
             observer
                 .on_event(&AgentEvent::ThinkingDelta {
                     thinking: "checking the claim".to_owned(),
@@ -1086,15 +1185,15 @@ mod tests {
     /// to the coordinator's observer).
     #[tokio::test]
     async fn worker_loop_complete_emits_only_context_usage() {
-        let usage = shared_accumulator();
-        usage.lock().await.add(TokenUsage {
-            input_tokens: 60,
-            output_tokens: 6,
-        });
         let (tx, mut rx) = mpsc::channel::<AuraEvent>(16);
         {
-            let observer =
-                ShimWorkerObserver::new(ShimSessionId::generate(), 0, "operations", usage, tx);
+            let observer = ShimWorkerObserver::new(
+                ShimSessionId::generate(),
+                0,
+                "operations",
+                cell_with(60, 6),
+                tx,
+            );
             observer
                 .on_event(&AgentEvent::LoopComplete {
                     reason: LoopStopReason::EndTurn,
@@ -1112,5 +1211,64 @@ mod tests {
         assert_eq!(v["context_tokens"].as_u64(), Some(60));
         assert_eq!(v["response_tokens"].as_u64(), Some(6));
         assert_eq!(v["agent_id"].as_str(), Some("operations"));
+    }
+
+    /// N1 regression (Gate A round 1): usage a WORKER reported never
+    /// attributes to "main". The shared totals carry the worker's call,
+    /// but the coordinator lane's cell is empty (its final turn reported
+    /// no usage), so main's `context_usage` reads zero - not the worker's
+    /// numbers.
+    #[tokio::test]
+    async fn worker_usage_is_not_attributed_to_main() {
+        let usage = shared_accumulator();
+        feed_sink(
+            &usage,
+            TokenUsage {
+                input_tokens: 60,
+                output_tokens: 6,
+            },
+        );
+
+        let (tx, mut rx) = mpsc::channel::<AuraEvent>(16);
+        {
+            let observer = ShimObserver::new(
+                ShimSessionId::generate(),
+                "m",
+                "id",
+                0,
+                usage,
+                empty_cell(),
+                tx,
+            );
+            observer
+                .on_event(&AgentEvent::LoopComplete {
+                    reason: LoopStopReason::EndTurn,
+                    total_iterations: 2,
+                })
+                .await;
+        }
+        let events = drain(&mut rx).await;
+        let context = events
+            .iter()
+            .find(|e| e.sse_event_name() == Some(crate::sse_shim::events::EVENT_CONTEXT_USAGE))
+            .expect("context_usage emitted");
+        let v: serde_json::Value = serde_json::from_str(&context.sse_data()).unwrap();
+        assert_eq!(v["agent_id"].as_str(), Some("main"));
+        assert_eq!(
+            v["context_tokens"].as_u64(),
+            Some(0),
+            "an empty coordinator lane reports zero, never the worker's usage"
+        );
+        assert_eq!(v["response_tokens"].as_u64(), Some(0));
+
+        // The totals still carry the worker's call: aura.usage sums every
+        // lane.
+        let usage_event = events
+            .iter()
+            .find(|e| e.sse_event_name() == Some(EVENT_USAGE))
+            .expect("usage emitted");
+        let u: serde_json::Value = serde_json::from_str(&usage_event.sse_data()).unwrap();
+        assert_eq!(u["prompt_tokens"].as_u64(), Some(60));
+        assert_eq!(u["completion_tokens"].as_u64(), Some(6));
     }
 }

@@ -556,8 +556,11 @@ impl WorkerReasoningPayload {
 /// continuous loop may plan more than once per turn, so several of these per
 /// stream are legal — aura-e2e reads routing fields from the first.
 ///
-/// Forbidden invalid state: empty `goal` or `routing_rationale`. The private
-/// fields and [`new`](Self::new) constructor enforce this.
+/// No empty-string rejection on `goal` or `routing_rationale`: aura's
+/// fields are unrestricted strings, and the planning tool validates neither
+/// (its schema requires presence, not content), so a rejection here would
+/// drop the named event for a plan the tool recorded successfully (Gate A
+/// round-1 finding N2).
 #[derive(Debug, Clone, Serialize)]
 pub struct PlanCreatedPayload {
     goal: String,
@@ -571,13 +574,10 @@ pub struct PlanCreatedPayload {
 }
 
 impl PlanCreatedPayload {
-    /// Construct a plan-created payload, rejecting empty `goal` or
-    /// `routing_rationale`.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`ShimError::InvalidRequest`] when `goal` or
-    /// `routing_rationale` is empty.
+    /// Construct a plan-created payload. The string fields pass through
+    /// unrestricted, mirroring aura's types; `routing_mode` is pinned to
+    /// orchestrated by the card ruling.
+    #[must_use]
     pub fn new(
         goal: impl Into<String>,
         task_count: usize,
@@ -585,26 +585,16 @@ impl PlanCreatedPayload {
         planning_response: Option<String>,
         agent_id: impl Into<String>,
         session_id: impl Into<String>,
-    ) -> Result<Self, ShimError> {
-        let goal = goal.into();
-        let routing_rationale = routing_rationale.into();
-        if goal.trim().is_empty() {
-            return Err(ShimError::InvalidRequest("plan goal is empty".to_owned()));
-        }
-        if routing_rationale.trim().is_empty() {
-            return Err(ShimError::InvalidRequest(
-                "plan routing_rationale is empty".to_owned(),
-            ));
-        }
-        Ok(Self {
-            goal,
+    ) -> Self {
+        Self {
+            goal: goal.into(),
             task_count,
             routing_mode: RoutingMode::Orchestrated,
-            routing_rationale,
+            routing_rationale: routing_rationale.into(),
             planning_response,
             agent_id: agent_id.into(),
             session_id: session_id.into(),
-        })
+        }
     }
 }
 
@@ -1205,8 +1195,7 @@ mod tests {
 
     #[test]
     fn plan_created_serializes_the_aura_events_shape() {
-        let payload =
-            PlanCreatedPayload::new("goal", 2, "why", None, "main", "sid").expect("non-empty");
+        let payload = PlanCreatedPayload::new("goal", 2, "why", None, "main", "sid");
         let v: serde_json::Value =
             serde_json::from_str(&serde_json::to_string(&payload).unwrap()).unwrap();
         assert_eq!(v["goal"].as_str(), Some("goal"));
@@ -1216,6 +1205,20 @@ mod tests {
         assert!(v.get("planning_response").is_none());
         assert_eq!(v["agent_id"].as_str(), Some("main"));
         assert_eq!(v["session_id"].as_str(), Some("sid"));
+    }
+
+    /// N2 regression (Gate A round 1): a successful plan whose rationale
+    /// (or goal) is the empty string still emits its `plan_created` -
+    /// aura's fields are unrestricted, and the planning tool validates
+    /// presence, not content.
+    #[test]
+    fn plan_created_accepts_empty_strings_like_aura() {
+        let payload = PlanCreatedPayload::new("", 1, "", None, "main", "sid");
+        let v: serde_json::Value =
+            serde_json::from_str(&serde_json::to_string(&payload).unwrap()).unwrap();
+        assert_eq!(v["goal"].as_str(), Some(""));
+        assert_eq!(v["routing_rationale"].as_str(), Some(""));
+        assert_eq!(v["task_count"].as_u64(), Some(1));
     }
 
     #[test]
