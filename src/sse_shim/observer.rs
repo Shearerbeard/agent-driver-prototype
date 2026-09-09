@@ -1,11 +1,16 @@
-//! The shim's `AgentObserver` implementation: maps `AgentEvent` from the
-//! coordinator loop to [`AuraEvent`]s on the SSE stream.
+//! The shim's `AgentObserver` implementations: the coordinator's
+//! [`ShimObserver`] and the per-worker [`ShimWorkerObserver`], mapping
+//! `AgentEvent`s from their loops onto [`AuraEvent`]s on the SSE stream.
 //!
-//! The observer is attached to the `CoordinatorLoop` via `with_observer`.
-//! It sees coordinator-level events: text deltas, tool calls, and loop
-//! completion. Worker-loop events (inside the `DagExecutor`) flow through
-//! the separate `ShimDagObserver` (C2) — see DESIGN.md for the seam
-//! layout.
+//! Both attach via `with_observer`. The coordinator's observer sees
+//! coordinator-level events: text deltas, tool calls, and loop completion.
+//! The worker observer (S102) sees one worker loop's events inside the
+//! `DagExecutor`: its tool calls surface as
+//! `aura.orchestrator.tool_call_started/completed` with the worker's agent
+//! id, its thinking as `aura.orchestrator.worker_reasoning`, and its final
+//! turn as `aura.context_usage` — the events the CLI renders under the
+//! task header. Task lifecycle events still flow through the separate
+//! `ShimDagObserver` (C2) — see DESIGN.md for the seam layout.
 //!
 //! ## Usage accounting (C1)
 //!
@@ -36,7 +41,8 @@ use tokio::sync::mpsc::Sender;
 
 use super::events::{
     AuraEvent, ChatCompletionChunk, ContextUsagePayload, FinishReason, PlanCreatedPayload,
-    ReasoningPayload, ToolCompletePayload, ToolStartPayload, UsagePayload,
+    ReasoningPayload, ToolCallCompletedPayload, ToolCallStartedPayload, ToolCompletePayload,
+    ToolStartPayload, UsagePayload, WorkerReasoningPayload,
 };
 use super::session::{ShimSessionId, UsageAccumulator};
 use crate::coordinator_loop::CreatePlanArgs;
@@ -344,10 +350,10 @@ impl AgentObserver for ShimObserver {
                         .lock()
                         .expect("plan_args lock poisoned")
                         .remove(id);
-                    if let Some(capture) = capture {
-                        if let Some(event) = self.plan_created_event(capture) {
-                            self.emit(event).await;
-                        }
+                    if let Some(capture) = capture
+                        && let Some(event) = self.plan_created_event(capture)
+                    {
+                        self.emit(event).await;
                     }
                 }
             }
@@ -390,6 +396,178 @@ impl AgentObserver for ShimObserver {
             }
             // IterationStart is an internal lifecycle marker; no SSE event.
             AgentEvent::IterationStart { .. } => {}
+            // AgentEvent is #[non_exhaustive]; future variants get no SSE
+            // event until the shim explicitly maps them.
+            _ => {}
+        }
+    }
+}
+
+/// The per-worker `AgentObserver`: maps one worker loop's events onto the
+/// named `aura.orchestrator.*` events the CLI renders under the task
+/// header.
+///
+/// One observer per task run, minted by the shim's
+/// `ShimWorkerObserverFactory` (dag_lifecycle.rs) with the task id and the
+/// worker's agent id the executor resolved. It shares the request's event
+/// channel and usage sink with the coordinator's `ShimObserver`.
+///
+/// What it deliberately does NOT emit:
+/// - worker `TextDelta` as chat chunks: worker text is working output, not
+///   the assistant answer — only the coordinator's `TextDelta` is the
+///   answer stream (C3's byte-clean rule, applied to workers);
+/// - `aura.usage`, the finish chunk, or `[DONE]`: the stream's terminal
+///   frames belong to the coordinator's observer alone.
+pub struct ShimWorkerObserver {
+    session_id: ShimSessionId,
+    task_id: usize,
+    worker_id: String,
+    usage: Arc<Mutex<UsageAccumulator>>,
+    event_tx: Sender<AuraEvent>,
+    /// Per-tool-call start instants (R5), same pattern as the coordinator's
+    /// observer.
+    tool_starts: std::sync::Mutex<HashMap<ToolCallId, Instant>>,
+}
+
+impl ShimWorkerObserver {
+    /// Construct the observer for one task run.
+    #[must_use]
+    pub fn new(
+        session_id: ShimSessionId,
+        task_id: usize,
+        worker_id: impl Into<String>,
+        usage: Arc<Mutex<UsageAccumulator>>,
+        event_tx: Sender<AuraEvent>,
+    ) -> Self {
+        Self {
+            session_id,
+            task_id,
+            worker_id: worker_id.into(),
+            usage,
+            event_tx,
+            tool_starts: std::sync::Mutex::new(HashMap::new()),
+        }
+    }
+
+    /// Send an event to the SSE stream, logging if the channel is closed
+    /// (C10: bounded channel; disconnect is logged, not swallowed).
+    async fn emit(&self, event: AuraEvent) {
+        if self.event_tx.send(event).await.is_err() {
+            tracing::warn!(
+                session_id = %self.session_id,
+                "SSE event channel closed; worker event dropped"
+            );
+        }
+    }
+
+    /// The worker's `aura.context_usage` event: final-turn occupancy read
+    /// from the metering sink at this worker's loop completion. The sink's
+    /// latest call is this worker's final turn because provider streams run
+    /// sequentially within a request (see `UsageAccumulator::last_usage`).
+    async fn emit_context_usage(&self) {
+        let (context_tokens, response_tokens) =
+            self.usage.lock().await.last_usage().unwrap_or((0, 0));
+        self.emit(AuraEvent::ContextUsage(
+            ContextUsagePayload::from_final_turn(
+                context_tokens,
+                response_tokens,
+                self.worker_id.as_str(),
+                self.session_id.as_str(),
+            ),
+        ))
+        .await;
+    }
+}
+
+#[async_trait]
+impl AgentObserver for ShimWorkerObserver {
+    async fn on_event(&self, event: &AgentEvent) {
+        match event {
+            AgentEvent::TextDelta { .. } => {
+                // Worker text is working output, never the assistant answer:
+                // emitting it as chat chunks would splice it into the user's
+                // answer stream. Worker results reach the stream through
+                // `aura.orchestrator.task_completed`.
+            }
+            AgentEvent::ThinkingDelta { thinking } => {
+                // S102: worker thinking rides the named
+                // `worker_reasoning` event (C3 stands — never chat chunks).
+                // Empty deltas are dropped, not rejected.
+                if let Ok(payload) = WorkerReasoningPayload::new(
+                    self.task_id,
+                    self.worker_id.as_str(),
+                    thinking,
+                    self.session_id.as_str(),
+                ) {
+                    self.emit(AuraEvent::WorkerReasoning(payload)).await;
+                }
+            }
+            AgentEvent::ToolCallStart { id, name, input } => {
+                self.tool_starts
+                    .lock()
+                    .expect("tool_starts lock poisoned")
+                    .insert(id.clone(), Instant::now());
+                let payload = ToolCallStartedPayload::new(
+                    Some(self.task_id),
+                    id.as_str(),
+                    name.as_str(),
+                    self.worker_id.as_str(),
+                    if input.is_null() {
+                        None
+                    } else {
+                        Some(input.clone())
+                    },
+                    self.worker_id.as_str(),
+                    self.session_id.as_str(),
+                )
+                .expect("tool call id, name, and worker id are non-empty by ToolCallId/ToolName/worker_id construction");
+                self.emit(AuraEvent::ToolCallStarted(payload)).await;
+            }
+            AgentEvent::ToolCallComplete {
+                id,
+                result,
+                is_error,
+                ..
+            } => {
+                let duration_ms = self
+                    .tool_starts
+                    .lock()
+                    .expect("tool_starts lock poisoned")
+                    .remove(id)
+                    .map(|start| start.elapsed().as_millis() as u64)
+                    .unwrap_or(0);
+                // No tool_name and no worker_id here: the completed payload
+                // mirrors the aura-events shape, where identity travels in
+                // the agent context alone.
+                let payload = if *is_error {
+                    ToolCallCompletedPayload::failure(
+                        Some(self.task_id),
+                        id.as_str(),
+                        duration_ms,
+                        self.worker_id.as_str(),
+                        self.session_id.as_str(),
+                    )
+                } else {
+                    ToolCallCompletedPayload::success(
+                        Some(self.task_id),
+                        id.as_str(),
+                        duration_ms,
+                        result,
+                        self.worker_id.as_str(),
+                        self.session_id.as_str(),
+                    )
+                };
+                self.emit(AuraEvent::ToolCallCompleted(payload)).await;
+            }
+            AgentEvent::LoopComplete { .. } => {
+                // The worker's loop is done: report its final-turn context
+                // occupancy. The stream's terminal frames stay with the
+                // coordinator's observer.
+                self.emit_context_usage().await;
+            }
+            // IterationStart/IterationComplete carry no worker SSE event;
+            // usage is metered at the provider seam (C1).
+            AgentEvent::IterationStart { .. } | AgentEvent::IterationComplete { .. } => {}
             // AgentEvent is #[non_exhaustive]; future variants get no SSE
             // event until the shim explicitly maps them.
             _ => {}
@@ -800,5 +978,139 @@ mod tests {
 
         assert!(matches!(events[2], AuraEvent::ChatChunk(_)));
         assert!(matches!(events[3], AuraEvent::Done));
+    }
+
+    /// S102: the worker observer maps one worker loop's tool call onto the
+    /// orchestrator tool events — started carries task, worker, and
+    /// arguments; completed carries the outcome and NEITHER tool_name NOR
+    /// worker_id (the aura-events shape).
+    #[tokio::test]
+    async fn worker_tool_call_maps_to_orchestrator_tool_events() {
+        let (tx, mut rx) = mpsc::channel::<AuraEvent>(16);
+        {
+            let observer = ShimWorkerObserver::new(
+                ShimSessionId::generate(),
+                4,
+                "operator",
+                shared_accumulator(),
+                tx,
+            );
+            let id = agent_driver_rs::ToolCallId::new("w_call_1");
+            let name = agent_driver_rs::ToolName::new("keystrokes").unwrap();
+            observer
+                .on_event(&AgentEvent::ToolCallStart {
+                    id: id.clone(),
+                    name: name.clone(),
+                    input: serde_json::json!({"keys": "ls -la"}),
+                })
+                .await;
+            observer
+                .on_event(&AgentEvent::ToolCallComplete {
+                    id,
+                    name,
+                    result: "pane captured".to_owned(),
+                    is_error: false,
+                })
+                .await;
+        }
+        let events = drain(&mut rx).await;
+        assert_eq!(events.len(), 2);
+        assert_eq!(
+            events[0].sse_event_name(),
+            Some(crate::sse_shim::events::EVENT_TOOL_CALL_STARTED)
+        );
+        let s: serde_json::Value = serde_json::from_str(&events[0].sse_data()).unwrap();
+        assert_eq!(s["task_id"].as_u64(), Some(4));
+        assert_eq!(s["tool_call_id"].as_str(), Some("w_call_1"));
+        assert_eq!(s["tool_name"].as_str(), Some("keystrokes"));
+        assert_eq!(s["worker_id"].as_str(), Some("operator"));
+        assert_eq!(s["arguments"]["keys"].as_str(), Some("ls -la"));
+        assert_eq!(s["agent_id"].as_str(), Some("operator"));
+
+        assert_eq!(
+            events[1].sse_event_name(),
+            Some(crate::sse_shim::events::EVENT_TOOL_CALL_COMPLETED)
+        );
+        let c: serde_json::Value = serde_json::from_str(&events[1].sse_data()).unwrap();
+        assert_eq!(c["tool_call_id"].as_str(), Some("w_call_1"));
+        assert_eq!(c["success"].as_bool(), Some(true));
+        assert_eq!(c["result"].as_str(), Some("pane captured"));
+        assert!(c["duration_ms"].as_u64().is_some());
+        assert_eq!(c["task_id"].as_u64(), Some(4));
+        assert!(
+            c.get("tool_name").is_none() && c.get("worker_id").is_none(),
+            "the completed shape carries neither"
+        );
+    }
+
+    /// S102: worker thinking maps to `worker_reasoning`; worker text maps
+    /// to nothing (it is not the assistant answer — C3's byte-clean rule).
+    #[tokio::test]
+    async fn worker_thinking_maps_to_worker_reasoning_and_text_to_nothing() {
+        let (tx, mut rx) = mpsc::channel::<AuraEvent>(16);
+        {
+            let observer = ShimWorkerObserver::new(
+                ShimSessionId::generate(),
+                2,
+                "verifier",
+                shared_accumulator(),
+                tx,
+            );
+            observer
+                .on_event(&AgentEvent::ThinkingDelta {
+                    thinking: "checking the claim".to_owned(),
+                })
+                .await;
+            observer
+                .on_event(&AgentEvent::TextDelta {
+                    text: "working notes".to_owned(),
+                })
+                .await;
+        }
+        let events = drain(&mut rx).await;
+        assert_eq!(events.len(), 1, "text delta emits nothing");
+        assert_eq!(
+            events[0].sse_event_name(),
+            Some(crate::sse_shim::events::EVENT_WORKER_REASONING)
+        );
+        let v: serde_json::Value = serde_json::from_str(&events[0].sse_data()).unwrap();
+        assert_eq!(v["task_id"].as_u64(), Some(2));
+        assert_eq!(v["worker_id"].as_str(), Some("verifier"));
+        assert_eq!(v["content"].as_str(), Some("checking the claim"));
+        assert_eq!(v["agent_id"].as_str(), Some("verifier"));
+    }
+
+    /// S102: the worker's loop completion reports its final-turn
+    /// `context_usage` under the worker's agent id — and nothing else (no
+    /// usage totals, no finish chunk, no `[DONE]`; the stream tail belongs
+    /// to the coordinator's observer).
+    #[tokio::test]
+    async fn worker_loop_complete_emits_only_context_usage() {
+        let usage = shared_accumulator();
+        usage.lock().await.add(TokenUsage {
+            input_tokens: 60,
+            output_tokens: 6,
+        });
+        let (tx, mut rx) = mpsc::channel::<AuraEvent>(16);
+        {
+            let observer =
+                ShimWorkerObserver::new(ShimSessionId::generate(), 0, "operations", usage, tx);
+            observer
+                .on_event(&AgentEvent::LoopComplete {
+                    reason: LoopStopReason::EndTurn,
+                    total_iterations: 2,
+                })
+                .await;
+        }
+        let events = drain(&mut rx).await;
+        assert_eq!(events.len(), 1);
+        assert_eq!(
+            events[0].sse_event_name(),
+            Some(crate::sse_shim::events::EVENT_CONTEXT_USAGE)
+        );
+        let v: serde_json::Value = serde_json::from_str(&events[0].sse_data()).unwrap();
+        assert_eq!(v["context_tokens"].as_u64(), Some(60));
+        assert_eq!(v["response_tokens"].as_u64(), Some(6));
+        assert_eq!(v["agent_id"].as_str(), Some("operations"));
     }
 }

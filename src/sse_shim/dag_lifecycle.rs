@@ -1,19 +1,25 @@
 //! The shim's DAG lifecycle observer: translates task lifecycle events
-//! from the `DagExecutor` into `aura.orchestrator.*` SSE events.
+//! from the `DagExecutor` into `aura.orchestrator.*` SSE events, and mints
+//! the per-task worker observers whose tool and reasoning events fill the
+//! space between `task_started` and `task_completed`.
 //!
 //! Separate from the usage-metering provider wrapper (C1): lifecycle
 //! events come from the DAG executor; usage comes from the provider
 //! stream. Different concerns, different seams.
 
 use std::collections::HashMap;
+use std::sync::Arc;
 use std::sync::Mutex;
 
+use agent_driver_rs::agent::AgentObserver;
 use async_trait::async_trait;
+use tokio::sync::Mutex as AsyncMutex;
 use tokio::sync::mpsc::Sender;
 
-use crate::dag_executor::DagLifecycleObserver;
+use crate::dag_executor::{DagLifecycleObserver, WorkerObserverFactory};
 use crate::sse_shim::events::{AuraEvent, TaskCompletedPayload, TaskStartedPayload};
-use crate::sse_shim::session::ShimSessionId;
+use crate::sse_shim::observer::ShimWorkerObserver;
+use crate::sse_shim::session::{ShimSessionId, UsageAccumulator};
 
 /// The shim's implementation of [`DagLifecycleObserver`].
 ///
@@ -132,6 +138,47 @@ impl DagLifecycleObserver for ShimDagObserver {
     }
 }
 
+/// The shim's [`WorkerObserverFactory`]: mints one [`ShimWorkerObserver`]
+/// per task run, carrying the request's session id, event channel, and
+/// shared usage sink.
+///
+/// Constructed once per `/v1/chat/completions` request in
+/// `build_request`; the executor asks for an observer per dispatch, and
+/// the worker loop attaches it to its `AgentLoop`.
+pub struct ShimWorkerObserverFactory {
+    session_id: ShimSessionId,
+    event_tx: Sender<AuraEvent>,
+    usage: Arc<AsyncMutex<UsageAccumulator>>,
+}
+
+impl ShimWorkerObserverFactory {
+    /// Construct the factory for one request.
+    #[must_use]
+    pub fn new(
+        session_id: ShimSessionId,
+        event_tx: Sender<AuraEvent>,
+        usage: Arc<AsyncMutex<UsageAccumulator>>,
+    ) -> Self {
+        Self {
+            session_id,
+            event_tx,
+            usage,
+        }
+    }
+}
+
+impl WorkerObserverFactory for ShimWorkerObserverFactory {
+    fn observer_for(&self, task_id: usize, worker_id: &str) -> Arc<dyn AgentObserver> {
+        Arc::new(ShimWorkerObserver::new(
+            self.session_id,
+            task_id,
+            worker_id,
+            Arc::clone(&self.usage),
+            self.event_tx.clone(),
+        ))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -216,5 +263,38 @@ mod tests {
         // The failure constructor produces no `result` field (it is
         // skip_serializing_if None).
         assert!(v.get("result").is_none());
+    }
+
+    /// S102: the worker observer factory mints observers that carry the
+    /// task and worker identity into their first emitted event.
+    #[tokio::test]
+    async fn worker_observer_factory_carries_task_and_worker_identity() {
+        let (tx, mut rx) = mpsc::channel::<AuraEvent>(16);
+        {
+            let factory = ShimWorkerObserverFactory::new(
+                ShimSessionId::generate(),
+                tx,
+                crate::sse_shim::session::shared_accumulator(),
+            );
+            let observer = factory.observer_for(9, "debugger");
+            observer
+                .on_event(&agent_driver_rs::agent::AgentEvent::ToolCallStart {
+                    id: agent_driver_rs::ToolCallId::new("t"),
+                    name: agent_driver_rs::ToolName::new("capture-pane").unwrap(),
+                    input: serde_json::Value::Null,
+                })
+                .await;
+        }
+        // The factory holds a channel clone, so `drain` only returns once
+        // the scope above dropped every sender.
+
+        let events = drain(&mut rx).await;
+        assert_eq!(events.len(), 1);
+        let v: serde_json::Value = serde_json::from_str(&events[0].sse_data()).unwrap();
+        assert_eq!(v["task_id"].as_u64(), Some(9));
+        assert_eq!(v["worker_id"].as_str(), Some("debugger"));
+        assert_eq!(v["agent_id"].as_str(), Some("debugger"));
+        // Null tool arguments are omitted, not serialized as null.
+        assert!(v.get("arguments").is_none());
     }
 }

@@ -21,4 +21,4 @@ pub use tools::{
     CapturePaneArgs, CapturePaneTool, KeystrokesArgs, KeystrokesTool, ReadArtifactArgs,
     ReadArtifactTool,
 };
-pub use worker::{WorkerLoop, WorkerLoopConfig, WorkerOutcome};
+pub use worker::{WorkerLoop, WorkerLoopConfig, WorkerObserverFactory, WorkerOutcome};

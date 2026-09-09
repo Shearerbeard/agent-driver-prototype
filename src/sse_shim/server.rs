@@ -42,10 +42,12 @@ use crate::coordinator_loop::{
     ChatHistory, ChatTurn, ChatTurnRole, CoordinatorLoop, CoordinatorLoopConfig,
     CoordinatorRunError, LoopBudget, RunStore, WorkerSections,
 };
-use crate::dag_executor::{DagExecutor, DagLifecycleObserver, WorkerLoopConfig};
+use crate::dag_executor::{
+    DagExecutor, DagLifecycleObserver, WorkerLoopConfig, WorkerObserverFactory,
+};
 use crate::mcp_client::SidecarClient;
 
-use super::dag_lifecycle::ShimDagObserver;
+use super::dag_lifecycle::{ShimDagObserver, ShimWorkerObserverFactory};
 use super::error::ShimError;
 use super::events::{AuraEvent, SessionInfoPayload};
 use super::live_requests::LiveRequests;
@@ -282,8 +284,8 @@ impl ShimState {
             self.model.as_str().to_owned(),
             chat_completion_id,
             created,
-            usage,
-            event_tx,
+            Arc::clone(&usage),
+            event_tx.clone(),
         )) as Arc<dyn AgentObserver>;
         // 6. ShimDagObserver (C2), sharing the event channel.
         let dag_observer = Arc::new(ShimDagObserver::new(session_id, dag_event_tx))
@@ -294,14 +296,21 @@ impl ShimState {
         // 8. Fresh RunStore.
         let runs = RunStore::new();
         // 9. Per-request DagExecutor with the metered provider in
-        //    WorkerLoopConfig and the ShimDagObserver (C2).
+        //    WorkerLoopConfig, the ShimDagObserver (C2), and the worker
+        //    observer factory (S102) so worker tool calls, reasoning, and
+        //    final-turn context reach the stream.
+        let worker_observer_factory = Arc::new(ShimWorkerObserverFactory::new(
+            session_id,
+            event_tx.clone(),
+            Arc::clone(&usage),
+        )) as Arc<dyn WorkerObserverFactory>;
         let worker_config = WorkerLoopConfig {
             provider: Arc::clone(&metered),
             model: self.model.clone(),
             budget: self.worker_config.budget,
             system_prompt: self.worker_config.system_prompt.clone(),
             cancellation: CancellationToken::new(),
-            observer_factory: None,
+            observer_factory: Some(worker_observer_factory),
         };
         let executor = DagExecutor::new(
             self.sidecar.clone(),
