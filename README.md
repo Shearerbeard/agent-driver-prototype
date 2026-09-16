@@ -117,10 +117,16 @@ cargo run --bin mcp_probe -- <mcp-url>   # e.g. http://localhost:8000/sse
   planning/turn budgets, the inline spill threshold, and the prompt
   preambles.
 - The model provider comes from `ProviderConfig::from_env()` (the
-  `PROVIDER` env var selects the backend; Bedrock is the only
-  feature-enabled one, so its credentials come from the usual AWS
-  environment). Tracing exports over OTLP when
-  `OTEL_EXPORTER_OTLP_ENDPOINT` is set and is a no-op otherwise.
+  `PROVIDER` env var selects the backend). Two backends are wired:
+  `PROVIDER=bedrock` with the usual AWS environment
+  (`AWS_PROFILE`, `AWS_REGION`, `BEDROCK_MODEL`), and
+  `PROVIDER=openai` against any OpenAI-compatible endpoint —
+  `OPENAI_BASE_URL` (BaseTen, OpenRouter, a vLLM server), `OPENAI_API_KEY`,
+  `OPENAI_MODEL` (an `org/model` slug for BaseTen). Both fail loud at
+  startup on a bad config; streamed `reasoning_content` surfaces as
+  `aura.reasoning` / `worker_reasoning` on both. Tracing exports over
+  OTLP when `OTEL_EXPORTER_OTLP_ENDPOINT` is set and is a no-op
+  otherwise.
 
 The point of the shim: it speaks the wire contract the aura
 TerminalBench adapter (`aura_terminalbench/stream.py`) consumes — an

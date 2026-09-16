@@ -17,7 +17,7 @@ publish = false
 # feature is deliberately NOT enabled: the shim wires OTEL directly through
 # its own `opentelemetry` deps rather than inheriting the pin's Phoenix
 # tracing pipeline. See `src/sse_shim/DESIGN.md` for the rationale.
-agent-driver-rs = { git = "https://github.com/Shearerbeard/agent-driver-rs", rev = "82ee41f298513876bfe8f7735d4f3f48eb92651f", features = ["bedrock"] }
+agent-driver-rs = { git = "https://github.com/Shearerbeard/agent-driver-rs", rev = "ade674ccc68fa2dcdabe95643755fa97e86e81cf", features = ["bedrock"] }
 async-trait = "0.1"
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 # The MCP client: rmcp carries the JSON-RPC envelope, the handshake, and
@@ -88,7 +88,7 @@ toml = "0.8"
 [dev-dependencies]
 # The mock provider lives behind `test-support`; integration tests are a
 # separate crate where the library's own `cfg(test)` does not apply.
-agent-driver-rs = { git = "https://github.com/Shearerbeard/agent-driver-rs", rev = "82ee41f298513876bfe8f7735d4f3f48eb92651f", features = ["test-support"] }
+agent-driver-rs = { git = "https://github.com/Shearerbeard/agent-driver-rs", rev = "ade674ccc68fa2dcdabe95643755fa97e86e81cf", features = ["test-support"] }
 insta = { version = "1", features = ["json"] }
 tempfile = "3"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "test-util"] }

@@ -35,7 +35,7 @@ dependencies = [
 [[package]]
 name = "agent-driver-rs"
 version = "0.1.0"
-source = "git+https://github.com/Shearerbeard/agent-driver-rs?rev=82ee41f298513876bfe8f7735d4f3f48eb92651f#82ee41f298513876bfe8f7735d4f3f48eb92651f"
+source = "git+https://github.com/Shearerbeard/agent-driver-rs?rev=ade674ccc68fa2dcdabe95643755fa97e86e81cf#ade674ccc68fa2dcdabe95643755fa97e86e81cf"
 dependencies = [
  "async-openai",
  "async-trait",
