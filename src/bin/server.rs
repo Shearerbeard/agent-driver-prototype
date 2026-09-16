@@ -98,9 +98,10 @@ async fn otel_config_init() -> Result<OtelGuard, ShimError> {
 /// configs.
 ///
 /// The provider and model come from `ProviderConfig::from_env()` (the
-/// `PROVIDER` env var selects the backend; only `bedrock` is feature-enabled
-/// in this crate). The orchestration TOML supplies the worker roster,
-/// budgets, inline threshold, and prompt preambles.
+/// `PROVIDER` env var selects the backend; bedrock and openai-compatible
+/// are wired, other provider kinds are a configuration error). The
+/// orchestration TOML supplies the worker roster, budgets, inline
+/// threshold, and prompt preambles.
 async fn build_state(args: &ShimCliArgs) -> Result<ShimState, ShimError> {
     let config = load_shim_config(args.config_path())?;
 
@@ -556,7 +557,7 @@ impl ShutdownSignals {
 }
 
 // ---------------------------------------------------------------------------
-// Provider construction (env-based; Bedrock only in this crate)
+// Provider construction (env-based; bedrock and openai-compatible wired)
 // ---------------------------------------------------------------------------
 
 /// Build the shared base provider and its model id from a `ProviderConfig`.
@@ -583,10 +584,10 @@ async fn build_provider(config: ProviderConfig) -> Result<(Arc<dyn Provider>, Mo
                 .map_err(|e| ShimError::Server(format!("openai provider build failed: {e}")))?;
             Ok((Arc::new(provider) as Arc<dyn Provider>, model))
         }
-        #[allow(
-            unreachable_patterns,
-            reason = "the shim wires bedrock and openai; other provider features are off"
-        )]
+        // ProviderConfig is non_exhaustive, so the wildcard is mandatory.
+        // anthropic / openrouter / ollama configs parse from env (the pin's
+        // default features compile them) but are not wired; they fail here
+        // by design.
         _ => Err(ShimError::Server(
             "provider not supported by the shim (bedrock and openai are wired)".to_owned(),
         )),

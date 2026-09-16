@@ -428,7 +428,7 @@ R5 owns real timestamp tracking; a measured 0ms is legitimate.
 | Dep | Version | Why |
 |---|---|---|
 | `axum` | 0.8 | HTTP server with SSE response support. |
-| `agent-driver-rs` | git pin, `features = ["bedrock"]` | `bedrock` for the provider; `phoenix` NOT enabled. The shim also wires the pin's OpenAI provider (S111): `PROVIDER=openai` against any OpenAI-compatible `OPENAI_BASE_URL`. |
+| `agent-driver-rs` | git pin, `features = ["bedrock"]` | `bedrock` for the provider; `phoenix` NOT enabled. The shim also wires the pin's OpenAI provider (S111): `PROVIDER=openai` against any OpenAI-compatible `OPENAI_BASE_URL`. The pin's default features (`anthropic`, `openrouter`) also stay compiled; their `PROVIDER=` values parse from env but fail at startup by design — only bedrock and openai are wired. |
 | `opentelemetry` | 0.32 | Matches the pin's dep version. |
 | `opentelemetry_sdk` | 0.32.1 | `rt-tokio`, `trace` for the tracer provider. |
 | `opentelemetry-otlp` | 0.32 | `grpc-tonic`, `trace` for span export. |

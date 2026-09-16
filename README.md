@@ -124,7 +124,14 @@ cargo run --bin mcp_probe -- <mcp-url>   # e.g. http://localhost:8000/sse
   `OPENAI_BASE_URL` (BaseTen, OpenRouter, a vLLM server), `OPENAI_API_KEY`,
   `OPENAI_MODEL` (an `org/model` slug for BaseTen). Both fail loud at
   startup on a bad config; streamed `reasoning_content` surfaces as
-  `aura.reasoning` / `worker_reasoning` on both. Tracing exports over
+  `aura.reasoning` / `worker_reasoning` on both. Details: `OPENAI_MODEL`
+  defaults to `gpt-4o`; with `OPENAI_BASE_URL` unset the official
+  OpenAI base applies; keyless local vLLM servers still require any
+  non-empty dummy `OPENAI_API_KEY`. Note for Bedrock: startup now
+  validates the provider config, so a thinking budget that consumes
+  the entire response budget (`BEDROCK_THINKING_BUDGET` ≥
+  `BEDROCK_MAX_TOKENS`) fails at boot instead of mid-request.
+  Tracing exports over
   OTLP when `OTEL_EXPORTER_OTLP_ENDPOINT` is set and is a no-op
   otherwise.
 
