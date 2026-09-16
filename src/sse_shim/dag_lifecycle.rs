@@ -1,19 +1,25 @@
 //! The shim's DAG lifecycle observer: translates task lifecycle events
-//! from the `DagExecutor` into `aura.orchestrator.*` SSE events.
+//! from the `DagExecutor` into `aura.orchestrator.*` SSE events, and mints
+//! the per-task worker observers whose tool and reasoning events fill the
+//! space between `task_started` and `task_completed`.
 //!
 //! Separate from the usage-metering provider wrapper (C1): lifecycle
 //! events come from the DAG executor; usage comes from the provider
 //! stream. Different concerns, different seams.
 
 use std::collections::HashMap;
+use std::sync::Arc;
 use std::sync::Mutex;
 
+use agent_driver_rs::Provider;
 use async_trait::async_trait;
 use tokio::sync::mpsc::Sender;
 
-use crate::dag_executor::DagLifecycleObserver;
+use crate::dag_executor::{DagLifecycleObserver, WorkerLane, WorkerObserverFactory};
 use crate::sse_shim::events::{AuraEvent, TaskCompletedPayload, TaskStartedPayload};
-use crate::sse_shim::session::ShimSessionId;
+use crate::sse_shim::observer::ShimWorkerObserver;
+use crate::sse_shim::session::{ShimSessionId, UsageAccumulator};
+use crate::sse_shim::usage_metering::{FinalTurnCell, UsageMeteringProvider};
 
 /// The shim's implementation of [`DagLifecycleObserver`].
 ///
@@ -132,6 +138,61 @@ impl DagLifecycleObserver for ShimDagObserver {
     }
 }
 
+/// The shim's [`WorkerObserverFactory`]: mints one worker lane per task
+/// run - a [`ShimWorkerObserver`] plus the lane's metered provider - over
+/// the request's session id, event channel, shared totals sink, and base
+/// provider.
+///
+/// Constructed once per `/v1/chat/completions` request in
+/// `build_request`; the worker loop runs on the lane's provider (so the
+/// lane's final-turn cell tracks that task's own calls) and attaches the
+/// lane's observer to its `AgentLoop`. The lane provider wraps the BASE
+/// provider, never the coordinator's metered instance, so totals are
+/// counted exactly once per call.
+pub struct ShimWorkerObserverFactory {
+    session_id: ShimSessionId,
+    event_tx: Sender<AuraEvent>,
+    usage: Arc<Mutex<UsageAccumulator>>,
+    base_provider: Arc<dyn Provider>,
+}
+
+impl ShimWorkerObserverFactory {
+    /// Construct the factory for one request.
+    #[must_use]
+    pub fn new(
+        session_id: ShimSessionId,
+        event_tx: Sender<AuraEvent>,
+        usage: Arc<Mutex<UsageAccumulator>>,
+        base_provider: Arc<dyn Provider>,
+    ) -> Self {
+        Self {
+            session_id,
+            event_tx,
+            usage,
+            base_provider,
+        }
+    }
+}
+
+impl WorkerObserverFactory for ShimWorkerObserverFactory {
+    fn lane_for(&self, task_id: usize, worker_id: &str) -> WorkerLane {
+        let final_turn: FinalTurnCell = Arc::new(Mutex::new(None));
+        let provider = Arc::new(UsageMeteringProvider::new_lane(
+            Arc::clone(&self.base_provider),
+            Arc::clone(&self.usage),
+            Arc::clone(&final_turn),
+        )) as Arc<dyn Provider>;
+        let observer = Arc::new(ShimWorkerObserver::new(
+            self.session_id,
+            task_id,
+            worker_id,
+            final_turn,
+            self.event_tx.clone(),
+        ));
+        WorkerLane { observer, provider }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -216,5 +277,39 @@ mod tests {
         // The failure constructor produces no `result` field (it is
         // skip_serializing_if None).
         assert!(v.get("result").is_none());
+    }
+
+    /// S102: the worker observer factory mints observers that carry the
+    /// task and worker identity into their first emitted event.
+    #[tokio::test]
+    async fn worker_observer_factory_carries_task_and_worker_identity() {
+        let (tx, mut rx) = mpsc::channel::<AuraEvent>(16);
+        {
+            let factory = ShimWorkerObserverFactory::new(
+                ShimSessionId::generate(),
+                tx,
+                crate::sse_shim::session::shared_accumulator(),
+                Arc::new(agent_driver_rs::mock::MockProvider::new(Vec::new())),
+            );
+            let lane = factory.lane_for(9, "debugger");
+            lane.observer
+                .on_event(&agent_driver_rs::agent::AgentEvent::ToolCallStart {
+                    id: agent_driver_rs::ToolCallId::new("t"),
+                    name: agent_driver_rs::ToolName::new("capture-pane").unwrap(),
+                    input: serde_json::Value::Null,
+                })
+                .await;
+        }
+        // The factory holds a channel clone, so `drain` only returns once
+        // the scope above dropped every sender.
+
+        let events = drain(&mut rx).await;
+        assert_eq!(events.len(), 1);
+        let v: serde_json::Value = serde_json::from_str(&events[0].sse_data()).unwrap();
+        assert_eq!(v["task_id"].as_u64(), Some(9));
+        assert_eq!(v["worker_id"].as_str(), Some("debugger"));
+        assert_eq!(v["agent_id"].as_str(), Some("debugger"));
+        // Null tool arguments are omitted, not serialized as null.
+        assert!(v.get("arguments").is_none());
     }
 }

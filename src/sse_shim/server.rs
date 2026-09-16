@@ -42,10 +42,12 @@ use crate::coordinator_loop::{
     ChatHistory, ChatTurn, ChatTurnRole, CoordinatorLoop, CoordinatorLoopConfig,
     CoordinatorRunError, LoopBudget, RunStore, WorkerSections,
 };
-use crate::dag_executor::{DagExecutor, DagLifecycleObserver, WorkerLoopConfig};
+use crate::dag_executor::{
+    DagExecutor, DagLifecycleObserver, WorkerLoopConfig, WorkerObserverFactory,
+};
 use crate::mcp_client::SidecarClient;
 
-use super::dag_lifecycle::ShimDagObserver;
+use super::dag_lifecycle::{ShimDagObserver, ShimWorkerObserverFactory};
 use super::error::ShimError;
 use super::events::{AuraEvent, SessionInfoPayload};
 use super::live_requests::LiveRequests;
@@ -248,10 +250,15 @@ impl ShimState {
         let session_id = ShimSessionId::generate();
         // 2. Fresh per-request usage sink (C1).
         let usage = shared_accumulator();
-        // 3. Metered provider wrapping the shared base provider (C1).
-        let metered = Arc::new(UsageMeteringProvider::new(
+        // 3. The coordinator's metering lane: totals flow to the shared
+        //    sink (C1), and the lane's private final-turn cell backs the
+        //    coordinator's `aura.context_usage` (S102 per-agent
+        //    attribution; the worker lanes mint their own cells).
+        let coordinator_final_turn = Arc::new(std::sync::Mutex::new(None));
+        let metered = Arc::new(UsageMeteringProvider::new_lane(
             Arc::clone(&self.base_provider),
             Arc::clone(&usage),
+            Arc::clone(&coordinator_final_turn),
         )) as Arc<dyn Provider>;
         // 4. Bounded event channel (C10).
         let (event_tx, event_rx) = tokio::sync::mpsc::channel::<AuraEvent>(EVENT_CHANNEL_CAPACITY);
@@ -282,8 +289,9 @@ impl ShimState {
             self.model.as_str().to_owned(),
             chat_completion_id,
             created,
-            usage,
-            event_tx,
+            Arc::clone(&usage),
+            coordinator_final_turn,
+            event_tx.clone(),
         )) as Arc<dyn AgentObserver>;
         // 6. ShimDagObserver (C2), sharing the event channel.
         let dag_observer = Arc::new(ShimDagObserver::new(session_id, dag_event_tx))
@@ -294,13 +302,22 @@ impl ShimState {
         // 8. Fresh RunStore.
         let runs = RunStore::new();
         // 9. Per-request DagExecutor with the metered provider in
-        //    WorkerLoopConfig and the ShimDagObserver (C2).
+        //    WorkerLoopConfig, the ShimDagObserver (C2), and the worker
+        //    observer factory (S102) so worker tool calls, reasoning, and
+        //    final-turn context reach the stream.
+        let worker_observer_factory = Arc::new(ShimWorkerObserverFactory::new(
+            session_id,
+            event_tx.clone(),
+            Arc::clone(&usage),
+            Arc::clone(&self.base_provider),
+        )) as Arc<dyn WorkerObserverFactory>;
         let worker_config = WorkerLoopConfig {
             provider: Arc::clone(&metered),
             model: self.model.clone(),
             budget: self.worker_config.budget,
             system_prompt: self.worker_config.system_prompt.clone(),
             cancellation: CancellationToken::new(),
+            observer_factory: Some(worker_observer_factory),
         };
         let executor = DagExecutor::new(
             self.sidecar.clone(),
@@ -733,6 +750,7 @@ mod tests {
             budget: LoopBudget::CANONICAL,
             system_prompt: SystemPrompt::empty(),
             cancellation: CancellationToken::new(),
+            observer_factory: None,
         };
         Arc::new(ShimState::from_parts(
             provider,

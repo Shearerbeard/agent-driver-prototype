@@ -28,7 +28,7 @@ must exist to compile. Goldens stayed green throughout.
 |---|---|---|
 | C1 BLOCKING | ACCEPTED | Usage accounting moved from observer `IterationComplete` to a per-request `UsageMeteringProvider` decorator (`usage_metering.rs`). Observer no longer accumulates usage (no double-counting); reads the sink at `LoopComplete`. |
 | C2 BLOCKING | ACCEPTED | `DagLifecycleObserver` trait + `ShimDagObserver` impl (`dag_executor/lifecycle.rs`, `sse_shim/dag_lifecycle.rs`). Optional parameter on `DagExecutor::new`. Separate from C1. |
-| C3 BLOCKING | ACCEPTED | `ThinkingDelta` maps to no emitted event; documented in observer and DESIGN.md. |
+| C3 BLOCKING | ACCEPTED | `ThinkingDelta` never maps into `choices[0].delta.content`; documented in observer and DESIGN.md. Since S102 it surfaces as the named `aura.reasoning` event (coordinator) and `aura.orchestrator.worker_reasoning` (workers). |
 | C4 BLOCKING | ACCEPTED | `build_request` spawns the loop and returns `ShimRequest { session_id, event_rx, join_handle }`. Ownership documented below. |
 | C5 BLOCKING | ACCEPTED | `ShimState` holds `artifact_root: PathBuf`, not `ArtifactStore`. `build_request` constructs a per-request `ArtifactStore`, `DagExecutor`, metered provider, and `ShimDagObserver`. |
 | C6 BLOCKING | ACCEPTED | `OtelGuard` stores `Option<SdkTracerProvider>`; `Drop` calls `shutdown_with_timeout()` bounded by `FLUSH_WINDOW` and logs failures. |
@@ -105,7 +105,7 @@ from `crate::producers`; `WorkerLoopConfig`,
 | Item | Visibility | Who replaces it |
 |---|---|---|
 | `ShimState::build_request` | `pub async` | Stays. The implementation phase fills in per-request construction: `UsageAccumulator` + `UsageMeteringProvider` (C1), bounded event channel (C10), per-request `ArtifactStore` (C5), `DagExecutor` with `ShimDagObserver` (C2), `CoordinatorLoop` with `ShimObserver`, spawned loop task (C4). |
-| `ShimObserver` | `pub` | Stays. `on_event` maps coordinator events; `IterationComplete` is a no-op (C1); `ThinkingDelta` is dropped (C3). |
+| `ShimObserver` | `pub` | Stays. `on_event` maps coordinator events; `IterationComplete` is a no-op (C1); `ThinkingDelta` maps to the named `aura.reasoning` event (C3 + S102). Since S102 the module also carries `ShimWorkerObserver` (per-task worker events, minted via `ShimWorkerObserverFactory` in `dag_lifecycle.rs`). |
 | `ShimDagObserver` | `pub` | Stays (C2). `DagLifecycleObserver` impl with `todo!()` bodies; the implementation phase fills in `TaskStartedPayload`/`TaskCompletedPayload` construction and emission. |
 | `UsageMeteringProvider` | `pub` | Stays (C1). `Provider` impl with `todo!()` bodies for `complete_stream`/`list_models`; the implementation phase wraps the inner `StreamHandle` to intercept `Completed` usage. |
 | `chat_completions` handler | `pub async` | Stays. The return type is `Sse<Empty<...>>` in the skeleton; the implementation replaces `Empty` with the real channel-backed stream. |
@@ -326,7 +326,31 @@ Resolved by C1 (usage) and C2 (lifecycle). The `UsageMeteringProvider`
 decorator intercepts usage at the provider level, covering coordinator and
 worker loops. The `DagLifecycleObserver` seam (C2) carries task
 started/completed events from the `DagExecutor` to the `ShimDagObserver`,
-which emits `aura.orchestrator.*` SSE events.
+which emits `aura.orchestrator.*` SSE events. Since S102 the in-task gap is
+closed too: a `WorkerObserverFactory` in `WorkerLoopConfig` mints one
+`ShimWorkerObserver` per dispatch (`sse_shim/dag_lifecycle.rs`), so worker
+tool calls surface as `aura.orchestrator.tool_call_started/completed` and
+worker thinking as `aura.orchestrator.worker_reasoning`.
+
+**R2a (S102) - Named-event mapping decisions.**
+`plan_created` fires at each successful `create_plan` completion (several
+per turn are legal; aura-e2e reads routing fields from the first), mapping
+goal, the FLATTENED step count, and `planning_rationale`, with
+`routing_mode` always `orchestrated`. `aura.context_usage` reports
+per-agent final-turn occupancy from PER-LANE cells: the coordinator and
+each worker task run on their own `UsageMeteringProvider` lane
+(`new_lane`), whose private final-turn cell is cleared at each call's
+start and populated only by that call's terminal usage - so a final turn
+that reports no usage, or a stream that fails before completing, reads as
+unknown occupancy (emitted zero), never another agent's or an earlier
+turn's numbers. Lanes exist because provider streams do NOT run
+sequentially within a request: the pin's driver executes same-response
+sibling tools under `join_all`, so two `execute` calls can drive workers
+concurrently; the shared totals sink is a std mutex for the same reason
+(written from the synchronous `poll_next`). Worker `TextDelta`
+deliberately maps to no event: worker text is working output, not the
+assistant answer (C3's byte-clean rule applied to workers); results reach
+the stream via `task_completed`.
 
 **R3 - OTEL exporter lifecycle.**
 Resolved by C6. `OtelGuard` stores `Option<SdkTracerProvider>`; `Drop` calls

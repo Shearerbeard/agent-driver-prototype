@@ -28,7 +28,7 @@ use agent_driver_prototype::coordinator_loop::{
     Attempt, CreatePlanArgs, ExecutionObservation, LoopBudget, PlanExecutor, RunStore,
     TaskObservation, WorkerRoster, WorkerSections,
 };
-use agent_driver_prototype::dag_executor::{DagExecutor, WorkerLoopConfig};
+use agent_driver_prototype::dag_executor::{DagExecutor, WorkerLane, WorkerLoopConfig};
 use agent_driver_prototype::mcp_client::SidecarClient;
 use agent_driver_prototype::producers::ToolInventory;
 use agent_driver_prototype::types::{FailureCategory, StepInput};
@@ -106,6 +106,7 @@ fn worker_config(responses: Vec<Vec<agent_driver_rs::StreamEvent>>) -> WorkerLoo
         budget: LoopBudget::new(8).expect("non-zero budget"),
         system_prompt: SystemPrompt::new("You are a worker. Call submit_result when done."),
         cancellation: CancellationToken::new(),
+        observer_factory: None,
     }
 }
 
@@ -393,6 +394,7 @@ async fn budget_exhausted_maps_to_depth_exhausted() {
         budget: LoopBudget::new(1).expect("non-zero budget"),
         system_prompt: SystemPrompt::new("You are a worker."),
         cancellation: CancellationToken::new(),
+        observer_factory: None,
     };
 
     let dir = tempfile::TempDir::new().expect("temp dir");
@@ -421,6 +423,148 @@ async fn budget_exhausted_maps_to_depth_exhausted() {
         *category,
         FailureCategory::DepthExhausted,
         "BudgetExhausted maps to DepthExhausted"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// S102: the per-task worker observer
+// ---------------------------------------------------------------------------
+
+use agent_driver_prototype::dag_executor::WorkerObserverFactory;
+use agent_driver_rs::agent::{AgentEvent, AgentObserver};
+use async_trait::async_trait;
+
+/// A worker observer that records the discriminant of every event it
+/// receives, so a test can prove the executor's plumbing reached the loop.
+struct RecordingWorkerObserver {
+    events: Arc<std::sync::Mutex<Vec<&'static str>>>,
+}
+
+#[async_trait]
+impl AgentObserver for RecordingWorkerObserver {
+    async fn on_event(&self, event: &AgentEvent) {
+        let kind = match event {
+            AgentEvent::ToolCallStart { .. } => "tool_start",
+            AgentEvent::ToolCallComplete { .. } => "tool_complete",
+            AgentEvent::ThinkingDelta { .. } => "thinking",
+            AgentEvent::TextDelta { .. } => "text",
+            AgentEvent::LoopComplete { .. } => "loop_complete",
+            _ => "other",
+        };
+        self.events.lock().expect("events lock poisoned").push(kind);
+    }
+}
+
+/// A factory that records every (task_id, worker_id) it is asked to observe
+/// and hands out [`RecordingWorkerObserver`]s sharing one event log. Each
+/// lane returns the run's scripted provider, matching the shim's lane
+/// contract (the lane's provider serves the task's calls).
+struct RecordingObserverFactory {
+    dispatches: Arc<std::sync::Mutex<Vec<(usize, String)>>>,
+    events: Arc<std::sync::Mutex<Vec<&'static str>>>,
+    provider: Arc<dyn agent_driver_rs::Provider>,
+}
+
+impl WorkerObserverFactory for RecordingObserverFactory {
+    fn lane_for(&self, task_id: usize, worker_id: &str) -> WorkerLane {
+        self.dispatches
+            .lock()
+            .expect("dispatches lock poisoned")
+            .push((task_id, worker_id.to_owned()));
+        WorkerLane {
+            observer: Arc::new(RecordingWorkerObserver {
+                events: Arc::clone(&self.events),
+            }),
+            provider: Arc::clone(&self.provider),
+        }
+    }
+}
+
+/// S102: a configured factory reaches the worker loop with the executor's
+/// own task-and-worker resolution, and the loop's tool traffic (here
+/// `submit_result`) and completion flow through the minted observer.
+#[tokio::test]
+async fn worker_observer_factory_observes_the_dispatched_task() {
+    let runs = RunStore::new();
+    let args = CreatePlanArgs {
+        goal: "Observed single task".to_owned(),
+        steps: vec![StepInput::LeafTask {
+            task: "Do the work".to_owned(),
+            worker: Some("operations".to_owned()),
+        }],
+        planning_rationale: "One task".to_owned(),
+    };
+    let plan = args
+        .to_plan(&test_sections().roster().clone())
+        .expect("valid plan");
+    let _plan_id = runs.record_plan(&args, plan.clone());
+
+    // A successful worker run: submit_result, then end-turn text.
+    let responses = vec![
+        mock_tool_call_response(
+            "w0",
+            "submit_result",
+            &submit_result_json("Found 42 errors", "service-a: 42", "high"),
+        ),
+        mock_text_response(""),
+    ];
+
+    let dispatches = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let events = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let scripted: Arc<dyn agent_driver_rs::Provider> = Arc::new(MockProvider::new(responses));
+    let factory = Arc::new(RecordingObserverFactory {
+        dispatches: Arc::clone(&dispatches),
+        events: Arc::clone(&events),
+        provider: Arc::clone(&scripted),
+    });
+
+    let config = WorkerLoopConfig {
+        // The lane hands this same provider back per task; the template
+        // copy exists for the no-factory path.
+        provider: Arc::clone(&scripted),
+        model: model(),
+        budget: LoopBudget::new(8).expect("non-zero budget"),
+        system_prompt: SystemPrompt::new("You are a worker."),
+        cancellation: CancellationToken::new(),
+        observer_factory: Some(factory as Arc<dyn WorkerObserverFactory>),
+    };
+
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    let executor = DagExecutor::new(
+        SidecarClient::disconnected(),
+        ArtifactStore::new(dir.path().to_path_buf()),
+        config,
+        test_sections(),
+        runs,
+        InlineThreshold::DEFAULT,
+        None,
+    );
+
+    let observation = executor.execute(&plan, &ctx()).await;
+    let ExecutionObservation::Completed { tasks } = &observation else {
+        panic!("expected completed execution, got {observation:?}");
+    };
+    assert_eq!(tasks.as_slice().len(), 1);
+
+    // The factory saw exactly the executor's resolution: task 0 on the
+    // plan's assigned worker.
+    assert_eq!(
+        *dispatches.lock().expect("dispatches lock poisoned"),
+        vec![(0, "operations".to_owned())],
+        "one dispatch, carrying the plan's worker assignment"
+    );
+
+    // The observer saw the worker's submit_result tool call and its loop
+    // completion (where the worker's context_usage would be emitted by the
+    // shim's real observer).
+    let seen = events.lock().expect("events lock poisoned").clone();
+    assert!(
+        seen.contains(&"tool_start") && seen.contains(&"tool_complete"),
+        "the worker's tool traffic reached the observer: {seen:?}"
+    );
+    assert!(
+        seen.contains(&"loop_complete"),
+        "the worker's loop completion reached the observer: {seen:?}"
     );
 }
 
@@ -556,6 +700,7 @@ async fn worker_loop_runs_at_the_section_turn_depth_not_the_run_wide_budget() {
         budget: LoopBudget::new(8).expect("non-zero budget"),
         system_prompt: SystemPrompt::new("You are a worker."),
         cancellation: CancellationToken::new(),
+        observer_factory: None,
     };
 
     let dir = tempfile::TempDir::new().expect("temp dir");

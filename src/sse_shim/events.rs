@@ -42,6 +42,18 @@ pub const EVENT_TOOL_COMPLETE: &str = "aura.tool_complete";
 pub const EVENT_TASK_STARTED: &str = "aura.orchestrator.task_started";
 /// `aura.orchestrator.task_completed` — emitted when a worker finishes a task.
 pub const EVENT_TASK_COMPLETED: &str = "aura.orchestrator.task_completed";
+/// `aura.reasoning` — a coordinator's thinking delta, as a named event.
+pub const EVENT_REASONING: &str = "aura.reasoning";
+/// `aura.orchestrator.worker_reasoning` — a worker's thinking delta.
+pub const EVENT_WORKER_REASONING: &str = "aura.orchestrator.worker_reasoning";
+/// `aura.orchestrator.plan_created` — emitted when `create_plan` completes.
+pub const EVENT_PLAN_CREATED: &str = "aura.orchestrator.plan_created";
+/// `aura.orchestrator.tool_call_started` — a worker's tool call begins.
+pub const EVENT_TOOL_CALL_STARTED: &str = "aura.orchestrator.tool_call_started";
+/// `aura.orchestrator.tool_call_completed` — a worker's tool call finishes.
+pub const EVENT_TOOL_CALL_COMPLETED: &str = "aura.orchestrator.tool_call_completed";
+/// `aura.context_usage` — per-agent final-turn context occupancy.
+pub const EVENT_CONTEXT_USAGE: &str = "aura.context_usage";
 
 /// The terminal SSE sentinel. Emitted as `data: [DONE]` with no `event:` field.
 pub const SSE_DONE: &str = "[DONE]";
@@ -413,6 +425,354 @@ impl TaskCompletedPayload {
 }
 
 // ---------------------------------------------------------------------------
+// S102 named events (worker tool calls, reasoning, plan, context usage)
+// ---------------------------------------------------------------------------
+
+/// How a plan was routed. Mirrors aura-events' `RoutingMode` (snake_case on
+/// the wire). The shim's executor is orchestrated by construction, so every
+/// shim plan_created carries [`RoutingMode::Orchestrated`] (S102 ruling);
+/// `Routed` exists so the wire vocabulary stays faithful to aura's type.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub enum RoutingMode {
+    /// Coordinator classified query to a single worker.
+    #[allow(
+        dead_code,
+        reason = "wire-fidelity variant: aura-events' RoutingMode carries it; \
+                  the shim's executor is orchestrated by construction, so \
+                  only its serde name is pinned (test below). Allow, not \
+                  expect: the serde test constructs it under cfg(test)"
+    )]
+    #[serde(rename = "routed")]
+    Routed,
+    /// Full orchestration — multi-task DAG with synthesis + evaluation.
+    #[serde(rename = "orchestrated")]
+    Orchestrated,
+}
+
+/// The `aura.reasoning` payload.
+///
+/// A coordinator's thinking delta surfaced as a named event (C3: thinking
+/// never maps into `choices[0].delta.content`; it rides its own event).
+///
+/// Forbidden invalid state: empty `content` or `agent_id`. The private
+/// fields and [`new`](Self::new) constructor enforce this.
+#[derive(Debug, Clone, Serialize)]
+pub struct ReasoningPayload {
+    content: String,
+    agent_id: String,
+    session_id: String,
+}
+
+impl ReasoningPayload {
+    /// Construct a reasoning payload, rejecting empty `content` or
+    /// `agent_id`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ShimError::InvalidRequest`] when `content` or `agent_id`
+    /// is empty.
+    pub fn new(
+        content: impl Into<String>,
+        agent_id: impl Into<String>,
+        session_id: impl Into<String>,
+    ) -> Result<Self, ShimError> {
+        let content = content.into();
+        let agent_id = agent_id.into();
+        if content.is_empty() {
+            return Err(ShimError::InvalidRequest(
+                "reasoning content is empty".to_owned(),
+            ));
+        }
+        if agent_id.trim().is_empty() {
+            return Err(ShimError::InvalidRequest(
+                "reasoning agent_id is empty".to_owned(),
+            ));
+        }
+        Ok(Self {
+            content,
+            agent_id,
+            session_id: session_id.into(),
+        })
+    }
+}
+
+/// The `aura.orchestrator.worker_reasoning` payload.
+///
+/// A worker's thinking delta, tagged with the task and worker so the CLI can
+/// stream it into the task's tree row.
+///
+/// Forbidden invalid state: empty `content` or `worker_id`. The private
+/// fields and [`new`](Self::new) constructor enforce this.
+#[derive(Debug, Clone, Serialize)]
+pub struct WorkerReasoningPayload {
+    task_id: usize,
+    worker_id: String,
+    content: String,
+    agent_id: String,
+    session_id: String,
+}
+
+impl WorkerReasoningPayload {
+    /// Construct a worker-reasoning payload, rejecting empty `content` or
+    /// `worker_id`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ShimError::InvalidRequest`] when `content` or `worker_id`
+    /// is empty.
+    pub fn new(
+        task_id: usize,
+        worker_id: impl Into<String>,
+        content: impl Into<String>,
+        session_id: impl Into<String>,
+    ) -> Result<Self, ShimError> {
+        let worker_id = worker_id.into();
+        let content = content.into();
+        if worker_id.trim().is_empty() {
+            return Err(ShimError::InvalidRequest(
+                "worker_reasoning worker_id is empty".to_owned(),
+            ));
+        }
+        if content.is_empty() {
+            return Err(ShimError::InvalidRequest(
+                "worker_reasoning content is empty".to_owned(),
+            ));
+        }
+        Ok(Self {
+            task_id,
+            agent_id: worker_id.clone(),
+            worker_id,
+            content,
+            session_id: session_id.into(),
+        })
+    }
+}
+
+/// The `aura.orchestrator.plan_created` payload.
+///
+/// Emitted when `create_plan` completes: the proposed `goal`, the flattened
+/// task count, and the `planning_rationale`, with `routing_mode` always
+/// orchestrated (the shim's executor has no single-worker routed mode). The
+/// continuous loop may plan more than once per turn, so several of these per
+/// stream are legal — aura-e2e reads routing fields from the first.
+///
+/// No empty-string rejection on `goal` or `routing_rationale`: aura's
+/// fields are unrestricted strings, and the planning tool validates neither
+/// (its schema requires presence, not content), so a rejection here would
+/// drop the named event for a plan the tool recorded successfully (Gate A
+/// round-1 finding N2).
+#[derive(Debug, Clone, Serialize)]
+pub struct PlanCreatedPayload {
+    goal: String,
+    task_count: usize,
+    routing_mode: RoutingMode,
+    routing_rationale: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    planning_response: Option<String>,
+    agent_id: String,
+    session_id: String,
+}
+
+impl PlanCreatedPayload {
+    /// Construct a plan-created payload. The string fields pass through
+    /// unrestricted, mirroring aura's types; `routing_mode` is pinned to
+    /// orchestrated by the card ruling.
+    #[must_use]
+    pub fn new(
+        goal: impl Into<String>,
+        task_count: usize,
+        routing_rationale: impl Into<String>,
+        planning_response: Option<String>,
+        agent_id: impl Into<String>,
+        session_id: impl Into<String>,
+    ) -> Self {
+        Self {
+            goal: goal.into(),
+            task_count,
+            routing_mode: RoutingMode::Orchestrated,
+            routing_rationale: routing_rationale.into(),
+            planning_response,
+            agent_id: agent_id.into(),
+            session_id: session_id.into(),
+        }
+    }
+}
+
+/// The `aura.orchestrator.tool_call_started` payload.
+///
+/// A worker's tool call beginning, tagged with the task and worker — aura's
+/// surface for worker MCP calls, which the CLI renders under task headers.
+///
+/// Forbidden invalid state: empty `tool_call_id`, `tool_name`, or
+/// `worker_id`. The private fields and [`new`](Self::new) constructor
+/// enforce this.
+#[derive(Debug, Clone, Serialize)]
+pub struct ToolCallStartedPayload {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    task_id: Option<usize>,
+    tool_call_id: String,
+    tool_name: String,
+    worker_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    arguments: Option<serde_json::Value>,
+    agent_id: String,
+    session_id: String,
+}
+
+impl ToolCallStartedPayload {
+    /// Construct a tool-call-started payload, rejecting empty
+    /// `tool_call_id`, `tool_name`, or `worker_id`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ShimError::InvalidRequest`] when any of `tool_call_id`,
+    /// `tool_name`, or `worker_id` is empty.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        task_id: Option<usize>,
+        tool_call_id: impl Into<String>,
+        tool_name: impl Into<String>,
+        worker_id: impl Into<String>,
+        arguments: Option<serde_json::Value>,
+        agent_id: impl Into<String>,
+        session_id: impl Into<String>,
+    ) -> Result<Self, ShimError> {
+        let tool_call_id = tool_call_id.into();
+        let tool_name = tool_name.into();
+        let worker_id = worker_id.into();
+        if tool_call_id.trim().is_empty() {
+            return Err(ShimError::InvalidRequest(
+                "tool_call_id is empty".to_owned(),
+            ));
+        }
+        if tool_name.trim().is_empty() {
+            return Err(ShimError::InvalidRequest(
+                "tool_call_name is empty".to_owned(),
+            ));
+        }
+        if worker_id.trim().is_empty() {
+            return Err(ShimError::InvalidRequest(
+                "tool_call worker_id is empty".to_owned(),
+            ));
+        }
+        Ok(Self {
+            task_id,
+            tool_call_id,
+            tool_name,
+            worker_id,
+            arguments,
+            agent_id: agent_id.into(),
+            session_id: session_id.into(),
+        })
+    }
+}
+
+/// The `aura.orchestrator.tool_call_completed` payload.
+///
+/// Mirrors the aura-events shape exactly: no `tool_name` and no `worker_id`
+/// on completion — identity travels in the agent context, and the CLI keys
+/// the line off the `tool_call_id` it saw at start.
+///
+/// Forbidden invalid state: both `result` and `success: false` (a failure
+/// carries no result). The [`success`] and [`failure`] constructors enforce
+/// the pairing by shape.
+///
+/// [`success`]: Self::success
+/// [`failure`]: Self::failure
+#[derive(Debug, Clone, Serialize)]
+pub struct ToolCallCompletedPayload {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    task_id: Option<usize>,
+    tool_call_id: String,
+    success: bool,
+    duration_ms: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    result: Option<String>,
+    agent_id: String,
+    session_id: String,
+}
+
+impl ToolCallCompletedPayload {
+    /// Construct a successful tool-call-completed payload.
+    #[must_use]
+    pub fn success(
+        task_id: Option<usize>,
+        tool_call_id: impl Into<String>,
+        duration_ms: u64,
+        result: impl Into<String>,
+        agent_id: impl Into<String>,
+        session_id: impl Into<String>,
+    ) -> Self {
+        Self {
+            task_id,
+            tool_call_id: tool_call_id.into(),
+            success: true,
+            duration_ms,
+            result: Some(result.into()),
+            agent_id: agent_id.into(),
+            session_id: session_id.into(),
+        }
+    }
+
+    /// Construct a failed tool-call-completed payload (no result field).
+    #[must_use]
+    pub fn failure(
+        task_id: Option<usize>,
+        tool_call_id: impl Into<String>,
+        duration_ms: u64,
+        agent_id: impl Into<String>,
+        session_id: impl Into<String>,
+    ) -> Self {
+        Self {
+            task_id,
+            tool_call_id: tool_call_id.into(),
+            success: false,
+            duration_ms,
+            result: None,
+            agent_id: agent_id.into(),
+            session_id: session_id.into(),
+        }
+    }
+}
+
+/// The `aura.context_usage` payload.
+///
+/// Per-agent context-window occupancy: the provider-reported input and
+/// output of that agent's final LLM turn. The shim knows no model context
+/// limit (see `session_info`), so `context_window` stays absent.
+#[derive(Debug, Clone, Serialize)]
+pub struct ContextUsagePayload {
+    context_tokens: u64,
+    response_tokens: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    context_window: Option<u64>,
+    agent_id: String,
+    session_id: String,
+}
+
+impl ContextUsagePayload {
+    /// Construct a context-usage payload from an agent's final-turn usage.
+    #[must_use]
+    pub fn from_final_turn(
+        context_tokens: u64,
+        response_tokens: u64,
+        agent_id: impl Into<String>,
+        session_id: impl Into<String>,
+    ) -> Self {
+        Self {
+            context_tokens,
+            response_tokens,
+            // The shim carries no model context limit to report; the field
+            // is omitted on the wire rather than zero-filled (mirrors the
+            // session_info ruling).
+            context_window: None,
+            agent_id: agent_id.into(),
+            session_id: session_id.into(),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // OpenAI-compatible chat-completion chunks (data-only, no event: field)
 // ---------------------------------------------------------------------------
 
@@ -596,6 +956,18 @@ pub enum AuraEvent {
     TaskStarted(TaskStartedPayload),
     /// `aura.orchestrator.task_completed` — worker finishes a task.
     TaskCompleted(TaskCompletedPayload),
+    /// `aura.reasoning` — coordinator thinking delta (S102).
+    Reasoning(ReasoningPayload),
+    /// `aura.orchestrator.worker_reasoning` — worker thinking delta (S102).
+    WorkerReasoning(WorkerReasoningPayload),
+    /// `aura.orchestrator.plan_created` — `create_plan` completed (S102).
+    PlanCreated(PlanCreatedPayload),
+    /// `aura.orchestrator.tool_call_started` — worker tool call begins (S102).
+    ToolCallStarted(ToolCallStartedPayload),
+    /// `aura.orchestrator.tool_call_completed` — worker tool call ends (S102).
+    ToolCallCompleted(ToolCallCompletedPayload),
+    /// `aura.context_usage` — per-agent final-turn occupancy (S102).
+    ContextUsage(ContextUsagePayload),
     /// A data-only OpenAI chat-completion chunk (no `event:` field).
     ChatChunk(ChatCompletionChunk),
     /// The terminal `data: [DONE]` sentinel.
@@ -614,6 +986,12 @@ impl AuraEvent {
             Self::ToolComplete(_) => Some(EVENT_TOOL_COMPLETE),
             Self::TaskStarted(_) => Some(EVENT_TASK_STARTED),
             Self::TaskCompleted(_) => Some(EVENT_TASK_COMPLETED),
+            Self::Reasoning(_) => Some(EVENT_REASONING),
+            Self::WorkerReasoning(_) => Some(EVENT_WORKER_REASONING),
+            Self::PlanCreated(_) => Some(EVENT_PLAN_CREATED),
+            Self::ToolCallStarted(_) => Some(EVENT_TOOL_CALL_STARTED),
+            Self::ToolCallCompleted(_) => Some(EVENT_TOOL_CALL_COMPLETED),
+            Self::ContextUsage(_) => Some(EVENT_CONTEXT_USAGE),
             Self::ChatChunk(_) | Self::Done => None,
         }
     }
@@ -635,6 +1013,12 @@ impl AuraEvent {
             Self::ToolComplete(p) => serde_json::to_string(p),
             Self::TaskStarted(p) => serde_json::to_string(p),
             Self::TaskCompleted(p) => serde_json::to_string(p),
+            Self::Reasoning(p) => serde_json::to_string(p),
+            Self::WorkerReasoning(p) => serde_json::to_string(p),
+            Self::PlanCreated(p) => serde_json::to_string(p),
+            Self::ToolCallStarted(p) => serde_json::to_string(p),
+            Self::ToolCallCompleted(p) => serde_json::to_string(p),
+            Self::ContextUsage(p) => serde_json::to_string(p),
             Self::ChatChunk(p) => serde_json::to_string(p),
             Self::Done => return SSE_DONE.to_owned(),
         }
@@ -779,5 +1163,143 @@ mod tests {
         assert!(TaskStartedPayload::new(0, "", "w", "o", "a", "s").is_err());
         assert!(TaskStartedPayload::new(0, "d", "", "o", "a", "s").is_err());
         assert!(TaskStartedPayload::new(0, "d", "w", "", "a", "s").is_err());
+    }
+
+    #[test]
+    fn routing_mode_serializes_snake_case_like_aura_events() {
+        assert_eq!(
+            serde_json::to_string(&RoutingMode::Orchestrated).unwrap(),
+            "\"orchestrated\""
+        );
+        assert_eq!(
+            serde_json::to_string(&RoutingMode::Routed).unwrap(),
+            "\"routed\""
+        );
+    }
+
+    #[test]
+    fn s102_event_names_match_the_wire_contract() {
+        assert_eq!(EVENT_REASONING, "aura.reasoning");
+        assert_eq!(EVENT_WORKER_REASONING, "aura.orchestrator.worker_reasoning");
+        assert_eq!(EVENT_PLAN_CREATED, "aura.orchestrator.plan_created");
+        assert_eq!(
+            EVENT_TOOL_CALL_STARTED,
+            "aura.orchestrator.tool_call_started"
+        );
+        assert_eq!(
+            EVENT_TOOL_CALL_COMPLETED,
+            "aura.orchestrator.tool_call_completed"
+        );
+        assert_eq!(EVENT_CONTEXT_USAGE, "aura.context_usage");
+    }
+
+    #[test]
+    fn plan_created_serializes_the_aura_events_shape() {
+        let payload = PlanCreatedPayload::new("goal", 2, "why", None, "main", "sid");
+        let v: serde_json::Value =
+            serde_json::from_str(&serde_json::to_string(&payload).unwrap()).unwrap();
+        assert_eq!(v["goal"].as_str(), Some("goal"));
+        assert_eq!(v["task_count"].as_u64(), Some(2));
+        assert_eq!(v["routing_mode"].as_str(), Some("orchestrated"));
+        assert_eq!(v["routing_rationale"].as_str(), Some("why"));
+        assert!(v.get("planning_response").is_none());
+        assert_eq!(v["agent_id"].as_str(), Some("main"));
+        assert_eq!(v["session_id"].as_str(), Some("sid"));
+    }
+
+    /// N2 regression (Gate A round 1): a successful plan whose rationale
+    /// (or goal) is the empty string still emits its `plan_created` -
+    /// aura's fields are unrestricted, and the planning tool validates
+    /// presence, not content.
+    #[test]
+    fn plan_created_accepts_empty_strings_like_aura() {
+        let payload = PlanCreatedPayload::new("", 1, "", None, "main", "sid");
+        let v: serde_json::Value =
+            serde_json::from_str(&serde_json::to_string(&payload).unwrap()).unwrap();
+        assert_eq!(v["goal"].as_str(), Some(""));
+        assert_eq!(v["routing_rationale"].as_str(), Some(""));
+        assert_eq!(v["task_count"].as_u64(), Some(1));
+    }
+
+    #[test]
+    fn tool_call_started_serializes_optional_task_and_arguments() {
+        let payload = ToolCallStartedPayload::new(
+            Some(3),
+            "tc-1",
+            "keystrokes",
+            "operator",
+            Some(serde_json::json!({"keys": "ls"})),
+            "operator",
+            "sid",
+        )
+        .expect("non-empty");
+        let v: serde_json::Value =
+            serde_json::from_str(&serde_json::to_string(&payload).unwrap()).unwrap();
+        assert_eq!(v["task_id"].as_u64(), Some(3));
+        assert_eq!(v["tool_call_id"].as_str(), Some("tc-1"));
+        assert_eq!(v["tool_name"].as_str(), Some("keystrokes"));
+        assert_eq!(v["worker_id"].as_str(), Some("operator"));
+        assert_eq!(v["arguments"]["keys"].as_str(), Some("ls"));
+        assert_eq!(v["agent_id"].as_str(), Some("operator"));
+
+        let bare = ToolCallStartedPayload::new(None, "tc-2", "t", "w", None, "w", "sid")
+            .expect("non-empty");
+        let v: serde_json::Value =
+            serde_json::from_str(&serde_json::to_string(&bare).unwrap()).unwrap();
+        assert!(v.get("task_id").is_none());
+        assert!(v.get("arguments").is_none());
+    }
+
+    #[test]
+    fn tool_call_completed_carries_no_tool_name_or_worker_id() {
+        let success = ToolCallCompletedPayload::success(Some(1), "tc-1", 12, "ok", "w", "sid");
+        let v: serde_json::Value =
+            serde_json::from_str(&serde_json::to_string(&success).unwrap()).unwrap();
+        assert_eq!(v["tool_call_id"].as_str(), Some("tc-1"));
+        assert_eq!(v["success"].as_bool(), Some(true));
+        assert_eq!(v["duration_ms"].as_u64(), Some(12));
+        assert_eq!(v["result"].as_str(), Some("ok"));
+        assert!(
+            v.get("tool_name").is_none() && v.get("worker_id").is_none(),
+            "the aura-events completed shape carries neither"
+        );
+
+        let failure = ToolCallCompletedPayload::failure(Some(1), "tc-1", 12, "w", "sid");
+        let v: serde_json::Value =
+            serde_json::from_str(&serde_json::to_string(&failure).unwrap()).unwrap();
+        assert_eq!(v["success"].as_bool(), Some(false));
+        assert!(v.get("result").is_none());
+    }
+
+    #[test]
+    fn reasoning_payloads_carry_content_and_agent() {
+        let coordinator = ReasoningPayload::new("thinking...", "main", "sid").expect("non-empty");
+        let v: serde_json::Value =
+            serde_json::from_str(&serde_json::to_string(&coordinator).unwrap()).unwrap();
+        assert_eq!(v["content"].as_str(), Some("thinking..."));
+        assert_eq!(v["agent_id"].as_str(), Some("main"));
+
+        let worker = WorkerReasoningPayload::new(0, "operator", "hmm", "sid").expect("non-empty");
+        let v: serde_json::Value =
+            serde_json::from_str(&serde_json::to_string(&worker).unwrap()).unwrap();
+        assert_eq!(v["task_id"].as_u64(), Some(0));
+        assert_eq!(v["worker_id"].as_str(), Some("operator"));
+        assert_eq!(v["content"].as_str(), Some("hmm"));
+        assert_eq!(v["agent_id"].as_str(), Some("operator"));
+
+        assert!(ReasoningPayload::new("", "main", "sid").is_err());
+        assert!(WorkerReasoningPayload::new(0, "w", "", "sid").is_err());
+        assert!(WorkerReasoningPayload::new(0, "", "c", "sid").is_err());
+    }
+
+    #[test]
+    fn context_usage_reports_final_turn_and_omits_the_window() {
+        let payload = ContextUsagePayload::from_final_turn(70, 9, "main", "sid");
+        let v: serde_json::Value =
+            serde_json::from_str(&serde_json::to_string(&payload).unwrap()).unwrap();
+        assert_eq!(v["context_tokens"].as_u64(), Some(70));
+        assert_eq!(v["response_tokens"].as_u64(), Some(9));
+        assert!(v.get("context_window").is_none());
+        assert_eq!(v["agent_id"].as_str(), Some("main"));
     }
 }

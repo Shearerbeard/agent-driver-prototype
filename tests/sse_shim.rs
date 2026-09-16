@@ -149,6 +149,7 @@ fn shim_state(provider: Arc<dyn Provider>, artifact_root: PathBuf) -> Arc<ShimSt
         budget: LoopBudget::new(8).expect("non-zero worker budget"),
         system_prompt: SystemPrompt::new("You are a worker. Submit your result."),
         cancellation: CancellationToken::new(),
+        observer_factory: None,
     };
     Arc::new(ShimState::from_parts(
         provider,
@@ -602,6 +603,7 @@ fn burn_state(provider: Arc<dyn Provider>, artifact_root: PathBuf) -> Arc<ShimSt
         budget: LoopBudget::new(1_000_000).expect("non-zero worker budget"),
         system_prompt: SystemPrompt::new("You are a worker. Submit your result."),
         cancellation: CancellationToken::new(),
+        observer_factory: None,
     };
     Arc::new(ShimState::from_parts(
         provider,
@@ -733,5 +735,326 @@ async fn client_disconnect_stops_provider_calls_within_the_bounded_window() {
         ShutdownAbort::NothingLive,
         "the coordinator task was still live 2s after the client disconnect — \
          the burn window never closed"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// S102 named-event surface: worker tool events, reasoning, plan, context
+// ---------------------------------------------------------------------------
+
+use agent_driver_rs::TokenUsage;
+use agent_driver_rs::streaming::{
+    CompletionMetadata, ContentBlockType, StopReason, StreamDelta, StreamEvent,
+};
+
+/// A no-tool text response that carries a thinking delta before the text and
+/// reports token usage on its terminal `Completed` event, so the metering
+/// decorator has a per-call usage to record (the stock mock helpers leave
+/// `usage: None`).
+fn thinking_text_response_with_usage(
+    thinking: &str,
+    text: &str,
+    usage: TokenUsage,
+) -> Vec<StreamEvent> {
+    let mut started = CompletionMetadata::default();
+    started.stop_reason = None;
+    let mut completed = CompletionMetadata::default();
+    completed.stop_reason = Some(StopReason::EndTurn);
+    completed.usage = Some(usage);
+    vec![
+        StreamEvent::Started { metadata: started },
+        StreamEvent::ContentBlockStart {
+            index: 0,
+            block_type: ContentBlockType::Thinking,
+        },
+        StreamEvent::Delta(StreamDelta::ThinkingDelta {
+            thinking: thinking.to_owned(),
+        }),
+        StreamEvent::ContentBlockStop { index: 0 },
+        StreamEvent::ContentBlockStart {
+            index: 1,
+            block_type: ContentBlockType::Text,
+        },
+        StreamEvent::Delta(StreamDelta::TextDelta {
+            text: text.to_owned(),
+        }),
+        StreamEvent::ContentBlockStop { index: 1 },
+        StreamEvent::Completed {
+            metadata: completed,
+        },
+    ]
+}
+
+/// The worker's final-turn usage (input 60 / output 6) and the coordinator's
+/// (70 / 9): the per-agent `aura.context_usage` values the test asserts.
+const WORKER_FINAL_USAGE: TokenUsage = TokenUsage {
+    input_tokens: 60,
+    output_tokens: 6,
+};
+const COORDINATOR_FINAL_USAGE: TokenUsage = TokenUsage {
+    input_tokens: 70,
+    output_tokens: 9,
+};
+
+const WORKER_THINKING: &str = "operations is checking the service logs";
+const COORDINATOR_THINKING: &str = "coordinator frames the answer";
+
+/// The S102 provider script: same six-call shape as [`shim_provider`], with
+/// the two end-turn responses replaced by thinking-plus-usage-bearing ones
+/// so the reasoning and context-usage paths have live data to carry.
+fn s102_provider() -> Arc<dyn Provider> {
+    let expected_id = PlanId::derive(&one_task_plan_args());
+    let plan_args_json = serde_json::to_string(&one_task_plan_args()).expect("plan args serialize");
+    let responses = vec![
+        mock_tool_call_response("c1", "create_plan", &plan_args_json),
+        mock_tool_call_response(
+            "c2",
+            "execute",
+            &format!(r#"{{"plan_id":"{expected_id}"}}"#),
+        ),
+        mock_tool_call_response(
+            "w0",
+            "submit_result",
+            &submit_result_json("Found 42 errors", "service-a: 42", "high"),
+        ),
+        thinking_text_response_with_usage(WORKER_THINKING, "", WORKER_FINAL_USAGE),
+        mock_tool_call_response(
+            "c3",
+            "respond",
+            r#"{"response":"service-a produced 42 of yesterday's errors."}"#,
+        ),
+        thinking_text_response_with_usage(COORDINATOR_THINKING, "done.", COORDINATOR_FINAL_USAGE),
+    ];
+    Arc::new(MockProvider::new(responses))
+}
+
+/// The S102 card's named-event surface on the wire: worker tool calls under
+/// their task with the worker's agent id, coordinator and worker reasoning
+/// as named events, `plan_created` when `create_plan` completes, and
+/// per-agent `context_usage` at each agent's final turn — with the assistant
+/// answer stream staying byte-clean (C3).
+#[tokio::test]
+async fn s102_named_events_reach_the_stream() {
+    let provider = s102_provider();
+    let dir = tempfile::TempDir::new().expect("temp dir for artifact root");
+    let state = shim_state(provider, dir.path().to_path_buf());
+    let app = router(state);
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind to ephemeral port");
+    let port = listener.local_addr().expect("local addr").port();
+    tokio::spawn(async move {
+        let _ = axum::serve(listener, app).await;
+    });
+
+    let client = reqwest::Client::new();
+    let request_body = serde_json::json!({
+        "model": "aura-terminalbench",
+        "messages": [{"role": "user", "content": "Count the errors by service"}],
+        "stream": true,
+    });
+    let response = tokio::time::timeout(
+        Duration::from_secs(30),
+        client
+            .post(format!("http://127.0.0.1:{port}/v1/chat/completions"))
+            .json(&request_body)
+            .send(),
+    )
+    .await
+    .expect("request did not complete within 30s")
+    .expect("POST /v1/chat/completions failed");
+    assert!(response.status().is_success());
+
+    let text = tokio::time::timeout(Duration::from_secs(30), response.text())
+        .await
+        .expect("body did not complete within 30s — stream did not terminate via [DONE]")
+        .expect("reading response body failed");
+
+    let frames = parse_sse_frames(&text);
+    let transcript = transcript_summary(&frames);
+    let json = |f: &SseFrame| serde_json::from_str::<serde_json::Value>(&f.data);
+    let position = |name: &str, pred: &dyn Fn(&serde_json::Value) -> bool| {
+        frames
+            .iter()
+            .position(|f| f.event.as_deref() == Some(name) && json(f).is_ok_and(|v| pred(&v)))
+    };
+    let mut failures: Vec<String> = Vec::new();
+
+    // (a) plan_created fires when create_plan completes: mapped goal,
+    //     flattened task count, planning rationale, routing always
+    //     orchestrated, no planning_response field, agent "main". It lands
+    //     after the coordinator's tool_complete for create_plan and before
+    //     the first task_started.
+    let plan_pos = position("aura.orchestrator.plan_created", &|v| {
+        v["goal"].as_str() == Some("Count the errors by service")
+            && v["task_count"].as_u64() == Some(1)
+            && v["routing_mode"].as_str() == Some("orchestrated")
+            && v["routing_rationale"].as_str() == Some("One step")
+            && v.get("planning_response").is_none()
+            && v["agent_id"].as_str() == Some("main")
+    });
+    if plan_pos.is_none() {
+        failures.push(
+            "(a) no aura.orchestrator.plan_created with goal/task_count/routing fields".to_owned(),
+        );
+    }
+    let create_plan_complete = position("aura.tool_complete", &|v| {
+        v["tool_name"].as_str() == Some("create_plan")
+    });
+    let task_started = position("aura.orchestrator.task_started", &|_| true);
+    if let (Some(plan), Some(complete), Some(started)) =
+        (plan_pos, create_plan_complete, task_started)
+        && !(complete < plan && plan < started)
+    {
+        failures.push(format!(
+            "(a) plan_created ordering wrong: tool_complete@{complete}, plan@{plan}, task_started@{started}"
+        ));
+    }
+
+    // (b) worker tool events carry the worker's agent id and task id; the
+    //     completed payload carries NO tool_name and NO worker_id (the
+    //     aura-events shape), and both sit inside the task's window.
+    let worker_tool_start = position("aura.orchestrator.tool_call_started", &|v| {
+        v["tool_name"].as_str() == Some("submit_result")
+            && v["worker_id"].as_str() == Some("operations")
+            && v["task_id"].as_u64() == Some(0)
+            && v["agent_id"].as_str() == Some("operations")
+            && v["arguments"].is_object()
+    });
+    if worker_tool_start.is_none() {
+        failures.push(
+            "(b) no aura.orchestrator.tool_call_started for submit_result with worker identity"
+                .to_owned(),
+        );
+    }
+    let worker_tool_complete = position("aura.orchestrator.tool_call_completed", &|v| {
+        v["tool_call_id"].is_string()
+            && v["success"].as_bool() == Some(true)
+            && v["result"].is_string()
+            && v["duration_ms"].is_u64()
+            && v["task_id"].as_u64() == Some(0)
+            && v["agent_id"].as_str() == Some("operations")
+    });
+    match worker_tool_complete {
+        None => failures.push(
+            "(b) no aura.orchestrator.tool_call_completed with success/result/duration".to_owned(),
+        ),
+        Some(pos) => {
+            let v = json(&frames[pos]).expect("checked by position predicate");
+            if v.get("tool_name").is_some() || v.get("worker_id").is_some() {
+                failures.push(
+                    "(b) tool_call_completed carries tool_name/worker_id — aura-events shape has neither"
+                        .to_owned(),
+                );
+            }
+        }
+    }
+    // N3 (Gate A round 1): a missing boundary IS a failure - the check no
+    // longer passes vacuously - and both boundaries must carry task 0's
+    // identity, not just any task's.
+    let task_started0 = position("aura.orchestrator.task_started", &|v| {
+        v["task_id"].as_u64() == Some(0) && v["worker_id"].as_str() == Some("operations")
+    });
+    let task_completed0 = position("aura.orchestrator.task_completed", &|v| {
+        v["task_id"].as_u64() == Some(0) && v["success"].as_bool() == Some(true)
+    });
+    match (task_started0, task_completed0) {
+        (Some(t_started), Some(t_completed)) => {
+            if let (Some(start), Some(complete)) = (worker_tool_start, worker_tool_complete)
+                && !(t_started < start && start < complete && complete < t_completed)
+            {
+                failures.push(format!(
+                    "(b) worker tool events outside the task window: task_started@{t_started}, start@{start}, complete@{complete}, task_completed@{t_completed}"
+                ));
+            }
+        }
+        _ => failures.push(format!(
+            "(b) task-window boundaries missing for task 0: task_started@{task_started0:?}, task_completed@{task_completed0:?}"
+        )),
+    }
+
+    // (c) reasoning surfaces as NAMED events: worker thinking under
+    //     worker_reasoning with task and worker identity, coordinator
+    //     thinking under aura.reasoning with agent "main".
+    let worker_reasoning = position("aura.orchestrator.worker_reasoning", &|v| {
+        v["task_id"].as_u64() == Some(0)
+            && v["worker_id"].as_str() == Some("operations")
+            && v["content"]
+                .as_str()
+                .is_some_and(|c| c.contains("service logs"))
+            && v["agent_id"].as_str() == Some("operations")
+    });
+    if worker_reasoning.is_none() {
+        failures.push("(c) no worker_reasoning carrying the worker's thinking".to_owned());
+    }
+    let coordinator_reasoning = position("aura.reasoning", &|v| {
+        v["agent_id"].as_str() == Some("main")
+            && v["content"]
+                .as_str()
+                .is_some_and(|c| c.contains("frames the answer"))
+    });
+    if coordinator_reasoning.is_none() {
+        failures.push("(c) no aura.reasoning carrying the coordinator's thinking".to_owned());
+    }
+
+    // (d) context_usage reports each agent's final-turn occupancy: the
+    //     worker's from its end turn, "main"'s after aura.usage at stream
+    //     end. No context_window field (the shim configures none).
+    let worker_ctx = position("aura.context_usage", &|v| {
+        v["agent_id"].as_str() == Some("operations")
+            && v["context_tokens"].as_u64() == Some(60)
+            && v["response_tokens"].as_u64() == Some(6)
+            && v.get("context_window").is_none()
+    });
+    if worker_ctx.is_none() {
+        failures.push("(d) no context_usage for the worker's final turn (60/6)".to_owned());
+    }
+    let usage_pos = position("aura.usage", &|_| true);
+    let main_ctx = position("aura.context_usage", &|v| {
+        v["agent_id"].as_str() == Some("main")
+            && v["context_tokens"].as_u64() == Some(70)
+            && v["response_tokens"].as_u64() == Some(9)
+    });
+    match (main_ctx, usage_pos) {
+        (None, _) => failures.push("(d) no context_usage for main's final turn (70/9)".to_owned()),
+        (Some(ctx), Some(usage)) if ctx < usage => failures.push(
+            "(d) main's context_usage landed before aura.usage — the terminal order is usage first"
+                .to_owned(),
+        ),
+        _ => {}
+    }
+
+    // (e) C3: the answer stream stays byte-clean. No chat chunk's content
+    //     carries a thinking marker; the plain answer text does arrive.
+    for f in &frames {
+        if f.event.is_none()
+            && f.data != "[DONE]"
+            && let Ok(v) = json(f)
+        {
+            let content = v["choices"][0]["delta"]["content"].as_str().unwrap_or("");
+            if content.contains(WORKER_THINKING) || content.contains(COORDINATOR_THINKING) {
+                failures.push("(e) reasoning leaked into choices[0].delta.content".to_owned());
+            }
+        }
+    }
+    let answer_arrived = frames.iter().any(|f| {
+        f.event.is_none()
+            && json(f).is_ok_and(|v| v["choices"][0]["delta"]["content"].as_str() == Some("done."))
+    });
+    if !answer_arrived {
+        failures.push("(e) the plain answer text never arrived as a content chunk".to_owned());
+    }
+
+    assert!(
+        failures.is_empty(),
+        "S102 named-event assertions failed ({n} failures):\n---\n{fails}\n---\n\
+         Wire transcript: {transcript:?}\nRaw body:\n{text}",
+        n = failures.len(),
+        fails = failures
+            .iter()
+            .map(|f| format!("  - {f}"))
+            .collect::<Vec<_>>()
+            .join("\n"),
     );
 }

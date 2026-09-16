@@ -235,6 +235,9 @@ impl PlanExecutor for DagExecutor {
                     // S90: the honored token is the dispatch's own child of
                     // ctx, never the stored template value (panel ruling).
                     cancellation: ctx.cancellation.child_token(),
+                    // S102: the observer factory threads through so worker
+                    // tool calls and reasoning reach the SSE stream.
+                    observer_factory: self.worker_config.observer_factory.clone(),
                 };
 
                 let slot: TerminalSlot<WorkerSubmission> = TerminalSlot::new();
@@ -571,6 +574,7 @@ mod tests {
                 budget: LoopBudget::new(RUN_WIDE_TURNS).expect("non-zero budget"),
                 system_prompt: SystemPrompt::new("run-wide worker prompt"),
                 cancellation: CancellationToken::new(),
+                observer_factory: None,
             },
             WorkerSections::from_roster(roster),
             RunStore::new(),

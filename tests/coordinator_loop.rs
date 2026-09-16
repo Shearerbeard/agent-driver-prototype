@@ -169,6 +169,7 @@ async fn coordinator_with_provider(
         budget: LoopBudget::new(8).expect("non-zero worker budget"),
         system_prompt: SystemPrompt::new("You are a worker. Submit your result."),
         cancellation: CancellationToken::new(),
+        observer_factory: None,
     };
     let executor: Arc<dyn PlanExecutor> = Arc::new(DagExecutor::new(
         SidecarClient::disconnected(),

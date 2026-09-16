@@ -9,7 +9,6 @@ use std::sync::Arc;
 
 use agent_driver_rs::CorrelationId;
 use agent_driver_rs::streaming::TokenUsage;
-use tokio::sync::Mutex;
 
 /// The session identity for one `/v1/chat/completions` request.
 ///
@@ -67,9 +66,14 @@ impl std::fmt::Display for ShimSessionId {
 /// Accumulates token usage across all iterations of a coordinator loop and
 /// all worker loops inside it.
 ///
-/// Fed from `AgentEvent::IterationComplete` (coordinator iterations) and from
-/// worker-loop completion events (via the shared observer or `RunStore`).
-/// The terminal `aura.usage` event reads the accumulated totals.
+/// Fed by the [`UsageMeteringProvider`](super::usage_metering) decorator,
+/// which intercepts every provider call's terminal `Completed` metadata.
+/// The terminal `aura.usage` event reads the accumulated totals. A std
+/// mutex (not tokio's) because the write site is the synchronous
+/// `poll_next` of the metered stream, where sibling tool calls may poll
+/// concurrently (the pin's driver runs same-response tools under
+/// `join_all`); the critical section is a field update, never held
+/// across an await.
 ///
 /// Forbidden invalid state: negative token counts (`u64` prevents this);
 /// double-counting from re-feeding the same iteration's usage (the
@@ -88,9 +92,7 @@ impl UsageAccumulator {
         Self::default()
     }
 
-    /// Add one iteration's token usage. Called from the shim observer's
-    /// `IterationComplete` handler for the coordinator loop, and from
-    /// whatever seam carries worker-loop usage (see DESIGN.md R2).
+    /// Add one iteration's token usage.
     pub fn add(&mut self, usage: TokenUsage) {
         self.prompt_tokens += u64::from(usage.input_tokens);
         self.completion_tokens += u64::from(usage.output_tokens);
@@ -115,13 +117,13 @@ impl UsageAccumulator {
     }
 }
 
-/// A shareable handle to a [`UsageAccumulator`] behind a tokio mutex.
+/// A shareable handle to a [`UsageAccumulator`] behind a std mutex.
 ///
-/// The observer feeds usage from `on_event` (async), and the stream
-/// completion path reads the totals to emit the final `aura.usage` event.
-/// The `Arc<Mutex<UsageAccumulator>>` lets both sides access the same
-/// accumulator without copying.
+/// The metering decorator writes from the synchronous stream poll (where
+/// sibling lanes may interleave); the observers read the totals at loop
+/// completion. Both hold the guard only for field access, never across
+/// an await.
 #[must_use]
-pub fn shared_accumulator() -> Arc<Mutex<UsageAccumulator>> {
-    Arc::new(Mutex::new(UsageAccumulator::new()))
+pub fn shared_accumulator() -> Arc<std::sync::Mutex<UsageAccumulator>> {
+    Arc::new(std::sync::Mutex::new(UsageAccumulator::new()))
 }
