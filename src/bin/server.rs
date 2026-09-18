@@ -50,7 +50,7 @@ use agent_driver_prototype::sse_shim::{
 };
 
 use agent_driver_rs::config::ProviderConfig;
-use agent_driver_rs::provider::BedrockProvider;
+use agent_driver_rs::provider::{BedrockProvider, OpenAiProvider};
 use agent_driver_rs::{ModelId, Provider, SystemPrompt};
 use tokio_util::sync::CancellationToken;
 
@@ -98,9 +98,10 @@ async fn otel_config_init() -> Result<OtelGuard, ShimError> {
 /// configs.
 ///
 /// The provider and model come from `ProviderConfig::from_env()` (the
-/// `PROVIDER` env var selects the backend; only `bedrock` is feature-enabled
-/// in this crate). The orchestration TOML supplies the worker roster,
-/// budgets, inline threshold, and prompt preambles.
+/// `PROVIDER` env var selects the backend; bedrock and openai-compatible
+/// are wired, other provider kinds are a configuration error). The
+/// orchestration TOML supplies the worker roster, budgets, inline
+/// threshold, and prompt preambles.
 async fn build_state(args: &ShimCliArgs) -> Result<ShimState, ShimError> {
     let config = load_shim_config(args.config_path())?;
 
@@ -149,9 +150,14 @@ async fn build_state(args: &ShimCliArgs) -> Result<ShimState, ShimError> {
         "sidecar handshake complete"
     );
 
-    // Provider + model from env (the shim is Bedrock-backed per DESIGN.md).
+    // Provider + model from env (the shim is Bedrock- or OpenAI-compatible-
+    // backed per DESIGN.md). Validation is explicit: a bad base_url or key
+    // must fail at startup, not at the first streamed request.
     let provider_config = ProviderConfig::from_env()
         .map_err(|e| ShimError::Server(format!("provider config from env failed: {e}")))?;
+    provider_config
+        .validate()
+        .map_err(|e| ShimError::Server(format!("provider config invalid: {e}")))?;
     let (base_provider, model) = build_provider(provider_config).await?;
 
     // Coordinator preamble from the agent system prompt + the orchestration
@@ -551,13 +557,16 @@ impl ShutdownSignals {
 }
 
 // ---------------------------------------------------------------------------
-// Provider construction (env-based; Bedrock only in this crate)
+// Provider construction (env-based; bedrock and openai-compatible wired)
 // ---------------------------------------------------------------------------
 
 /// Build the shared base provider and its model id from a `ProviderConfig`.
 ///
-/// The crate enables only the `bedrock` feature, so only the `Bedrock` arm is
-/// reachable; any other provider kind is a configuration error.
+/// Two backends are reachable: Bedrock (AWS) and OpenAI-compatible
+/// endpoints via `OPENAI_BASE_URL` (BaseTen, OpenRouter, vLLM) - the
+/// pin's `OpenAiProvider` speaks the chat-completions wire and surfaces
+/// `reasoning_content` as `ThinkingDelta` (S111). Any other provider
+/// kind is a configuration error.
 async fn build_provider(config: ProviderConfig) -> Result<(Arc<dyn Provider>, ModelId), ShimError> {
     match config {
         ProviderConfig::Bedrock(cfg) => {
@@ -568,12 +577,19 @@ async fn build_provider(config: ProviderConfig) -> Result<(Arc<dyn Provider>, Mo
                 .map_err(|e| ShimError::Server(format!("bedrock provider build failed: {e}")))?;
             Ok((Arc::new(provider) as Arc<dyn Provider>, model))
         }
-        #[allow(
-            unreachable_patterns,
-            reason = "only the bedrock provider feature is enabled in this crate"
-        )]
+        ProviderConfig::OpenAi(cfg) => {
+            let model = ModelId::new(cfg.model.as_str())
+                .map_err(|e| ShimError::Server(format!("openai model id invalid: {e}")))?;
+            let provider = OpenAiProvider::new(cfg)
+                .map_err(|e| ShimError::Server(format!("openai provider build failed: {e}")))?;
+            Ok((Arc::new(provider) as Arc<dyn Provider>, model))
+        }
+        // ProviderConfig is non_exhaustive, so the wildcard is mandatory.
+        // anthropic / openrouter / ollama configs parse from env (the pin's
+        // default features compile them) but are not wired; they fail here
+        // by design.
         _ => Err(ShimError::Server(
-            "provider not supported by the shim (only bedrock is feature-enabled)".to_owned(),
+            "provider not supported by the shim (bedrock and openai are wired)".to_owned(),
         )),
     }
 }
