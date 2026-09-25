@@ -1099,7 +1099,7 @@ impl Provider for RejectingProvider {
     fn complete_stream(
         &self,
         _request: CompletionRequest,
-        ctx: ProviderContext,
+        _ctx: ProviderContext,
     ) -> Pin<Box<dyn Future<Output = Result<StreamHandle, ProviderError>> + Send + '_>> {
         let rejection = ProviderError::InvalidRequest {
             provider: ProviderKind::OpenAi,
@@ -1165,11 +1165,11 @@ async fn drive_exchange(state: Arc<ShimState>) -> (String, Vec<SseFrame>, Vec<St
 ///
 /// Soft-asserts (mirroring the vocabulary test's pattern):
 /// - (a) a named `aura.error` frame with a non-empty session_id and a
-///       message carrying the failure marker;
+///   message carrying the failure marker;
 /// - (b) a data-only OpenAI-style `{"error": {...}}` frame with a
-///       non-empty message;
+///   non-empty message;
 /// - (c) no data-only chunk carries any `finish_reason` — a failed run
-///       must not synthesize a completion, `stop` least of all;
+///   must not synthesize a completion, `stop` least of all;
 /// - (d) the terminal frame is `[DONE]` and nothing follows it;
 /// - (e) both error signals precede `[DONE]`.
 fn assert_failure_surface(
