@@ -293,22 +293,12 @@ impl SidecarClient {
         Self::from_service(url, service)
     }
 
-    /// Split an in-memory duplex into the two halves an integration test
-    /// rigs: the client half feeds [`Self::connect_stream`], the server
-    /// half serves the test's rmcp server. Splitting creation from the
-    /// handshake is what makes the rig deadlock-free — the server must
-    /// already be serving before the client's initialize can complete.
-    ///
-    /// Test-only, behind `test-support`; the signature carries only
-    /// tokio types, so no rmcp type crosses the public seam.
-    #[cfg(feature = "test-support")]
-    pub fn duplex_pair(capacity: usize) -> (tokio::io::DuplexStream, tokio::io::DuplexStream) {
-        tokio::io::duplex(capacity)
-    }
-
-    /// Complete the MCP handshake over one duplex half and return the
-    /// connected client — the in-memory counterpart of
-    /// [`Self::connect_streamable`] and [`Self::connect_sse`].
+    /// Complete the MCP handshake over one half of an in-memory
+    /// `tokio::io::duplex` pair and return the connected client — the
+    /// in-memory counterpart of [`Self::connect_streamable`] and
+    /// [`Self::connect_sse`], for the integration-test rig only. The
+    /// test creates the pair itself and serves its server half, which
+    /// is what keeps the handshake deadlock-free.
     ///
     /// # Errors
     ///

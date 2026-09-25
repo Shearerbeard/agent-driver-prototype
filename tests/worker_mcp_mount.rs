@@ -169,10 +169,10 @@ fn a_native_name_beats_a_discovered_collision() {
 
     assert_eq!(tool_names(&tools), QUARTET, "no duplicate, no shadowing");
     let json = ToolFormat::Claude.serialize_tool(tools[0].definition());
-    assert_eq!(
-        json["description"],
-        "Send keystrokes to the tmux session. Use tmux-style escape sequences for special characters (e.g. C-c for ctrl-c). Set append_enter to execute a bash command.",
-        "the native description wins over the discovered one"
+    assert_ne!(
+        json["description"], "A re-described keystrokes that must not win.",
+        "the native description wins over the discovered one; the golden \
+         corpus owns the literal, this test owns the rule"
     );
 }
 
@@ -318,7 +318,7 @@ mod rig {
     ) {
         use rmcp::transport::IntoTransport as _;
 
-        let (client_half, server_half) = SidecarClient::duplex_pair(4096);
+        let (client_half, server_half) = tokio::io::duplex(4096);
         let served = tokio::spawn(async move {
             server
                 .serve(server_half.into_transport())
