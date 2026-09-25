@@ -117,14 +117,18 @@ cargo run --bin mcp_probe -- <mcp-url>   # e.g. http://localhost:8000/sse
   planning/turn budgets, the inline spill threshold, and the prompt
   preambles.
 - The model provider comes from `ProviderConfig::from_env()` (the
-  `PROVIDER` env var selects the backend). Two backends are wired:
+  `PROVIDER` env var selects the backend). Three backends are wired:
   `PROVIDER=bedrock` with the usual AWS environment
-  (`AWS_PROFILE`, `AWS_REGION`, `BEDROCK_MODEL`), and
-  `PROVIDER=openai` against any OpenAI-compatible endpoint —
+  (`AWS_PROFILE`, `AWS_REGION`, `BEDROCK_MODEL`), `PROVIDER=openai`
+  against any OpenAI-compatible endpoint —
   `OPENAI_BASE_URL` (BaseTen, OpenRouter, a vLLM server), `OPENAI_API_KEY`,
-  `OPENAI_MODEL` (an `org/model` slug for BaseTen). Both fail loud at
+  `OPENAI_MODEL` (an `org/model` slug for BaseTen) — and
+  `PROVIDER=anthropic` direct (`ANTHROPIC_API_KEY`, `ANTHROPIC_MODEL`;
+  setting `ANTHROPIC_THINKING_BUDGET` makes `aura.reasoning` deltas
+  guaranteed rather than best-effort). All fail loud at
   startup on a bad config; streamed `reasoning_content` surfaces as
-  `aura.reasoning` / `worker_reasoning` on both. Details: `OPENAI_MODEL`
+  `aura.reasoning` / `worker_reasoning` on the bedrock and openai lanes.
+  Details: `OPENAI_MODEL`
   defaults to `gpt-4o`; with `OPENAI_BASE_URL` unset the official
   OpenAI base applies; keyless local vLLM servers still require any
   non-empty dummy `OPENAI_API_KEY`. Note for Bedrock: startup now

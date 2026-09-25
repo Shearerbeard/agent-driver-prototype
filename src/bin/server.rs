@@ -50,7 +50,7 @@ use agent_driver_prototype::sse_shim::{
 };
 
 use agent_driver_rs::config::ProviderConfig;
-use agent_driver_rs::provider::{BedrockProvider, OpenAiProvider};
+use agent_driver_rs::provider::{AnthropicProvider, BedrockProvider, OpenAiProvider};
 use agent_driver_rs::{ModelId, Provider, SystemPrompt};
 use tokio_util::sync::CancellationToken;
 
@@ -563,11 +563,13 @@ impl ShutdownSignals {
 
 /// Build the shared base provider and its model id from a `ProviderConfig`.
 ///
-/// Two backends are reachable: Bedrock (AWS) and OpenAI-compatible
+/// Three backends are reachable: Bedrock (AWS), OpenAI-compatible
 /// endpoints via `OPENAI_BASE_URL` (BaseTen, OpenRouter, vLLM) - the
 /// pin's `OpenAiProvider` speaks the chat-completions wire and surfaces
-/// `reasoning_content` as `ThinkingDelta` (S111). Any other provider
-/// kind is a configuration error.
+/// `reasoning_content` as `ThinkingDelta` (S111) - and direct Anthropic
+/// (`ANTHROPIC_API_KEY`/`ANTHROPIC_MODEL`; a thinking budget makes
+/// `aura.reasoning` deltas guaranteed rather than best-effort). Any other
+/// provider kind is a configuration error.
 async fn build_provider(config: ProviderConfig) -> Result<(Arc<dyn Provider>, ModelId), ShimError> {
     match config {
         ProviderConfig::Bedrock(cfg) => {
@@ -585,12 +587,20 @@ async fn build_provider(config: ProviderConfig) -> Result<(Arc<dyn Provider>, Mo
                 .map_err(|e| ShimError::Server(format!("openai provider build failed: {e}")))?;
             Ok((Arc::new(provider) as Arc<dyn Provider>, model))
         }
+        ProviderConfig::Anthropic(cfg) => {
+            let model = ModelId::new(cfg.model.as_str())
+                .map_err(|e| ShimError::Server(format!("anthropic model id invalid: {e}")))?;
+            let provider = AnthropicProvider::new(cfg)
+                .map_err(|e| ShimError::Server(format!("anthropic provider build failed: {e}")))?;
+            Ok((Arc::new(provider) as Arc<dyn Provider>, model))
+        }
         // ProviderConfig is non_exhaustive, so the wildcard is mandatory.
-        // anthropic / openrouter / ollama configs parse from env (the pin's
-        // default features compile them) but are not wired; they fail here
+        // openrouter / ollama configs parse from env (the pin's default
+        // features compile them) but are not wired; they fail here
         // by design.
         _ => Err(ShimError::Server(
-            "provider not supported by the shim (bedrock and openai are wired)".to_owned(),
+            "provider not supported by the shim (bedrock, openai and anthropic are wired)"
+                .to_owned(),
         )),
     }
 }
@@ -600,6 +610,8 @@ mod tests {
     use super::*;
     use agent_driver_prototype::config::WorkerConfig;
     use agent_driver_prototype::shim_config::default_max_planning_cycles;
+    use agent_driver_rs::config::{AnthropicConfig, AnthropicModel, ApiKey};
+    use agent_driver_rs::types::MaxTokens;
 
     fn worker(mcp_filter: &[&str]) -> WorkerConfig {
         WorkerConfig {
@@ -693,6 +705,25 @@ mod tests {
             coordinator_budget(turns).expect("twelve is a spendable depth"),
             LoopBudget::CANONICAL
         );
+    }
+
+    /// S116: the anthropic arm builds its provider and model id exactly as
+    /// the other wired lanes do — the boot path differs only by env
+    /// configuration, never by code shape.
+    #[tokio::test]
+    async fn the_anthropic_arm_builds_its_provider_and_model() {
+        let config = AnthropicConfig {
+            api_key: ApiKey::new("test-key").expect("non-empty key"),
+            model: AnthropicModel::Custom("claude-haiku-4-5".to_owned()),
+            max_tokens: MaxTokens::new(1024).expect("non-zero"),
+            temperature: None,
+            thinking: None,
+        };
+        let (provider, model) = build_provider(ProviderConfig::Anthropic(config))
+            .await
+            .expect("the anthropic arm is wired");
+        assert_eq!(model.as_str(), "claude-haiku-4-5");
+        assert_eq!(provider.info().name, "Anthropic");
     }
 
     /// The deadline cannot fire before a shutdown signal does, so a shim that
