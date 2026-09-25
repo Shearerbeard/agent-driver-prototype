@@ -558,7 +558,8 @@ impl ShutdownSignals {
 }
 
 // ---------------------------------------------------------------------------
-// Provider construction (env-based; bedrock and openai-compatible wired)
+// Provider construction (env-based; bedrock, openai-compatible and anthropic
+// wired)
 // ---------------------------------------------------------------------------
 
 /// Build the shared base provider and its model id from a `ProviderConfig`.

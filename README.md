@@ -126,8 +126,9 @@ cargo run --bin mcp_probe -- <mcp-url>   # e.g. http://localhost:8000/sse
   `PROVIDER=anthropic` direct (`ANTHROPIC_API_KEY`, `ANTHROPIC_MODEL`;
   setting `ANTHROPIC_THINKING_BUDGET` makes `aura.reasoning` deltas
   guaranteed rather than best-effort). All fail loud at
-  startup on a bad config; streamed `reasoning_content` surfaces as
-  `aura.reasoning` / `worker_reasoning` on the bedrock and openai lanes.
+  startup on a bad config; the observer maps thinking deltas to
+  `aura.reasoning` / `worker_reasoning` on every lane, and the openai
+  wire's streamed `reasoning_content` field surfaces the same way.
   Details: `OPENAI_MODEL`
   defaults to `gpt-4o`; with `OPENAI_BASE_URL` unset the official
   OpenAI base applies; keyless local vLLM servers still require any
