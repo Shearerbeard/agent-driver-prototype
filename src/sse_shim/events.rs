@@ -54,6 +54,8 @@ pub const EVENT_TOOL_CALL_STARTED: &str = "aura.orchestrator.tool_call_started";
 pub const EVENT_TOOL_CALL_COMPLETED: &str = "aura.orchestrator.tool_call_completed";
 /// `aura.context_usage` — per-agent final-turn context occupancy.
 pub const EVENT_CONTEXT_USAGE: &str = "aura.context_usage";
+/// `aura.error` — a run failure surfaced before the stream ends (S113).
+pub const EVENT_ERROR: &str = "aura.error";
 
 /// The terminal SSE sentinel. Emitted as `data: [DONE]` with no `event:` field.
 pub const SSE_DONE: &str = "[DONE]";
@@ -772,6 +774,53 @@ impl ContextUsagePayload {
     }
 }
 
+/// The `aura.error` payload (S113): a run failure the coordinator lane
+/// could not recover from, carried on the named channel.
+///
+/// Emitted once, after `aura.usage`/`aura.context_usage` and instead of
+/// the terminal finish-reason chunk, when the loop ends in
+/// `LoopStopReason::LoopFailed`. The message is the substrate error's own
+/// display string, verbatim — the shim adds no interpretation.
+///
+/// Forbidden invalid state: an empty `session_id` or `message`. The
+/// private fields and [`new`](Self::new) constructor enforce these at
+/// construction.
+#[derive(Debug, Clone, Serialize)]
+pub struct ErrorPayload {
+    session_id: String,
+    message: String,
+}
+
+impl ErrorPayload {
+    /// Construct an error payload, rejecting empty session_id/message.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ShimError::InvalidRequest`] when `session_id` or
+    /// `message` is empty.
+    pub fn new(
+        session_id: impl Into<String>,
+        message: impl Into<String>,
+    ) -> Result<Self, ShimError> {
+        let session_id = session_id.into();
+        let message = message.into();
+        if session_id.trim().is_empty() {
+            return Err(ShimError::InvalidRequest(
+                "error session_id is empty".to_owned(),
+            ));
+        }
+        if message.trim().is_empty() {
+            return Err(ShimError::InvalidRequest(
+                "error message is empty".to_owned(),
+            ));
+        }
+        Ok(Self {
+            session_id,
+            message,
+        })
+    }
+}
+
 // ---------------------------------------------------------------------------
 // OpenAI-compatible chat-completion chunks (data-only, no event: field)
 // ---------------------------------------------------------------------------
@@ -924,6 +973,48 @@ impl ChatCompletionChunk {
     }
 }
 
+/// A data-only OpenAI-style error frame (S113): `{"error": {...}}`.
+///
+/// OpenAI's streaming contract delivers mid-stream failures as a data
+/// frame whose top-level object is `error` — no `event:` line, no
+/// `choices` — so standard OpenAI clients surface it through their
+/// error paths instead of reading it as a completion chunk. The shim
+/// emits it once, after the named `aura.error` event, on a failed run;
+/// no finish-reason chunk follows (a failed run must not synthesize a
+/// completion).
+///
+/// Forbidden invalid state: an empty `message`. The private fields and
+/// the [`new`](Self::new) constructor enforce this at construction.
+#[derive(Debug, Clone, Serialize)]
+pub struct ErrorFramePayload {
+    error: ErrorFrameBody,
+}
+
+/// The `error` object inside an [`ErrorFramePayload`].
+#[derive(Debug, Clone, Serialize)]
+struct ErrorFrameBody {
+    message: String,
+}
+
+impl ErrorFramePayload {
+    /// Construct an error frame, rejecting an empty message.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ShimError::InvalidRequest`] when `message` is empty.
+    pub fn new(message: impl Into<String>) -> Result<Self, ShimError> {
+        let message = message.into();
+        if message.trim().is_empty() {
+            return Err(ShimError::InvalidRequest(
+                "error frame message is empty".to_owned(),
+            ));
+        }
+        Ok(Self {
+            error: ErrorFrameBody { message },
+        })
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Unified event enum
 // ---------------------------------------------------------------------------
@@ -968,6 +1059,10 @@ pub enum AuraEvent {
     ToolCallCompleted(ToolCallCompletedPayload),
     /// `aura.context_usage` — per-agent final-turn occupancy (S102).
     ContextUsage(ContextUsagePayload),
+    /// `aura.error` — a run failure on the named channel (S113).
+    Error(ErrorPayload),
+    /// A data-only OpenAI-style `{"error": {...}}` frame (S113).
+    ErrorFrame(ErrorFramePayload),
     /// A data-only OpenAI chat-completion chunk (no `event:` field).
     ChatChunk(ChatCompletionChunk),
     /// The terminal `data: [DONE]` sentinel.
@@ -992,7 +1087,8 @@ impl AuraEvent {
             Self::ToolCallStarted(_) => Some(EVENT_TOOL_CALL_STARTED),
             Self::ToolCallCompleted(_) => Some(EVENT_TOOL_CALL_COMPLETED),
             Self::ContextUsage(_) => Some(EVENT_CONTEXT_USAGE),
-            Self::ChatChunk(_) | Self::Done => None,
+            Self::Error(_) => Some(EVENT_ERROR),
+            Self::ErrorFrame(_) | Self::ChatChunk(_) | Self::Done => None,
         }
     }
 
@@ -1019,6 +1115,8 @@ impl AuraEvent {
             Self::ToolCallStarted(p) => serde_json::to_string(p),
             Self::ToolCallCompleted(p) => serde_json::to_string(p),
             Self::ContextUsage(p) => serde_json::to_string(p),
+            Self::Error(p) => serde_json::to_string(p),
+            Self::ErrorFrame(p) => serde_json::to_string(p),
             Self::ChatChunk(p) => serde_json::to_string(p),
             Self::Done => return SSE_DONE.to_owned(),
         }
@@ -1038,6 +1136,7 @@ mod tests {
         assert_eq!(EVENT_TOOL_COMPLETE, "aura.tool_complete");
         assert_eq!(EVENT_TASK_STARTED, "aura.orchestrator.task_started");
         assert_eq!(EVENT_TASK_COMPLETED, "aura.orchestrator.task_completed");
+        assert_eq!(EVENT_ERROR, "aura.error");
     }
 
     #[test]
@@ -1066,6 +1165,45 @@ mod tests {
     fn done_serializes_as_the_done_sentinel() {
         assert_eq!(AuraEvent::Done.sse_data(), SSE_DONE);
         assert_eq!(SSE_DONE, "[DONE]");
+    }
+
+    /// S113: the named `aura.error` payload carries session_id and the
+    /// verbatim message, and its constructor rejects empty fields.
+    #[test]
+    fn error_payload_serializes_session_id_and_message() {
+        let payload = ErrorPayload::new("sid-1", "provider rejected the stream").unwrap();
+        let v: serde_json::Value =
+            serde_json::from_str(&serde_json::to_string(&payload).unwrap()).unwrap();
+        assert_eq!(v["session_id"].as_str(), Some("sid-1"));
+        assert_eq!(v["message"].as_str(), Some("provider rejected the stream"));
+        let event = AuraEvent::Error(payload);
+        assert_eq!(event.sse_event_name(), Some(EVENT_ERROR));
+
+        assert!(ErrorPayload::new("", "m").is_err());
+        assert!(ErrorPayload::new("sid", "").is_err());
+        assert!(ErrorPayload::new("  ", "m").is_err());
+    }
+
+    /// S113: the OpenAI-style error frame is a data-only `{"error": {...}}`
+    /// shape — no event name, no choices — and rejects an empty message.
+    #[test]
+    fn error_frame_serializes_the_openai_error_shape() {
+        let payload = ErrorFramePayload::new("HTTP 400 from the endpoint").unwrap();
+        let v: serde_json::Value =
+            serde_json::from_str(&serde_json::to_string(&payload).unwrap()).unwrap();
+        assert_eq!(
+            v["error"]["message"].as_str(),
+            Some("HTTP 400 from the endpoint")
+        );
+        assert!(v.get("choices").is_none());
+        let event = AuraEvent::ErrorFrame(payload);
+        assert!(
+            event.sse_event_name().is_none(),
+            "the error frame is data-only"
+        );
+
+        assert!(ErrorFramePayload::new("").is_err());
+        assert!(ErrorFramePayload::new("   ").is_err());
     }
 
     #[test]

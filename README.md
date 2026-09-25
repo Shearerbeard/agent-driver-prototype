@@ -153,7 +153,7 @@ limit means deleting its line:
 - Nothing a run records survives the process: plans, executions, and task records are in-memory only — `src/coordinator_loop/run_store.rs`.
 - A worker's prompt is its task description alone; the ported prior-work frame is not wired into live dispatch — `src/dag_executor/worker.rs`.
 - Conversation history folds into planning: the trailing user message is the query and the sanitized prior turns enter the planning wrapper once — `src/sse_shim/server.rs`, `src/coordinator_loop/driver.rs`.
-- The stream carries twelve named `aura.*` events — the six contract events plus worker tool calls, coordinator and worker reasoning, `plan_created`, and per-agent `context_usage` (S102) — still short of aura's full event vocabulary — `src/sse_shim/events.rs`.
+- The stream carries thirteen named `aura.*` events — the six contract events plus worker tool calls, coordinator and worker reasoning, `plan_created`, per-agent `context_usage` (S102), and `aura.error` (S113, the mid-stream failure signal) — still short of aura's full event vocabulary — `src/sse_shim/events.rs`.
 
 ## Card ids and review ledgers
 

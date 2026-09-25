@@ -397,6 +397,55 @@ consider whether 256 is the right capacity for the benchmark workload.
 
 The error message is `self.to_string()` (the `thiserror` `Display` impl).
 
+### 6a. Mid-stream failure contract (S113)
+
+`ShimError` covers only the pre-stream request surface: once the 200 and
+the SSE headers are committed, an `IntoResponse` error can no longer reach
+the client. Before S113 a provider failure after that point (a 400-ing
+OpenAI-compatible endpoint, a dropped connection mid-stream) surfaced as
+an immediate empty `finish_reason: "stop"` chunk with zero usage — a
+failure indistinguishable from success on the wire (live evidence:
+`.review/s112/live/`, the Fireworks cell).
+
+The failure contract is now two channels, both carrying the substrate
+error's display string verbatim:
+
+1. a named `aura.error` event (`ErrorPayload`: `session_id`, `message`);
+2. a data-only OpenAI-style error frame (`ErrorFramePayload`:
+   `{"error": {"message": ...}}`, no `choices`) — the shape OpenAI's own
+   streaming contract uses for mid-stream failures, so generic clients
+   read it through their error paths rather than as a completion chunk.
+
+Emission sites, in the order the client sees them:
+
+- `ShimObserver`'s `LoopComplete` arm: `LoopStopReason::LoopFailed`
+  still emits `aura.usage` and `aura.context_usage` (accurate zeros —
+  metering lanes report what actually ran), then the error event, the
+  error frame, and `[DONE]` — and NO finish-reason chunk. `LoopFailed`
+  never reaches `finish_reason()`; a failed run must not synthesize a
+  completion, `stop` least of all.
+- `error_termination_events` (the stream handler's channel-close
+  fallback, for a run task that dies before any `LoopComplete`): the same
+  error event + error frame + `[DONE]`, with a necessarily generic
+  message ("the run ended without completing") because this path fires
+  precisely when no substrate error reached the observer. The fallback's
+  `chat_completion_id`/`created`/`model` parameters died with the fake
+  stop chunk; the session id names the run.
+
+Out of scope, recorded: `LoopStopReason::ToolError` (a tool error that
+stops the loop when `continue_on_tool_error` is false) still maps to
+`FinishReason::Stop` — it is not a provider stream failure, and the card
+scope stops at the provider-failure path. `Cancelled` (client
+disconnect) keeps its current shape deliberately: the client that would
+read the error is the side that hung up. The worker lane already
+distinguishes its failures (`aura.orchestrator.task_completed` with
+`success: false`), so a failed worker task surfaces as a visible task
+failure, not an empty stop; the error event here is the coordinator
+lane's counterpart. The CLI's current event vocabulary has no
+`aura.error` consumer, so it degrades gracefully (S100-verified
+behavior for unknown names); the frame is the channel a generic or
+future CLI client reads.
+
 ## 7. Considered and rejected alternatives
 
 **Rejected: enabling the pin's `phoenix` feature.**

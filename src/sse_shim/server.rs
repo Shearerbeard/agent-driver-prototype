@@ -283,8 +283,7 @@ impl ShimState {
             .await
             .expect("channel is empty with capacity and the receiver is held");
         // 5. ShimObserver. The chat-completion id is derived from the session
-        //    id so the stream handler's error-termination chunks agree with
-        //    the observer's normal chunks.
+        //    id so the observer's chunks share one identity per run.
         let chat_completion_id = format!("chatcmpl-{}", session_id.as_str());
         let created = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -517,23 +516,14 @@ pub async fn chat_completions(
 
     let shim_request = state.build_request(&query, history).await?;
 
-    // The chat-completion id is derived from the session id (the same formula
-    // build_request used for the observer), so any error-termination chunks
-    // the stream synthesizes agree with the observer's normal chunks.
-    let chat_completion_id = format!("chatcmpl-{}", shim_request.session_id.as_str());
-    let created = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
+    // The S113 error-termination path needs only the session id: the
+    // fallback emits the error event and error frame, never a chunk.
     let stream = ShimSseStream {
         rx: shim_request.event_rx,
         join: shim_request.join_handle,
         pending: VecDeque::new(),
         terminated: false,
         channel_closed: false,
-        chat_completion_id,
-        created,
-        model: state.model().as_str().to_owned(),
         session_id: shim_request.session_id,
         cancellation: shim_request.cancellation,
         abort_handle: shim_request.abort_handle,
@@ -618,9 +608,6 @@ struct ShimSseStream {
     pending: VecDeque<AuraEvent>,
     terminated: bool,
     channel_closed: bool,
-    chat_completion_id: String,
-    created: u64,
-    model: String,
     session_id: ShimSessionId,
     /// The run's cancellation token, moved off [`ShimRequest`]. Fired on
     /// client disconnect so the coordinator loop and its workers stop
@@ -652,15 +639,11 @@ impl Stream for ShimSseStream {
                     }
                     Poll::Ready(None) => {
                         // Channel closed. If the observer never emitted Done,
-                        // the loop failed before LoopComplete: synthesize a
-                        // clean termination (finish chunk + [DONE]).
+                        // the loop died before LoopComplete: surface the
+                        // failure (S113 error event + error frame + [DONE]),
+                        // never a synthetic successful stop.
                         if !this.terminated {
-                            let events = error_termination_events(
-                                &this.chat_completion_id,
-                                this.created,
-                                &this.model,
-                                &this.session_id,
-                            );
+                            let events = error_termination_events(&this.session_id);
                             this.pending.extend(events);
                             this.terminated = true;
                         }
