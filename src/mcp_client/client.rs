@@ -307,8 +307,8 @@ impl SidecarClient {
     }
 
     /// Complete the MCP handshake over one duplex half and return the
-    /// connected client — the rig's counterpart to
-    /// [`Self::connect_stream`]'s siblings.
+    /// connected client — the in-memory counterpart of
+    /// [`Self::connect_streamable`] and [`Self::connect_sse`].
     ///
     /// # Errors
     ///

@@ -8,9 +8,9 @@ publish = false
 
 [features]
 # S112: test-only surface, never on in a production build. Enables the
-# in-memory duplex connector (`SidecarClient::connect_duplex`) and the
-# rmcp/tokio pieces it needs. Turned on for dev targets by the
-# self-referencing dev-dependency below.
+# in-memory duplex connectors (`SidecarClient::duplex_pair` and
+# `connect_stream`) and the rmcp/tokio pieces they need. Turned on for
+# dev targets by the self-referencing dev-dependency below.
 test-support = ["rmcp/transport-async-rw", "tokio/io-util"]
 
 [dependencies]

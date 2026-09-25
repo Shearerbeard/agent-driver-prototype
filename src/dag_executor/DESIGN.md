@@ -382,10 +382,15 @@ new code lands on the prototype client), the mount rides the S106
 plain-JSON `SidecarClient` surface — no rmcp type crosses the seam —
 and mirrors the crate `McpToolWrapper` semantics (skip invalid names
 with a warning, default schema fallback, biased cancellation race, text
-extraction) so S110 deletes this module rather than migrates it. One
-recorded divergence: the crate wrapper hard-errors on transport failure;
-this repo's tools soft-error (`ToolResult::error`) so the model reads
-the failure and recovers.
+extraction) so S110 deletes this module rather than migrates it. Two
+recorded divergences for that deletion to reconcile: the crate wrapper
+hard-errors on transport failure while this repo's tools soft-error
+(`ToolResult::error`) so the model reads the failure and recovers, and
+the crate tags definitions with `ToolSource::Mcp` while
+`DiscoveredMcpTool` sets no source. A third, inherited from the S106
+client rather than this module: a successful `tools/call` answering
+zero content blocks surfaces here as a soft error where the crate
+returns empty text.
 
 ### Test rig
 
