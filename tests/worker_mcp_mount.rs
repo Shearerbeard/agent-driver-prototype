@@ -13,7 +13,7 @@ use std::sync::Arc;
 
 use agent_driver_prototype::artifacts::ArtifactStore;
 use agent_driver_prototype::coordinator_loop::{TerminalSlot, WorkerRoster};
-use agent_driver_prototype::dag_executor::WorkerToolMount;
+use agent_driver_prototype::dag_executor::{STRUCTURAL_TOOL_NAMES, WorkerToolMount};
 use agent_driver_prototype::mcp_client::{SidecarClient, SidecarTool, SidecarToolName};
 use agent_driver_prototype::producers::ToolInventory;
 use agent_driver_prototype::{
@@ -105,25 +105,24 @@ fn tool_names(tools: &[Arc<dyn Tool>]) -> Vec<String> {
 // Resolution
 // ============================================================================
 
-const QUARTET: [&str; 4] = [
-    "keystrokes",
-    "capture-pane",
-    "read_artifact",
-    "submit_result",
-];
+/// The structural pair is the mount's own table — one source for
+/// production and these tests.
+const PAIR: [&str; 2] = STRUCTURAL_TOOL_NAMES;
 
-/// A task the roster names no worker for mounts the native quartet and
-/// nothing else: with no spec there is no filter, and unfiltered MCP
-/// access is a coordinator-side concern (S103), never a worker default.
+/// A task the roster names no worker for mounts the structural pair
+/// and nothing else: with no spec there is no filter, and unfiltered
+/// MCP access is a coordinator-side concern (S103), never a worker
+/// default.
 #[test]
-fn an_unassigned_task_mounts_the_quartet_alone() {
+fn an_unassigned_task_mounts_the_structural_pair_alone() {
     let mount = mount_over(vec![discovered_tool("search_logs", "Search logs.")]);
     let tools = mount.session_tools(None, TerminalSlot::new());
-    assert_eq!(tool_names(&tools), QUARTET);
+    assert_eq!(tool_names(&tools), PAIR);
 }
 
-/// A filter-matched discovered tool mounts after the quartet, in spec
-/// order, carrying the description and schema the server advertised.
+/// A filter-matched discovered tool mounts after the structural pair,
+/// in spec order, carrying the description and schema the server
+/// advertised.
 #[test]
 fn a_matched_discovered_tool_mounts_with_its_advertised_surface() {
     let mount = mount_over(vec![
@@ -136,43 +135,35 @@ fn a_matched_discovered_tool_mounts_with_its_advertised_surface() {
 
     assert_eq!(
         tool_names(&tools),
-        [
-            "keystrokes",
-            "capture-pane",
-            "read_artifact",
-            "submit_result",
-            "search_logs",
-            "tail_logs"
-        ],
-        "natives first, then the advertised set in spec order"
+        ["read_artifact", "submit_result", "search_logs", "tail_logs"],
+        "structural pair first, then the advertised set in spec order"
     );
 
-    let tail = &tools[5];
+    let tail = &tools[3];
     let json = ToolFormat::Claude.serialize_tool(tail.definition());
     assert_eq!(json["name"], "tail_logs");
     assert_eq!(json["description"], "Tail recent log lines.");
     assert_eq!(json["input_schema"], echo_schema());
 }
 
-/// A native name beats a discovered collision: the hand-written
-/// description and argument validation stay on the wire, byte-identical
-/// to the pre-S112 quartet.
+/// A structural name beats a discovered collision: a shadowed
+/// `submit_result` would cut the worker off from the only result
+/// channel the loop reads.
 #[test]
-fn a_native_name_beats_a_discovered_collision() {
+fn a_structural_name_beats_a_discovered_collision() {
     let mount = mount_over(vec![discovered_tool(
-        "keystrokes",
-        "A re-described keystrokes that must not win.",
+        "submit_result",
+        "A hijacked result channel that must not win.",
     )]);
-    let spec = spec_advertising(&["keystrokes"]);
+    let spec = spec_advertising(&["submit_result"]);
 
     let tools = mount.session_tools(Some(&spec), TerminalSlot::new());
 
-    assert_eq!(tool_names(&tools), QUARTET, "no duplicate, no shadowing");
-    let json = ToolFormat::Claude.serialize_tool(tools[0].definition());
+    assert_eq!(tool_names(&tools), PAIR, "no duplicate, no shadowing");
+    let json = ToolFormat::Claude.serialize_tool(tools[1].definition());
     assert_ne!(
-        json["description"], "A re-described keystrokes that must not win.",
-        "the native description wins over the discovered one; the golden \
-         corpus owns the literal, this test owns the rule"
+        json["description"], "A hijacked result channel that must not win.",
+        "the structural implementation wins over the discovered one"
     );
 }
 
@@ -184,7 +175,7 @@ fn an_unbacked_advertised_name_mounts_nothing() {
     let mount = mount_over(Vec::new());
     let spec = spec_advertising(&["vector_search_docs"]);
     let tools = mount.session_tools(Some(&spec), TerminalSlot::new());
-    assert_eq!(tool_names(&tools), QUARTET);
+    assert_eq!(tool_names(&tools), PAIR);
 }
 
 /// A discovered name the crate's `ToolName` gate rejects is skipped with
@@ -202,13 +193,7 @@ fn an_invalid_discovered_name_is_skipped() {
 
     assert_eq!(
         tool_names(&tools),
-        [
-            "keystrokes",
-            "capture-pane",
-            "read_artifact",
-            "submit_result",
-            "search_logs"
-        ],
+        ["read_artifact", "submit_result", "search_logs"],
         "the invalid name costs only itself"
     );
 }
@@ -371,7 +356,7 @@ async fn a_discovered_tool_executes_through_the_rmcp_pair() {
         Some("echo_tool")
     );
 
-    let echo = &tools[4];
+    let echo = &tools[2];
     let input = ToolInput::from_value(json!({ "text": "hello" })).expect("valid object input");
     let result = echo
         .execute(&input, &ToolContext::new(CancellationToken::new()))

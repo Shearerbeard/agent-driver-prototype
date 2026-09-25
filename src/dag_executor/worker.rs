@@ -122,8 +122,8 @@ pub enum WorkerOutcome {
 ///
 /// The loop is constructed per task because the worker submission slot and
 /// the artifact handles are per-task. The session's tools come from
-/// [`WorkerToolMount`](super::mount::WorkerToolMount): the four native
-/// tools plus the MCP tools the task's worker spec advertises (S112).
+/// [`WorkerToolMount`](super::mount::WorkerToolMount): the structural pair
+/// plus the MCP tools the task's worker spec advertises (S112).
 ///
 /// The submission slot is per-task: the `DagExecutor` mints a fresh
 /// `TerminalSlot` for each task, so a second task cannot inherit the
@@ -152,7 +152,7 @@ impl WorkerLoop {
     /// `spec` is the roster spec for the task's assigned worker, the
     /// same per-task resolution the executor applies to the preamble
     /// and budget; `None` (a task naming no rostered worker) mounts
-    /// the native quartet alone.
+    /// the structural pair alone.
     ///
     /// Returns [`WorkerOutcome`] rather than `Option<WorkerSubmission>` so
     /// every non-submission case is distinguishable: a clean stop, a budget

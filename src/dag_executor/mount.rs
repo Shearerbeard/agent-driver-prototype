@@ -1,17 +1,18 @@
 //! The worker tool mount: the one seam where the roster's advertised
 //! tool names become the tools a worker session actually carries.
 //!
-//! One rule, owned here end to end: a worker session carries the four
-//! native tools (`keystrokes`, `capture-pane`, `read_artifact`,
-//! `submit_result`) plus, for each name the worker's roster spec
-//! advertises that is NOT a native name, the tool the startup
-//! `tools/list` discovered under that name. Two carve-outs fall out of
-//! the same rule: a native name beats a discovered collision (the
-//! hand-written descriptions and argument validation the golden corpus
-//! pins stay on the wire), and an advertised name with no runtime
-//! backing mounts nothing — that is the `vector_search_{store}`
-//! config-mirror case, deliberately roster-only until S104's deferred
-//! vector-store work lands.
+//! One rule, owned here end to end: a worker session carries the two
+//! structural tools (`read_artifact`, `submit_result`) plus, for each
+//! name the worker's roster spec advertises that is NOT a structural
+//! name, the tool the startup `tools/list` discovered under that name.
+//! Two carve-outs fall out of the same rule: a structural name beats a
+//! discovered collision (a shadowed `submit_result` would cut the
+//! worker off from the only result channel the loop reads), and an
+//! advertised name with no runtime backing mounts nothing — that is
+//! the `vector_search_{store}` config-mirror case, deliberately
+//! roster-only until S104's deferred vector-store work lands. The
+//! former TerminalBench tmux pair is gone by board ruling 2026-09-25:
+//! the worker surface is MCP plus the structural pair.
 //!
 //! Library layering (S110's interim policy): the discovered half rides
 //! the S106 plain-JSON `SidecarClient` surface — no rmcp type crosses
@@ -33,19 +34,14 @@ use crate::artifacts::ArtifactStore;
 use crate::coordinator_loop::{SubmitResultTool, TerminalSlot, WorkerSpec, WorkerSubmission};
 use crate::mcp_client::{SidecarClient, SidecarTool, SidecarToolArgs, SidecarToolName};
 
-use super::tools::{CapturePaneTool, KeystrokesTool, ReadArtifactTool};
+use super::tools::ReadArtifactTool;
 
-/// The names the native worker tools own. A discovered tool with one of
-/// these names does not mount: the native implementation wins, keeping
-/// the descriptions and argument validation the golden corpus pins.
-/// `submit_result` is listed defensively — a sidecar advertising it
-/// would shadow the worker's only result channel.
-const NATIVE_NAMES: [&str; 4] = [
-    "keystrokes",
-    "capture-pane",
-    "read_artifact",
-    "submit_result",
-];
+/// The structural tool names every worker session owns. A discovered
+/// tool with one of these names does not mount: the structural
+/// implementation wins, because `read_artifact` is the spill-read
+/// channel and `submit_result` is the worker's only result path — a
+/// sidecar advertising either would cut the worker off from the loop.
+pub const STRUCTURAL_TOOL_NAMES: [&str; 2] = ["read_artifact", "submit_result"];
 
 /// Builds a worker session's tool set from the startup discovery.
 ///
@@ -65,8 +61,8 @@ pub struct WorkerToolMount {
 
 impl WorkerToolMount {
     /// Assemble a mount from the connected MCP client, the artifact
-    /// store the native `read_artifact` tool reads, and the tool list
-    /// the startup handshake discovered.
+    /// store the structural `read_artifact` tool reads, and the tool
+    /// list the startup handshake discovered.
     pub fn new(
         sidecar: SidecarClient,
         artifacts: ArtifactStore,
@@ -81,20 +77,20 @@ impl WorkerToolMount {
 
     /// The full tool set for one worker session.
     ///
-    /// The native quartet always mounts. Each further name the spec
-    /// advertises mounts the discovered tool under that name, in spec
-    /// order, unless the name is native (native wins) or has no
-    /// discovered backing (mounts nothing — the `vector_search_*`
-    /// config mirrors). `None` (a task the roster names no worker for)
-    /// mounts the quartet alone.
+    /// The structural pair (`read_artifact`, `submit_result`) always
+    /// mounts; everything else a worker carries is MCP: each name the
+    /// spec advertises mounts the discovered tool under that name, in
+    /// spec order, unless the name is structural (structural wins) or
+    /// has no discovered backing (mounts nothing — the
+    /// `vector_search_*` config mirrors, roster-only until S104).
+    /// `None` (a task the roster names no worker for) mounts the
+    /// structural pair alone.
     pub fn session_tools(
         &self,
         spec: Option<&WorkerSpec>,
         submission_slot: TerminalSlot<WorkerSubmission>,
     ) -> Vec<DynTool> {
         let mut tools: Vec<DynTool> = vec![
-            Arc::new(KeystrokesTool::new(self.sidecar.clone())),
-            Arc::new(CapturePaneTool::new(self.sidecar.clone())),
             Arc::new(ReadArtifactTool::new(self.artifacts.clone())),
             Arc::new(SubmitResultTool::new(submission_slot)),
         ];
@@ -103,7 +99,7 @@ impl WorkerToolMount {
         };
         for advertised in spec.tools() {
             let name = advertised.name();
-            if NATIVE_NAMES.contains(&name) {
+            if STRUCTURAL_TOOL_NAMES.contains(&name) {
                 continue;
             }
             let Some(discovered) = self.discovered.iter().find(|t| t.name().as_str() == name)
