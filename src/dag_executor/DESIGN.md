@@ -58,6 +58,7 @@ forbids.
 | `ArtifactStore` | Artifacts are written and read by filename, with cross-run access guarded by `RunId` | A path traversal reaching the filesystem via a cross-run read |
 | `ArtifactError` | An artifact failure names the rule that was broken | A blanket I/O message that hides the validation failure |
 | `InlineThreshold` | Results below this size stay inline; at or above it, they spill | A zero threshold, which would spill every result including an empty one |
+| `WorkerToolMount` | What the roster advertises for a worker is what that worker's session mounts: the native quartet plus the advertised names the startup discovery backs | A session carrying a tool the roster never advertised, or advertising a tool no session can execute |
 | `SpilledBody` | A spill pointer carries the filename and the full body's character count | A spill pointer with an empty filename; the constructor delegates to `ArtifactFilename` |
 | `DagExecutor` | Execution runs the DAG to completion with real workers behind four tools, filing per-task records into the `RunStore`; the `InlineThreshold` controls spill | An executor without a sidecar client, artifact store, run store, or inline threshold, leaving worker tools with no terminal, no spill channel, no task-record destination, and no spill bound |
 | `WorkerLoopConfig` | Everything a worker inner loop needs is supplied before its first provider call; `Clone` so the executor can override the system prompt per task; `cancellation: CancellationToken` is the per-dispatch child of the run's request token (honored value derived from `ToolContext`, never the stored template) | A worker loop that discovers a missing provider, model, budget, or cancellation token mid-run; both cancel paths converge on `WorkerOutcome::Interrupted`; a cancelled-before-dispatch task is never filed Failed |
@@ -338,3 +339,60 @@ does not implement `Debug`). The executor clones the config per task,
 overriding the `system_prompt` with the resolved preamble and the
 `cancellation` with the per-dispatch `ctx.cancellation.child_token()`,
 so the stored config's token is a template, never the honored value.
+
+## 8. S112 worker tool mount
+
+Before S112 the worker loop hardcoded its four native tools while the
+roster advertised each worker's `mcp_filter`-resolved MCP tools in the
+coordinator's planning prompt — a discovered tool never appeared in any
+completion request, so no model could call it, and the roster's
+advertised-equals-executable invariant held only because the TB sidecar
+advertises exactly `keystrokes` + `capture-pane`.
+
+`WorkerToolMount` (`src/dag_executor/mount.rs`) is the one seam where
+that closes. One rule, owned end to end: a worker session carries the
+native quartet plus, for each name the worker's roster spec advertises
+that is not a native name, the tool the startup `tools/list` discovered
+under that name. Two carve-outs fall out of the same rule:
+
+- **A native name beats a discovered collision.** The hand-written
+  descriptions and argument validation stay on the wire, byte-identical
+  to the pre-S112 quartet (the golden corpus pins them). The TB tmux
+  sidecar pair is frozen transitional compatibility, not the go-forward
+  worker surface: when TerminalBench work resumes, tools register from
+  the outside or workers use shell access directly, as Claude Code and
+  Codex do in their TB runs (recorded on tb/S112).
+- **An advertised name with no runtime backing mounts nothing.** That is
+  the `vector_search_{store}` config-mirror case, roster-only until
+  S104's deferred vector-store work lands.
+
+Wiring: the executor resolves the task's worker spec per task (the same
+resolution it already applies to the preamble and budget) and hands it
+to `WorkerLoop::run_task`; `ShimState` carries the startup discovery
+beside the sidecar it came from and builds the per-request mount
+against that request's artifact store.
+
+### Library layering
+
+agent-driver-rs already ships the full MCP bridge (`McpConnection`,
+`McpManager`, `McpToolWrapper`) behind its `mcp` feature, but the crate
+pin sits on rmcp 1.7 while this repo is on rmcp 3.2 — enabling it would
+fork rmcp in the graph. Per tb/S110's interim policy (before adr/A18,
+new code lands on the prototype client), the mount rides the S106
+plain-JSON `SidecarClient` surface — no rmcp type crosses the seam —
+and mirrors the crate `McpToolWrapper` semantics (skip invalid names
+with a warning, default schema fallback, biased cancellation race, text
+extraction) so S110 deletes this module rather than migrates it. One
+recorded divergence: the crate wrapper hard-errors on transport failure;
+this repo's tools soft-error (`ToolResult::error`) so the model reads
+the failure and recovers.
+
+### Test rig
+
+Integration tests drive the real client path (handshake, `tools/list`,
+`tools/call`) against a scripted rmcp server over an in-memory duplex,
+exposed as `SidecarClient::duplex_pair` + `connect_stream` behind a
+`test-support` feature — tokio types only in the signatures, and never
+compiled into a production build. The server half is spawned, not
+awaited: `serve` completes only after the client's initialize round
+trip, so awaiting it before connecting deadlocks the pair.
