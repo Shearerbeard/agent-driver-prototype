@@ -17,10 +17,10 @@ use crate::coordinator_loop::{
     Attempt, ExecutionObservation, LoopBudget, PlanExecutor, RunStore, TaskObservation, TaskRecord,
     TerminalSlot, WorkerSections, WorkerSpec, WorkerSubmission,
 };
-use crate::mcp_client::SidecarClient;
 use crate::types::{FailureCategory, Plan, Task, TaskState};
 
 use super::lifecycle::DagLifecycleObserver;
+use super::mount::WorkerToolMount;
 use super::worker::{WorkerLoop, WorkerLoopConfig, WorkerOutcome};
 
 /// The orchestrator identity the executor reports to lifecycle observers.
@@ -31,15 +31,16 @@ const ORCHESTRATOR_ID: &str = "coordinator";
 /// The real DAG executor.
 ///
 /// Runs a plan by selecting ready tasks, dispatching each to a worker inner
-/// loop on four tools, and propagating dependency failure to descendants.
+/// loop on the native tools plus the MCP tools the roster advertises for
+/// that worker (S112), and propagating dependency failure to descendants.
 /// Reports an [`ExecutionObservation`] rather than raising, so the
 /// coordinator can replan against a failed execution.
 ///
-/// Forbidden invalid state: an executor without a sidecar client or
-/// artifact store, which would leave worker tools with no terminal to drive
-/// and no artifact channel to spill through.
+/// Forbidden invalid state: an executor without a tool mount or artifact
+/// store, which would leave worker tools with no terminal to drive and no
+/// artifact channel to spill through.
 pub struct DagExecutor {
-    sidecar: SidecarClient,
+    mount: WorkerToolMount,
     artifacts: ArtifactStore,
     worker_config: WorkerLoopConfig,
     worker_sections: WorkerSections,
@@ -55,15 +56,17 @@ pub struct DagExecutor {
 impl DagExecutor {
     /// Assemble an executor from its dependencies.
     ///
-    /// The `sidecar` is the connected MCP client; `artifacts` is the
-    /// filename-addressed store; `worker_config` carries the provider,
-    /// model, and budget for worker inner loops; `worker_sections` is the
-    /// roster the executor reads worker preambles from; `runs` is the run
-    /// store the executor files per-task records into; `inline_threshold`
-    /// is the character bound at which worker results spill to artifacts;
-    /// `lifecycle` is an optional DAG-lifecycle observer (C2) that
-    /// receives `on_task_started` / `on_task_completed` around each task
-    /// run — pass `None` when lifecycle events are not needed.
+    /// The `mount` carries the client, store, and discovery the session
+    /// tools resolve against; `artifacts` is the store the executor
+    /// itself spills through;
+    /// `worker_config` carries the provider, model, and budget for
+    /// worker inner loops; `worker_sections` is the roster the executor
+    /// reads worker preambles from; `runs` is the run store the executor
+    /// files per-task records into; `inline_threshold` is the character
+    /// bound at which worker results spill to artifacts; `lifecycle` is
+    /// an optional DAG-lifecycle observer (C2) that receives
+    /// `on_task_started` / `on_task_completed` around each task run —
+    /// pass `None` when lifecycle events are not needed.
     ///
     /// The `ExecuteTool` constructs the executor per dispatch from the
     /// [`RunStore`] it already owns, so the executor sees the run's current
@@ -71,7 +74,7 @@ impl DagExecutor {
     /// numbers per task: the first attempt at a task is attempt 1, a retry
     /// is attempt 2, and so on.
     pub fn new(
-        sidecar: SidecarClient,
+        mount: WorkerToolMount,
         artifacts: ArtifactStore,
         worker_config: WorkerLoopConfig,
         worker_sections: WorkerSections,
@@ -80,7 +83,7 @@ impl DagExecutor {
         lifecycle: Option<Arc<dyn DagLifecycleObserver>>,
     ) -> Self {
         Self {
-            sidecar,
+            mount,
             artifacts,
             worker_config,
             worker_sections,
@@ -241,8 +244,11 @@ impl PlanExecutor for DagExecutor {
                 };
 
                 let slot: TerminalSlot<WorkerSubmission> = TerminalSlot::new();
-                let worker = WorkerLoop::new(config, self.sidecar.clone(), self.artifacts.clone());
-                let outcome = worker.run_task(&work_plan.tasks[index], slot.clone()).await;
+                let worker = WorkerLoop::new(config, self.mount.clone());
+                let spec = self.spec_for(&work_plan.tasks[index]);
+                let outcome = worker
+                    .run_task(&work_plan.tasks[index], spec, slot.clone())
+                    .await;
 
                 let label = Self::correlation_label(&work_plan.tasks[index]);
                 let (observation, new_state) = self
@@ -563,11 +569,16 @@ mod tests {
         )
         .expect("24 is a spendable turn depth");
 
+        let unused_store = ArtifactStore::new(std::path::PathBuf::from(
+            "/tmp/agent-driver-prototype-unused",
+        ));
         DagExecutor::new(
-            crate::mcp_client::SidecarClient::disconnected(),
-            ArtifactStore::new(std::path::PathBuf::from(
-                "/tmp/agent-driver-prototype-unused",
-            )),
+            crate::dag_executor::WorkerToolMount::new(
+                crate::mcp_client::SidecarClient::disconnected(),
+                unused_store.clone(),
+                Vec::new(),
+            ),
+            unused_store,
             WorkerLoopConfig {
                 provider: Arc::new(MockProvider::new(Vec::new())),
                 model: ModelId::new("mock-model").expect("valid model id"),

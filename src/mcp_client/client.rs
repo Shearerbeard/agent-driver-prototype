@@ -293,6 +293,30 @@ impl SidecarClient {
         Self::from_service(url, service)
     }
 
+    /// Complete the MCP handshake over one half of an in-memory
+    /// `tokio::io::duplex` pair and return the connected client — the
+    /// in-memory counterpart of [`Self::connect_streamable`] and
+    /// [`Self::connect_sse`], for the integration-test rig only. The
+    /// test creates the pair itself and serves its server half, which
+    /// is what keeps the handshake deadlock-free.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SidecarError::Connect`] when the handshake fails or
+    /// the service records no server identity.
+    #[cfg(feature = "test-support")]
+    pub async fn connect_stream(
+        client_half: tokio::io::DuplexStream,
+    ) -> Result<Self, SidecarError> {
+        use rmcp::transport::IntoTransport as _;
+
+        let service = rmcp::serve_client(client_info(), client_half.into_transport())
+            .await
+            .map_err(|e| SidecarError::Connect(format!("in-memory handshake failed: {e}")))?;
+        let url = SidecarUrl::new("http://localhost:0/in-memory").expect("valid dummy URL");
+        Self::from_service(url, service)
+    }
+
     /// Record a served session's handshake behind the client's shared
     /// state — the tail every connect path funnels through.
     ///

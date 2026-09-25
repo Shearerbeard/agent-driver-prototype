@@ -36,7 +36,7 @@ use agent_driver_prototype::coordinator_loop::{
     InterruptionReason, LoopBudget, OutcomeCounts, PlanExecutor, PlanId, PlanObservation, RunStore,
     TaskObservation, TerminalSlot, WorkerRoster, WorkerSections,
 };
-use agent_driver_prototype::dag_executor::{DagExecutor, WorkerLoopConfig};
+use agent_driver_prototype::dag_executor::{DagExecutor, WorkerLoopConfig, WorkerToolMount};
 use agent_driver_prototype::mcp_client::SidecarClient;
 use agent_driver_prototype::producers::{ToolInventory, build_worker_prompt_sections};
 use agent_driver_prototype::templates::{PlanningLoopVars, render_planning_loop_prompt};
@@ -172,7 +172,11 @@ async fn coordinator_with_provider(
         observer_factory: None,
     };
     let executor: Arc<dyn PlanExecutor> = Arc::new(DagExecutor::new(
-        SidecarClient::disconnected(),
+        WorkerToolMount::new(
+            SidecarClient::disconnected(),
+            ArtifactStore::disabled(),
+            Vec::new(),
+        ),
         ArtifactStore::disabled(),
         worker_config,
         test_sections(),

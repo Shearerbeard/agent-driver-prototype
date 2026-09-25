@@ -2,23 +2,23 @@
 //!
 //! The one [`PlanExecutor`](crate::coordinator_loop::PlanExecutor) the
 //! coordinator loop ships with: selects ready tasks from the plan's DAG,
-//! dispatches each to a worker `AgentLoop` behind four tools (`keystrokes`,
-//! `capture-pane`, `submit_result`, `read_artifact`), and propagates failure
-//! to descendants. The `execute` result is a structured review packet:
-//! per-task status, bounded summary, artifact handles, and failure category,
-//! with full bodies spilled to addressed artifacts.
+//! dispatches each to a worker `AgentLoop` behind the structural pair
+//! (`read_artifact`, `submit_result`) plus the MCP tools the roster
+//! advertises for that worker (S112), and propagates failure to
+//! descendants. The `execute` result is a structured review packet:
+//! per-task status, bounded summary, artifact handles, and failure
+//! category, with full bodies spilled to addressed artifacts.
 //!
 //! Phase 1 declares the types; the execution body lands in Phase 2.
 
 mod executor;
 mod lifecycle;
+mod mount;
 mod tools;
 mod worker;
 
 pub use executor::DagExecutor;
 pub use lifecycle::DagLifecycleObserver;
-pub use tools::{
-    CapturePaneArgs, CapturePaneTool, KeystrokesArgs, KeystrokesTool, ReadArtifactArgs,
-    ReadArtifactTool,
-};
+pub use mount::{STRUCTURAL_TOOL_NAMES, WorkerToolMount};
+pub use tools::{ReadArtifactArgs, ReadArtifactTool};
 pub use worker::{WorkerLane, WorkerLoop, WorkerLoopConfig, WorkerObserverFactory, WorkerOutcome};
