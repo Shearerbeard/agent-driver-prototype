@@ -1,12 +1,6 @@
 //! The worker tool mount: the one seam where the roster's advertised
 //! tool names become the tools a worker session actually carries.
 //!
-//! Before S112 the worker inner loop hardcoded its four native tools
-//! while the roster advertised each worker's `mcp_filter`-resolved MCP
-//! tools in the coordinator's planning prompt — a discovered tool never
-//! appeared in any completion request, so no model could call it. The
-//! mount closes that loop: advertised == mounted == executable.
-//!
 //! One rule, owned here end to end: a worker session carries the four
 //! native tools (`keystrokes`, `capture-pane`, `read_artifact`,
 //! `submit_result`) plus, for each name the worker's roster spec
@@ -56,9 +50,8 @@ const NATIVE_NAMES: [&str; 4] = [
 /// Builds a worker session's tool set from the startup discovery.
 ///
 /// The mount is constructed once from the sidecar handshake's
-/// `tools/list` result and cloned per task; the per-task artifact store
-/// and submission slot arrive with each session, so they are taken per
-/// call rather than held.
+/// `tools/list` result and cloned per task; the per-session submission
+/// slot arrives as a `session_tools` argument.
 ///
 /// Forbidden invalid state: a mount without a sidecar client or
 /// artifact store, which would leave worker tools with no terminal to

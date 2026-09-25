@@ -56,10 +56,9 @@ pub struct DagExecutor {
 impl DagExecutor {
     /// Assemble an executor from its dependencies.
     ///
-    /// The `mount` carries the connected MCP client, the artifact store
-    /// the native `read_artifact` tool reads, and the startup tool
-    /// discovery the worker tool resolution matches against;
-    /// `artifacts` is the store the executor itself spills through;
+    /// The `mount` carries the client, store, and discovery the session
+    /// tools resolve against; `artifacts` is the store the executor
+    /// itself spills through;
     /// `worker_config` carries the provider, model, and budget for
     /// worker inner loops; `worker_sections` is the roster the executor
     /// reads worker preambles from; `runs` is the run store the executor
@@ -570,17 +569,16 @@ mod tests {
         )
         .expect("24 is a spendable turn depth");
 
+        let unused_store = ArtifactStore::new(std::path::PathBuf::from(
+            "/tmp/agent-driver-prototype-unused",
+        ));
         DagExecutor::new(
             crate::dag_executor::WorkerToolMount::new(
                 crate::mcp_client::SidecarClient::disconnected(),
-                ArtifactStore::new(std::path::PathBuf::from(
-                    "/tmp/agent-driver-prototype-unused",
-                )),
+                unused_store.clone(),
                 Vec::new(),
             ),
-            ArtifactStore::new(std::path::PathBuf::from(
-                "/tmp/agent-driver-prototype-unused",
-            )),
+            unused_store,
             WorkerLoopConfig {
                 provider: Arc::new(MockProvider::new(Vec::new())),
                 model: ModelId::new("mock-model").expect("valid model id"),

@@ -151,13 +151,10 @@ async fn two_task_dag_with_dependency_runs_to_completion() {
     ];
 
     let dir = tempfile::TempDir::new().expect("temp dir");
+    let store = ArtifactStore::new(dir.path().to_path_buf());
     let executor = DagExecutor::new(
-        WorkerToolMount::new(
-            SidecarClient::disconnected(),
-            ArtifactStore::new(dir.path().to_path_buf()),
-            Vec::new(),
-        ),
-        ArtifactStore::new(dir.path().to_path_buf()),
+        WorkerToolMount::new(SidecarClient::disconnected(), store.clone(), Vec::new()),
+        store,
         worker_config(responses),
         test_sections(),
         runs.clone(),
@@ -322,13 +319,10 @@ async fn dependency_failure_blocks_descendant_without_failure_category() {
     let responses = vec![mock_text_response("I cannot complete this task.")];
 
     let dir = tempfile::TempDir::new().expect("temp dir");
+    let store = ArtifactStore::new(dir.path().to_path_buf());
     let executor = DagExecutor::new(
-        WorkerToolMount::new(
-            SidecarClient::disconnected(),
-            ArtifactStore::new(dir.path().to_path_buf()),
-            Vec::new(),
-        ),
-        ArtifactStore::new(dir.path().to_path_buf()),
+        WorkerToolMount::new(SidecarClient::disconnected(), store.clone(), Vec::new()),
+        store,
         worker_config(responses),
         test_sections(),
         runs,
@@ -408,13 +402,10 @@ async fn budget_exhausted_maps_to_depth_exhausted() {
     };
 
     let dir = tempfile::TempDir::new().expect("temp dir");
+    let store = ArtifactStore::new(dir.path().to_path_buf());
     let executor = DagExecutor::new(
-        WorkerToolMount::new(
-            SidecarClient::disconnected(),
-            ArtifactStore::new(dir.path().to_path_buf()),
-            Vec::new(),
-        ),
-        ArtifactStore::new(dir.path().to_path_buf()),
+        WorkerToolMount::new(SidecarClient::disconnected(), store.clone(), Vec::new()),
+        store,
         config,
         test_sections(),
         runs,
@@ -544,13 +535,10 @@ async fn worker_observer_factory_observes_the_dispatched_task() {
     };
 
     let dir = tempfile::TempDir::new().expect("temp dir");
+    let store = ArtifactStore::new(dir.path().to_path_buf());
     let executor = DagExecutor::new(
-        WorkerToolMount::new(
-            SidecarClient::disconnected(),
-            ArtifactStore::new(dir.path().to_path_buf()),
-            Vec::new(),
-        ),
-        ArtifactStore::new(dir.path().to_path_buf()),
+        WorkerToolMount::new(SidecarClient::disconnected(), store.clone(), Vec::new()),
+        store,
         config,
         test_sections(),
         runs,
@@ -722,13 +710,10 @@ async fn worker_loop_runs_at_the_section_turn_depth_not_the_run_wide_budget() {
     };
 
     let dir = tempfile::TempDir::new().expect("temp dir");
+    let store = ArtifactStore::new(dir.path().to_path_buf());
     let executor = DagExecutor::new(
-        WorkerToolMount::new(
-            SidecarClient::disconnected(),
-            ArtifactStore::new(dir.path().to_path_buf()),
-            Vec::new(),
-        ),
-        ArtifactStore::new(dir.path().to_path_buf()),
+        WorkerToolMount::new(SidecarClient::disconnected(), store.clone(), Vec::new()),
+        store,
         config,
         sections,
         runs,

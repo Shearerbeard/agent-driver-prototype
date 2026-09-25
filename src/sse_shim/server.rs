@@ -184,8 +184,6 @@ impl ShimState {
         coordinator_prompt: SystemPrompt,
         budget: LoopBudget,
         sidecar: SidecarClient,
-        // The startup `tools/list` discovery (S112): what the worker
-        // tool resolution may mount.
         discovered: Vec<SidecarTool>,
         artifact_root: PathBuf,
         worker_config: WorkerLoopConfig,
@@ -199,10 +197,6 @@ impl ShimState {
             coordinator_prompt,
             budget,
             sidecar,
-            // S112: the startup `tools/list` result the worker tool
-            // resolution matches against. Held beside the sidecar it
-            // came from; the per-request mount pairs it with that
-            // request's artifact store.
             discovered,
             artifact_root,
             worker_config,
@@ -316,7 +310,8 @@ impl ShimState {
         // 9. Per-request DagExecutor with the metered provider in
         //    WorkerLoopConfig, the ShimDagObserver (C2), and the worker
         //    observer factory (S102) so worker tool calls, reasoning, and
-        //    final-turn context reach the stream.
+        //    final-turn context reach the stream. The mount pairs the
+        //    startup discovery with this request's artifact store (S112).
         let worker_observer_factory = Arc::new(ShimWorkerObserverFactory::new(
             session_id,
             event_tx.clone(),
@@ -331,11 +326,6 @@ impl ShimState {
             cancellation: CancellationToken::new(),
             observer_factory: Some(worker_observer_factory),
         };
-        // 9. Per-request DagExecutor with the metered provider in
-        // WorkerLoopConfig, the ShimDagObserver (C2), and the worker
-        // observer factory (S102) so worker tool calls, reasoning, and
-        // final-turn context reach the stream. The mount pairs the
-        // startup discovery with this request's artifact store (S112).
         let mount = WorkerToolMount::new(
             self.sidecar.clone(),
             artifacts.clone(),
