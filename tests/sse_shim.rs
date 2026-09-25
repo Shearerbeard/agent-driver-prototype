@@ -1060,3 +1060,265 @@ async fn s102_named_events_reach_the_stream() {
             .join("\n"),
     );
 }
+
+// ---------------------------------------------------------------------------
+// S113: a failed provider stream must not surface as an empty successful stop
+// ---------------------------------------------------------------------------
+
+use agent_driver_rs::provider::mock::mock_error_response;
+use agent_driver_rs::{StreamError, StreamErrorKind};
+
+/// A provider whose `complete_stream` fails before any stream exists — the
+/// wire analog of an OpenAI-compatible endpoint answering HTTP 400 to the
+/// stream request (the adr/A20 Fireworks capture: the rejection lands before
+/// a single SSE byte, evidence `.review/s112/live/`).
+struct RejectingProvider {
+    info: ProviderInfo,
+}
+
+impl RejectingProvider {
+    fn new() -> Self {
+        let mut capabilities = ProviderCapabilities::default();
+        capabilities.streaming = true;
+        capabilities.tools = true;
+        Self {
+            info: ProviderInfo {
+                kind: ProviderKind::OpenAi,
+                name: "Rejecting",
+                capabilities,
+            },
+        }
+    }
+}
+
+impl Provider for RejectingProvider {
+    fn info(&self) -> &ProviderInfo {
+        &self.info
+    }
+
+    fn complete_stream(
+        &self,
+        _request: CompletionRequest,
+        ctx: ProviderContext,
+    ) -> Pin<Box<dyn Future<Output = Result<StreamHandle, ProviderError>> + Send + '_>> {
+        let rejection = ProviderError::InvalidRequest {
+            provider: ProviderKind::OpenAi,
+            message: "HTTP 400: Extra inputs are not permitted, field: \
+                      'stream_options.include_obfuscation'"
+                .to_owned(),
+        };
+        Box::pin(async move { Err(rejection) })
+    }
+
+    fn list_models(
+        &self,
+        _ctx: ProviderContext,
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<ModelInfo>, ProviderError>> + Send + '_>> {
+        Box::pin(async { Ok(vec![]) })
+    }
+}
+
+/// Drive one chat-completions exchange against a fresh shim and return the
+/// raw SSE body with its parsed frames and transcript.
+async fn drive_exchange(state: Arc<ShimState>) -> (String, Vec<SseFrame>, Vec<String>) {
+    let app = router(state);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind to ephemeral port");
+    let port = listener.local_addr().expect("local addr").port();
+    tokio::spawn(async move {
+        let _ = axum::serve(listener, app).await;
+    });
+
+    let client = reqwest::Client::new();
+    let request_body = serde_json::json!({
+        "model": "aura-terminalbench",
+        "messages": [{"role": "user", "content": "Count the errors by service"}],
+        "stream": true,
+    });
+    let response = tokio::time::timeout(
+        Duration::from_secs(30),
+        client
+            .post(format!("http://127.0.0.1:{port}/v1/chat/completions"))
+            .json(&request_body)
+            .send(),
+    )
+    .await
+    .expect("request did not complete within 30s")
+    .expect("POST /v1/chat/completions failed");
+    assert!(
+        response.status().is_success(),
+        "HTTP status {} — expected 200",
+        response.status()
+    );
+    let text = tokio::time::timeout(Duration::from_secs(30), response.text())
+        .await
+        .expect("body did not complete within 30s — stream did not terminate")
+        .expect("reading response body failed");
+    let frames = parse_sse_frames(&text);
+    let transcript = transcript_summary(&frames);
+    (text, frames, transcript)
+}
+
+/// Assert the S113 failure surface on a stream whose provider failed:
+/// an explicit error signal on both channels, and never an empty stop.
+///
+/// Soft-asserts (mirroring the vocabulary test's pattern):
+/// - (a) a named `aura.error` frame with a non-empty session_id and a
+///       message carrying the failure marker;
+/// - (b) a data-only OpenAI-style `{"error": {...}}` frame with a
+///       non-empty message;
+/// - (c) no data-only chunk carries any `finish_reason` — a failed run
+///       must not synthesize a completion, `stop` least of all;
+/// - (d) the terminal frame is `[DONE]` and nothing follows it;
+/// - (e) both error signals precede `[DONE]`.
+fn assert_failure_surface(
+    text: &str,
+    frames: &[SseFrame],
+    transcript: &[String],
+    marker: &str,
+) -> Vec<String> {
+    let mut failures: Vec<String> = Vec::new();
+
+    // (a) the named aura.error frame.
+    let error_event = frames
+        .iter()
+        .position(|f| f.event.as_deref() == Some("aura.error"));
+    match error_event {
+        None => failures.push("(a) no named aura.error frame on the wire".to_owned()),
+        Some(pos) => match serde_json::from_str::<serde_json::Value>(&frames[pos].data) {
+            Ok(v) => {
+                let sid = v["session_id"].as_str();
+                if sid.is_none() || sid.is_some_and(|s| s.is_empty()) {
+                    failures.push("(a) aura.error payload has no non-empty session_id".to_owned());
+                }
+                let msg = v["message"].as_str();
+                if msg.is_none()
+                    || msg
+                        .is_some_and(|m| !m.contains(marker) || m.contains("expected-fixture-miss"))
+                {
+                    failures.push(format!(
+                        "(a) aura.error message does not carry the failure marker '{marker}': {msg:?}"
+                    ));
+                }
+            }
+            Err(e) => {
+                failures.push(format!("(a) aura.error payload is not valid JSON: {e}"));
+            }
+        },
+    }
+
+    // (b) the OpenAI-style error data frame.
+    let error_frame = frames.iter().position(|f| {
+        f.event.is_none()
+            && f.data != "[DONE]"
+            && serde_json::from_str::<serde_json::Value>(&f.data)
+                .is_ok_and(|v| v.get("error").is_some_and(|e| !e.is_null()))
+    });
+    match error_frame {
+        None => failures
+            .push("(b) no data-only OpenAI-style {\"error\": ...} frame on the wire".to_owned()),
+        Some(pos) => {
+            let v = serde_json::from_str::<serde_json::Value>(&frames[pos].data)
+                .expect("position predicate checked JSON");
+            let msg = v["error"]["message"].as_str();
+            if msg.is_none() || msg.is_some_and(|m| m.is_empty()) {
+                failures.push("(b) error frame's error.message is empty".to_owned());
+            }
+        }
+    }
+
+    // (c) no synthesized completion on a failed run.
+    let finish_chunk = frames.iter().any(|f| {
+        f.event.is_none()
+            && f.data != "[DONE]"
+            && serde_json::from_str::<serde_json::Value>(&f.data)
+                .is_ok_and(|v| !v["choices"][0]["finish_reason"].is_null())
+    });
+    if finish_chunk {
+        failures.push(
+            "(c) a data-only chunk carries finish_reason — a failed run must not synthesize \
+             a completion (the empty successful stop is the S113 defect)"
+                .to_owned(),
+        );
+    }
+
+    // (d) the terminal frame is [DONE], nothing after.
+    match frames.last() {
+        Some(f) if f.event.is_none() && f.data == "[DONE]" => {}
+        other => failures.push(format!(
+            "(d) terminal frame is not data: [DONE] — got: {other:?}"
+        )),
+    }
+
+    // (e) both error signals precede [DONE].
+    if let Some(done) = frames
+        .iter()
+        .position(|f| f.event.is_none() && f.data == "[DONE]")
+        && let (Some(a), Some(b)) = (error_event, error_frame)
+        && !(a < done && b < done)
+    {
+        failures.push(format!(
+            "(e) error signals (aura.error@{error_event:?}, error frame@{error_frame:?}) \
+             do not both precede [DONE]@{done}"
+        ));
+    }
+
+    if !failures.is_empty() {
+        eprintln!(
+            "S113 failure-surface failures: {failures:?}\nWire transcript: {transcript:?}\n\
+             Raw body:\n{text}"
+        );
+    }
+    failures
+}
+
+/// A provider rejection before any stream exists must surface as an
+/// explicit error signal — never as an empty successful stop.
+#[tokio::test]
+async fn provider_rejection_before_stream_surfaces_as_error_not_stop() {
+    let provider: Arc<dyn Provider> = Arc::new(RejectingProvider::new());
+    let dir = tempfile::TempDir::new().expect("temp dir for artifact root");
+    let state = shim_state(provider, dir.path().to_path_buf());
+
+    let (text, frames, transcript) = drive_exchange(state).await;
+    let failures = assert_failure_surface(&text, &frames, &transcript, "include_obfuscation");
+    assert!(
+        failures.is_empty(),
+        "S113 pre-stream rejection assertions failed ({n} failures):\n---\n{fails}\n---\n\
+         Wire transcript: {transcript:?}\nRaw body:\n{text}",
+        n = failures.len(),
+        fails = failures
+            .iter()
+            .map(|f| format!("  - {f}"))
+            .collect::<Vec<_>>()
+            .join("\n"),
+    );
+}
+
+/// A provider failure mid-stream (the stream opens, then dies) must surface
+/// as an explicit error signal — never as an empty successful stop.
+#[tokio::test]
+async fn provider_failure_mid_stream_surfaces_as_error_not_stop() {
+    let provider = MockProvider::new(vec![mock_error_response(StreamError::ConnectionLost {
+        kind: StreamErrorKind::ConnectionDropped,
+        message: "wire cut mid-stream".to_owned(),
+    })]);
+    let provider: Arc<dyn Provider> = Arc::new(provider);
+    let dir = tempfile::TempDir::new().expect("temp dir for artifact root");
+    let state = shim_state(provider, dir.path().to_path_buf());
+
+    let (text, frames, transcript) = drive_exchange(state).await;
+    let failures = assert_failure_surface(&text, &frames, &transcript, "wire cut mid-stream");
+    assert!(
+        failures.is_empty(),
+        "S113 mid-stream failure assertions failed ({n} failures):\n---\n{fails}\n---\n\
+         Wire transcript: {transcript:?}\nRaw body:\n{text}",
+        n = failures.len(),
+        fails = failures
+            .iter()
+            .map(|f| format!("  - {f}"))
+            .collect::<Vec<_>>()
+            .join("\n"),
+    );
+}
