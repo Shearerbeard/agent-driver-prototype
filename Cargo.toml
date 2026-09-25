@@ -24,7 +24,7 @@ test-support = ["rmcp/transport-async-rw", "tokio/io-util"]
 # feature is deliberately NOT enabled: the shim wires OTEL directly through
 # its own `opentelemetry` deps rather than inheriting the pin's Phoenix
 # tracing pipeline. See `src/sse_shim/DESIGN.md` for the rationale.
-agent-driver-rs = { git = "https://github.com/Shearerbeard/agent-driver-rs", rev = "ade674ccc68fa2dcdabe95643755fa97e86e81cf", features = ["bedrock"] }
+agent-driver-rs = { git = "https://github.com/Shearerbeard/agent-driver-rs", rev = "2e6be4e8f15e955acd6b932a3a2ac8dfe9d65397", features = ["bedrock"] }
 async-trait = "0.1"
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 # The MCP client: rmcp carries the JSON-RPC envelope, the handshake, and
@@ -98,7 +98,7 @@ toml = "0.8"
 agent-driver-prototype = { path = ".", features = ["test-support"] }
 # The mock provider lives behind `test-support`; integration tests are a
 # separate crate where the library's own `cfg(test)` does not apply.
-agent-driver-rs = { git = "https://github.com/Shearerbeard/agent-driver-rs", rev = "ade674ccc68fa2dcdabe95643755fa97e86e81cf", features = ["test-support"] }
+agent-driver-rs = { git = "https://github.com/Shearerbeard/agent-driver-rs", rev = "2e6be4e8f15e955acd6b932a3a2ac8dfe9d65397", features = ["test-support"] }
 # The S112 rig serves an in-process rmcp server over the other duplex
 # half; `server` implies `transport-async-rw`. Dev-targets only: the
 # production rmcp entry stays client + streamable HTTP.
