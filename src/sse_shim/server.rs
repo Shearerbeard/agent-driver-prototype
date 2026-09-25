@@ -43,9 +43,9 @@ use crate::coordinator_loop::{
     CoordinatorRunError, LoopBudget, RunStore, WorkerSections,
 };
 use crate::dag_executor::{
-    DagExecutor, DagLifecycleObserver, WorkerLoopConfig, WorkerObserverFactory,
+    DagExecutor, DagLifecycleObserver, WorkerLoopConfig, WorkerObserverFactory, WorkerToolMount,
 };
-use crate::mcp_client::SidecarClient;
+use crate::mcp_client::{SidecarClient, SidecarTool};
 
 use super::dag_lifecycle::{ShimDagObserver, ShimWorkerObserverFactory};
 use super::error::ShimError;
@@ -148,6 +148,10 @@ pub struct ShimState {
     coordinator_prompt: SystemPrompt,
     budget: LoopBudget,
     sidecar: SidecarClient,
+    /// The startup `tools/list` discovery (S112): what the worker tool
+    /// resolution may mount. Held beside the sidecar it came from; the
+    /// per-request mount pairs it with that request's artifact store.
+    discovered: Vec<SidecarTool>,
     /// The root directory for per-request artifact stores. Each request
     /// builds its own `ArtifactStore` at `artifact_root.join(session_id)`
     /// so concurrent requests cannot overwrite each other's artifacts (C5).
@@ -180,6 +184,9 @@ impl ShimState {
         coordinator_prompt: SystemPrompt,
         budget: LoopBudget,
         sidecar: SidecarClient,
+        // The startup `tools/list` discovery (S112): what the worker
+        // tool resolution may mount.
+        discovered: Vec<SidecarTool>,
         artifact_root: PathBuf,
         worker_config: WorkerLoopConfig,
         worker_sections: WorkerSections,
@@ -192,6 +199,11 @@ impl ShimState {
             coordinator_prompt,
             budget,
             sidecar,
+            // S112: the startup `tools/list` result the worker tool
+            // resolution matches against. Held beside the sidecar it
+            // came from; the per-request mount pairs it with that
+            // request's artifact store.
+            discovered,
             artifact_root,
             worker_config,
             worker_sections,
@@ -319,8 +331,18 @@ impl ShimState {
             cancellation: CancellationToken::new(),
             observer_factory: Some(worker_observer_factory),
         };
-        let executor = DagExecutor::new(
+        // 9. Per-request DagExecutor with the metered provider in
+        // WorkerLoopConfig, the ShimDagObserver (C2), and the worker
+        // observer factory (S102) so worker tool calls, reasoning, and
+        // final-turn context reach the stream. The mount pairs the
+        // startup discovery with this request's artifact store (S112).
+        let mount = WorkerToolMount::new(
             self.sidecar.clone(),
+            artifacts.clone(),
+            self.discovered.clone(),
+        );
+        let executor = DagExecutor::new(
+            mount,
             artifacts,
             worker_config,
             self.worker_sections.clone(),
@@ -758,6 +780,7 @@ mod tests {
             SystemPrompt::empty(),
             LoopBudget::CANONICAL,
             SidecarClient::disconnected(),
+            Vec::new(),
             PathBuf::from("/tmp/sse-shim-test-artifacts"),
             worker_config,
             WorkerSections::none(),

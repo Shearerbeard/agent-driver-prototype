@@ -1,4 +1,5 @@
-//! The worker inner loop: one `AgentLoop` per task on four tools.
+//! The worker inner loop: one `AgentLoop` per task, its tools resolved
+//! from the roster by the mount.
 
 use std::sync::Arc;
 
@@ -10,13 +11,11 @@ use agent_driver_rs::{ConfigError, ModelId, Provider, SessionBuilder, SystemProm
 use async_trait::async_trait;
 use tokio_util::sync::CancellationToken;
 
-use crate::artifacts::ArtifactStore;
-use crate::coordinator_loop::WorkerSubmission;
-use crate::coordinator_loop::{InterruptionReason, LoopBudget, SubmitResultTool, TerminalSlot};
-use crate::mcp_client::SidecarClient;
+use crate::coordinator_loop::WorkerSpec;
+use crate::coordinator_loop::{InterruptionReason, LoopBudget, TerminalSlot, WorkerSubmission};
 use crate::types::{FailureCategory, Task};
 
-use super::tools::{CapturePaneTool, KeystrokesTool, ReadArtifactTool};
+use super::mount::WorkerToolMount;
 
 /// One task run's observation lane: the observer the worker loop attaches,
 /// and the provider the loop should run on.
@@ -122,12 +121,9 @@ pub enum WorkerOutcome {
 /// One worker inner loop: runs a single task to completion or budget.
 ///
 /// The loop is constructed per task because the worker submission slot and
-/// the artifact handles are per-task. The four worker tools mount as
-/// `Arc<dyn Tool>` (concrete impls): `KeystrokesTool`, `CapturePaneTool`,
-/// and `ReadArtifactTool` from `dag_executor::tools`, plus `SubmitResultTool`
-/// reused from `coordinator_loop`. Each tool captures the sidecar client or
-/// artifact store it forwards through. The skeleton declares the wrapper
-/// type; the mounting body lands in Phase 2.
+/// the artifact handles are per-task. The session's tools come from
+/// [`WorkerToolMount`](super::mount::WorkerToolMount): the four native
+/// tools plus the MCP tools the task's worker spec advertises (S112).
 ///
 /// The submission slot is per-task: the `DagExecutor` mints a fresh
 /// `TerminalSlot` for each task, so a second task cannot inherit the
@@ -138,26 +134,25 @@ pub enum WorkerOutcome {
 /// construction prevents production from sharing a slot.
 pub struct WorkerLoop {
     config: WorkerLoopConfig,
-    sidecar: SidecarClient,
-    artifacts: ArtifactStore,
+    mount: WorkerToolMount,
 }
 
 impl WorkerLoop {
-    /// Build a worker loop from its config and tool dependencies.
+    /// Build a worker loop from its config and tool mount.
     ///
-    /// The `sidecar` is the connected MCP client the `keystrokes` and
-    /// `capture-pane` tools forward through. The `artifacts` is the
-    /// filename-addressed store the `read_artifact` tool reads from.
-    /// The loop builds the four-tool set per task from these handles.
-    pub fn new(config: WorkerLoopConfig, sidecar: SidecarClient, artifacts: ArtifactStore) -> Self {
-        Self {
-            config,
-            sidecar,
-            artifacts,
-        }
+    /// The `mount` carries the connected MCP client, the artifact store,
+    /// and the startup tool discovery; per task it resolves the worker
+    /// spec's advertised names into the session's tool set.
+    pub fn new(config: WorkerLoopConfig, mount: WorkerToolMount) -> Self {
+        Self { config, mount }
     }
 
     /// Run one task and read the worker's outcome.
+    ///
+    /// `spec` is the roster spec for the task's assigned worker, the
+    /// same per-task resolution the executor applies to the preamble
+    /// and budget; `None` (a task naming no rostered worker) mounts
+    /// the native quartet alone.
     ///
     /// Returns [`WorkerOutcome`] rather than `Option<WorkerSubmission>` so
     /// every non-submission case is distinguishable: a clean stop, a budget
@@ -166,16 +161,10 @@ impl WorkerLoop {
     pub async fn run_task(
         &self,
         task: &Task,
+        spec: Option<&WorkerSpec>,
         submission_slot: TerminalSlot<WorkerSubmission>,
     ) -> WorkerOutcome {
-        let keystrokes: agent_driver_rs::DynTool =
-            Arc::new(KeystrokesTool::new(self.sidecar.clone()));
-        let capture_pane: agent_driver_rs::DynTool =
-            Arc::new(CapturePaneTool::new(self.sidecar.clone()));
-        let read_artifact: agent_driver_rs::DynTool =
-            Arc::new(ReadArtifactTool::new(self.artifacts.clone()));
-        let submit_result: agent_driver_rs::DynTool =
-            Arc::new(SubmitResultTool::new(submission_slot.clone()));
+        let tools = self.mount.session_tools(spec, submission_slot.clone());
 
         // S102: mint the per-task lane up front — its provider replaces the
         // template for this run, and its observer attaches to the loop. The
@@ -197,7 +186,7 @@ impl WorkerLoop {
             .provider(provider)
             .model(self.config.model.clone())
             .system_prompt(self.config.system_prompt.clone())
-            .tools([keystrokes, capture_pane, read_artifact, submit_result])
+            .tools(tools)
             .build()
             .await
         {

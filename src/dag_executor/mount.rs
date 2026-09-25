@@ -28,13 +28,18 @@
 //! the crate wrapper hard-errors on transport failure; the prototype's
 //! tools soft-error so the model can read the failure and recover.
 
+use std::sync::Arc;
+
 use agent_driver_rs::DynTool;
-use agent_driver_rs::tool::{Tool, ToolContext, ToolDefinition, ToolInput, ToolResult};
+use agent_driver_rs::tool::{Tool, ToolContext, ToolDefinition, ToolInput, ToolResult, ToolSchema};
+use agent_driver_rs::types::ToolName;
 use async_trait::async_trait;
 
 use crate::artifacts::ArtifactStore;
-use crate::coordinator_loop::{TerminalSlot, WorkerSpec, WorkerSubmission};
-use crate::mcp_client::{SidecarClient, SidecarTool, SidecarToolName};
+use crate::coordinator_loop::{SubmitResultTool, TerminalSlot, WorkerSpec, WorkerSubmission};
+use crate::mcp_client::{SidecarClient, SidecarTool, SidecarToolArgs, SidecarToolName};
+
+use super::tools::{CapturePaneTool, KeystrokesTool, ReadArtifactTool};
 
 /// The names the native worker tools own. A discovered tool with one of
 /// these names does not mount: the native implementation wins, keeping
@@ -94,8 +99,29 @@ impl WorkerToolMount {
         spec: Option<&WorkerSpec>,
         submission_slot: TerminalSlot<WorkerSubmission>,
     ) -> Vec<DynTool> {
-        let _ = (spec, submission_slot);
-        todo!("S112 Phase 2: resolve the advertised set against the discovery")
+        let mut tools: Vec<DynTool> = vec![
+            Arc::new(KeystrokesTool::new(self.sidecar.clone())),
+            Arc::new(CapturePaneTool::new(self.sidecar.clone())),
+            Arc::new(ReadArtifactTool::new(self.artifacts.clone())),
+            Arc::new(SubmitResultTool::new(submission_slot)),
+        ];
+        let Some(spec) = spec else {
+            return tools;
+        };
+        for advertised in spec.tools() {
+            let name = advertised.name();
+            if NATIVE_NAMES.contains(&name) {
+                continue;
+            }
+            let Some(discovered) = self.discovered.iter().find(|t| t.name().as_str() == name)
+            else {
+                continue;
+            };
+            if let Some(tool) = DiscoveredMcpTool::new(self.sidecar.clone(), discovered) {
+                tools.push(Arc::new(tool));
+            }
+        }
+        tools
     }
 }
 
@@ -118,8 +144,26 @@ impl DiscoveredMcpTool {
     /// not the worker. A schema that does not parse as an object falls
     /// back to the empty schema, also matching the crate.
     fn new(sidecar: SidecarClient, tool: &SidecarTool) -> Option<Self> {
-        let _ = (sidecar, tool);
-        todo!("S112 Phase 2: build the definition from the tools/list entry")
+        let name = match ToolName::new(tool.name().as_str()) {
+            Ok(name) => name,
+            Err(error) => {
+                tracing::warn!(
+                    tool = tool.name().as_str(),
+                    "skipping discovered tool the ToolName gate rejects: {error}"
+                );
+                return None;
+            }
+        };
+        let schema = ToolSchema::from_value(tool.input_schema().clone()).unwrap_or_default();
+        let definition = ToolDefinition::new(name, tool.description().to_owned(), schema);
+        Some(Self {
+            definition,
+            sidecar,
+            // The wire name is the discovery's own name, not the gated
+            // `ToolName` rendering: the server answers to what it
+            // advertised.
+            tool_name: tool.name().clone(),
+        })
     }
 }
 
@@ -134,7 +178,28 @@ impl Tool for DiscoveredMcpTool {
         input: &ToolInput,
         ctx: &ToolContext,
     ) -> Result<ToolResult, agent_driver_rs::ToolError> {
-        let _ = (input, ctx);
-        todo!("S112 Phase 2: forward through the sidecar with a cancellation race")
+        let args = SidecarToolArgs::from_map(input.inner().clone());
+        // Biased race, cancellation first — the crate `McpToolWrapper`
+        // pattern, so a cancelled run never waits out a server.
+        let content = tokio::select! {
+            biased;
+            _ = ctx.cancellation.cancelled() => {
+                return Err(agent_driver_rs::ToolError::ExecutionFailed {
+                    tool_name: self.definition.name.clone(),
+                    message: "Tool execution cancelled".to_owned(),
+                });
+            }
+            result = self.sidecar.call_tool(&self.tool_name, &args) => {
+                match result {
+                    Ok(content) => content,
+                    // Soft error, matching the prototype's tool set: the
+                    // model reads the failure and recovers. Recorded
+                    // divergence from the crate wrapper's hard error, for
+                    // S110 to collapse.
+                    Err(error) => return Ok(ToolResult::error(error.to_string())),
+                }
+            }
+        };
+        Ok(ToolResult::text(content.as_str().to_owned()))
     }
 }
