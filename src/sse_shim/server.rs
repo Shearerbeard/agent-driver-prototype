@@ -283,8 +283,7 @@ impl ShimState {
             .await
             .expect("channel is empty with capacity and the receiver is held");
         // 5. ShimObserver. The chat-completion id is derived from the session
-        //    id so the stream handler's error-termination chunks agree with
-        //    the observer's normal chunks.
+        //    id so the observer's chunks share one identity per run.
         let chat_completion_id = format!("chatcmpl-{}", session_id.as_str());
         let created = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -517,9 +516,8 @@ pub async fn chat_completions(
 
     let shim_request = state.build_request(&query, history).await?;
 
-    // The chat-completion id is derived from the session id (the same formula
-    // build_request used for the observer), so the observer's chunks agree —
-    // the S113 error-termination path needs only the session id.
+    // The S113 error-termination path needs only the session id: the
+    // fallback emits the error event and error frame, never a chunk.
     let stream = ShimSseStream {
         rx: shim_request.event_rx,
         join: shim_request.join_handle,

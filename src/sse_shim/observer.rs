@@ -398,18 +398,18 @@ impl AgentObserver for ShimObserver {
                     // `stop` least of all. The message is the substrate
                     // error's own display string, verbatim.
                     LoopStopReason::LoopFailed { message } => {
-                        self.emit(AuraEvent::Error(
-                            ErrorPayload::new(self.session_id.as_str(), message.clone()).expect(
+                        let error_event = AuraEvent::Error(
+                            ErrorPayload::new(self.session_id.as_str(), message.as_str()).expect(
                                 "session_id is non-empty by construction and the \
                                          substrate error message is non-empty",
                             ),
-                        ))
-                        .await;
-                        self.emit(AuraEvent::ErrorFrame(
-                            ErrorFramePayload::new(message.clone())
+                        );
+                        let error_frame = AuraEvent::ErrorFrame(
+                            ErrorFramePayload::new(message.as_str())
                                 .expect("the substrate error message is non-empty"),
-                        ))
-                        .await;
+                        );
+                        self.emit(error_event).await;
+                        self.emit(error_frame).await;
                         self.emit(AuraEvent::Done).await;
                     }
                     other => {
