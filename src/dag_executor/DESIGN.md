@@ -61,7 +61,7 @@ forbids.
 | `InlineThreshold` | Results below this size stay inline; at or above it, they spill | A zero threshold, which would spill every result including an empty one |
 | `WorkerToolMount` | What the roster advertises for a worker is what that worker's session mounts: the structural pair plus the advertised names the startup discovery backs | A session carrying a tool the roster never advertised, or advertising a tool no session can execute |
 | `SpilledBody` | A spill pointer carries the filename and the full body's character count | A spill pointer with an empty filename; the constructor delegates to `ArtifactFilename` |
-| `DagExecutor` | Execution runs the DAG to completion with real workers behind four tools, filing per-task records into the `RunStore`; the `InlineThreshold` controls spill | An executor without a sidecar client, artifact store, run store, or inline threshold, leaving worker tools with no terminal, no spill channel, no task-record destination, and no spill bound |
+| `DagExecutor` | Execution runs the DAG to completion with real workers behind four tools. It dispatches ready tasks concurrently up to `DEFAULT_MAX_CONCURRENT_TASKS`, wires the prior-work frame into each worker prompt, files per-task records into the `RunStore`, and uses `InlineThreshold` to decide spill | An executor without a sidecar client, artifact store, run store, or inline threshold, leaving worker tools with no terminal, no spill channel, no task-record destination, and no spill bound |
 | `WorkerLoopConfig` | Everything a worker inner loop needs is supplied before its first provider call; `Clone` so the executor can override the system prompt per task; `cancellation: CancellationToken` is the per-dispatch child of the run's request token (honored value derived from `ToolContext`, never the stored template) | A worker loop that discovers a missing provider, model, budget, or cancellation token mid-run; both cancel paths converge on `WorkerOutcome::Interrupted`; a cancelled-before-dispatch task is never filed Failed |
 | `WorkerLoop` | One loop drives one task, over a submission slot that belongs to it alone, with the tool mount that builds its session tool set | A second write to the same submission slot; detected at runtime via `AlreadyRecorded`, and the `DagExecutor` mints one fresh slot per task so production cannot share |
 | `WorkerOutcome` | A worker run's outcome is the join of the stop reason with the submission slot | A non-submission outcome collapsed into `None`, hiding the failure class the executor needs |
@@ -174,16 +174,15 @@ the roster does not carry, which a parsed plan cannot produce. A single
 roster-wide budget would give a verifier the debugger's depth and cap a
 24-turn operator at the coordinator's own depth.
 
-**R10 - The shared `SidecarClient` has never run concurrently.**
-`execute` awaits each ready task's worker inline, so the DAG is walked one
-task at a time and the single `SidecarClient` the executor holds is only ever
-touched by one worker at a time. Its concurrent-session behaviour is
-untested and unclaimed: the classic-SSE transport resolves one
-messages URL per session, and nothing establishes what two workers posting
-`tools/call` against that session at once would do. Dispatching a ready set
-in parallel is the change that would expose this, so it must be preceded by
-an audit of `SidecarClient`'s concurrent-session semantics - one client per
-worker, or a documented guarantee that sharing one is safe.
+**R10 - The shared `SidecarClient` now runs concurrently by design.**
+Ready tasks dispatch through `buffer_unordered`, so the single
+`SidecarClient` the executor holds may receive concurrent `tools/call`
+requests from multiple worker loops. The current implementation assumes the
+underlying MCP peer tolerates concurrent calls on a shared session; this
+matches the `Clone`/`Arc<Shared>` design of `SidecarClient` and the other
+shared handles (`ArtifactStore`, `RunStore`, `WorkerToolMount`). If the real
+classic-SSE sidecar does not allow concurrent calls on one session, the
+cap must be paired with one client per worker.
 
 **R5 - Resolved: `WorkerLoop::run_task` takes `&Task`.**
 The signature changed from `&Plan` to `&Task`. The executor passes the
@@ -255,27 +254,63 @@ exercise.
 
 ## 7. Phase 2c implementation notes
 
-### Concurrency choice: sequential dispatch
+### Concurrency choice: bounded parallel dispatch
 
-The executor dispatches ready tasks sequentially within each ready set,
-not in parallel. Rationale:
+The executor dispatches the ready set concurrently, bounded by a global
+cap (`DEFAULT_MAX_CONCURRENT_TASKS = 4`). Plan mutation stays serial:
+`futures::stream::iter(...).buffer_unordered(cap).collect().await` runs
+the tasks, and a second loop applies `TaskState`, `structured_output`,
+`observations`, and `fail_descendants_of` updates only after all futures
+complete. This preserves the existing dependency logic without locks on
+`Plan`.
 
-1. **Test determinism**: `MockProvider` serializes calls through a single
-   queue (`pop_front`), so concurrent calls from parallel workers would
-   race on the queue and produce non-deterministic ordering. Sequential
-   dispatch makes the provider-call arithmetic exact.
-2. **Single shared provider**: `WorkerLoopConfig` carries one
-   `Arc<dyn Provider>`. Level-parallel dispatch would need per-worker
-   providers to avoid queue contention, which the current config does not
-   support.
-3. **Correctness first**: the card names correctness and test determinism
-   as the priority. The aura source uses `FuturesUnordered` for parallel
-   dispatch, but that is a production optimization, not a correctness
-   requirement.
+Rationale for a global cap:
 
-The sequential choice is visible in the `execute` loop: `ready_tasks`
-returns a `Vec<usize>`, and the `for task_id in ready` loop dispatches
-each worker before selecting the next.
+1. **Minimal surface**: one constant is enough to let independent tasks
+   overlap (the bucket-stress case can run six tasks on the same worker).
+2. **No per-worker serialization**: a per-worker cap of 1 would
+   re-serialize tasks that share a worker, which is exactly the shape the
+   acceptance test rejects.
+3. **Serial safety after the batch**: ready tasks have no intra-batch
+   dependencies (each is pending with all dependencies complete), so
+   `fail_descendants_of` cannot mark another task in the same batch as
+   failed during the run.
+
+Concurrency assumption: the underlying MCP peer tolerates concurrent
+`tools/call` requests on the shared session. `WorkerToolMount`,
+`ArtifactStore`, `RunStore`, and `SidecarClient` are all `Clone`;
+`SidecarClient` uses `Arc<Shared>` internally so the same session is
+shared across parallel worker loops. The current `SidecarClient` is a
+JSON-boundary classic-SSE client; if the real sidecar does not allow
+concurrent calls on one session, the cap must be paired with one client
+per worker.
+
+### Result feeding
+
+A worker's user message is rendered from the existing prior-work frame
+machinery rather than from the task description alone. Before dispatch,
+the executor calls:
+
+```rust
+let context_str = build_task_context(&work_plan, task_id).unwrap_or_default();
+let user_message = render_worker_task_prompt(&WorkerTaskVars {
+    context: &context_str,
+    your_task: description,
+});
+```
+
+`build_task_context` walks the completed ancestor closure of `task_id`
+(`src/producers.rs`) and assembles a `PriorWorkFrame`. When there are no
+completed ancestors, `unwrap_or_default()` leaves the `%%CONTEXT%%` slot
+empty, so a root task sees only its own description. The rendered prompt
+passes through `WorkerLoop::run_task` to `agent_loop.run(user_message)`.
+
+On a successful submission, `map_outcome` populates
+`task.structured_output` from the worker's claim (`summary` and
+`confidence`). This is what `build_task_context` reads back on later
+tasks, so the prior-work frame carries both the result body and the
+worker's own summary/confidence evidence. The field is only set on the
+success path; failed or blocked tasks keep `structured_output == None`.
 
 ### Spill wire shape
 

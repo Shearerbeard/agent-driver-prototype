@@ -152,11 +152,11 @@ describes the wire contract and runtime topology in full.
 Each line is one limit and names the code that defines it; removing a
 limit means deleting its line:
 
-- Ready tasks dispatch strictly one at a time, never concurrently — `src/dag_executor/executor.rs` (`for task_id in ready`).
+- Ready tasks dispatch concurrently up to a global cap (`DEFAULT_MAX_CONCURRENT_TASKS = 4`); state updates remain serial after each batch — `src/dag_executor/executor.rs`.
 - A failed task is recorded and its descendants blocked; nothing retries it — `src/dag_executor/executor.rs` (every filing is `Attempt::new(1)`).
 - The only run breaker is the turn budget; no wall-clock deadline bounds a run or a task — `src/coordinator_loop/budget.rs`.
 - Nothing a run records survives the process: plans, executions, and task records are in-memory only — `src/coordinator_loop/run_store.rs`.
-- A worker's prompt is its task description alone; the ported prior-work frame is not wired into live dispatch — `src/dag_executor/worker.rs`.
+- A worker's prompt carries its task description plus a read-only prior-work frame built from completed ancestors — `src/dag_executor/executor.rs` / `src/producers.rs`.
 - Conversation history folds into planning: the trailing user message is the query and the sanitized prior turns enter the planning wrapper once — `src/sse_shim/server.rs`, `src/coordinator_loop/driver.rs`.
 - The stream carries thirteen named `aura.*` events — the six contract events plus worker tool calls, coordinator and worker reasoning, `plan_created`, per-agent `context_usage` (S102), and `aura.error` (S113, the mid-stream failure signal) — still short of aura's full event vocabulary — `src/sse_shim/events.rs`.
 

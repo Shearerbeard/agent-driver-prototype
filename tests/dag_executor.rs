@@ -655,6 +655,116 @@ impl Provider for CountingProvider {
     }
 }
 
+/// A provider that records every `CompletionRequest` it receives.
+///
+/// Tests use the recorded user message to assert that upstream results are
+/// wired into a dependent task's prompt.
+struct RecordingProvider {
+    inner: Arc<MockProvider>,
+    requests: Arc<std::sync::Mutex<Vec<CompletionRequest>>>,
+}
+
+impl RecordingProvider {
+    fn new(
+        responses: Vec<Vec<agent_driver_rs::StreamEvent>>,
+    ) -> (Self, Arc<std::sync::Mutex<Vec<CompletionRequest>>>) {
+        let requests = Arc::new(std::sync::Mutex::new(Vec::new()));
+        (
+            Self {
+                inner: Arc::new(MockProvider::new(responses)),
+                requests: Arc::clone(&requests),
+            },
+            requests,
+        )
+    }
+}
+
+impl Provider for RecordingProvider {
+    fn info(&self) -> &ProviderInfo {
+        self.inner.info()
+    }
+
+    fn complete_stream(
+        &self,
+        request: CompletionRequest,
+        ctx: ProviderContext,
+    ) -> Pin<Box<dyn Future<Output = Result<StreamHandle, ProviderError>> + Send + '_>> {
+        self.requests
+            .lock()
+            .expect("recording requests lock poisoned")
+            .push(request.clone());
+        self.inner.complete_stream(request, ctx)
+    }
+
+    fn list_models(
+        &self,
+        ctx: ProviderContext,
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<ModelInfo>, ProviderError>> + Send + '_>> {
+        self.inner.list_models(ctx)
+    }
+}
+
+/// A provider that tracks how many concurrent `complete_stream` calls are
+/// in flight.
+///
+/// The bucket-stress acceptance test uses the peak value to prove that
+/// independent ready tasks overlap instead of serializing through the
+/// executor loop.
+struct ConcurrencyTrackingProvider {
+    inner: Arc<MockProvider>,
+    active: Arc<AtomicUsize>,
+    max_active: Arc<AtomicUsize>,
+}
+
+impl ConcurrencyTrackingProvider {
+    fn new(responses: Vec<Vec<agent_driver_rs::StreamEvent>>) -> (Self, Arc<AtomicUsize>) {
+        let active = Arc::new(AtomicUsize::new(0));
+        let max_active = Arc::new(AtomicUsize::new(0));
+        (
+            Self {
+                inner: Arc::new(MockProvider::new(responses)),
+                active: Arc::clone(&active),
+                max_active: Arc::clone(&max_active),
+            },
+            max_active,
+        )
+    }
+}
+
+impl Provider for ConcurrencyTrackingProvider {
+    fn info(&self) -> &ProviderInfo {
+        self.inner.info()
+    }
+
+    fn complete_stream(
+        &self,
+        request: CompletionRequest,
+        ctx: ProviderContext,
+    ) -> Pin<Box<dyn Future<Output = Result<StreamHandle, ProviderError>> + Send + '_>> {
+        let active = Arc::clone(&self.active);
+        let max_active = Arc::clone(&self.max_active);
+        Box::pin(async move {
+            let prev = active.fetch_add(1, Ordering::SeqCst);
+            max_active.fetch_max(prev + 1, Ordering::SeqCst);
+            // Force a yield so a concurrently-dispatched sibling has a chance
+            // to start; without this the immediately-ready mock stream can
+            // finish on the current-thread runtime before the second task
+            // begins, producing a flaky peak-concurrency reading.
+            tokio::task::yield_now().await;
+            let result = self.inner.complete_stream(request, ctx).await;
+            active.fetch_sub(1, Ordering::SeqCst);
+            result
+        })
+    }
+
+    fn list_models(
+        &self,
+        ctx: ProviderContext,
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<ModelInfo>, ProviderError>> + Send + '_>> {
+        self.inner.list_models(ctx)
+    }
+}
+
 /// The worker loop runs at its own configured `turn_depth`, not the run-wide
 /// budget from [`WorkerLoopConfig`].
 ///
@@ -832,5 +942,279 @@ async fn spill_failure_with_disabled_store_produces_bounded_failed_observation()
     assert!(
         error.as_str().chars().count() <= ErrorPreview::MAX_CHARS,
         "failure preview must be bounded"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// S117: dependent task receives the prior-work frame
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn dependent_task_receives_prior_work_frame() {
+    let runs = RunStore::new();
+    let args = CreatePlanArgs {
+        goal: "Collect then summarize".to_owned(),
+        steps: vec![
+            StepInput::LeafTask {
+                task: "Collect the data".to_owned(),
+                worker: Some("operations".to_owned()),
+            },
+            StepInput::LeafTask {
+                task: "Summarize task 0".to_owned(),
+                worker: Some("operations".to_owned()),
+            },
+        ],
+        planning_rationale: "Sequential: collect then summarise".to_owned(),
+    };
+    let plan = args
+        .to_plan(&test_sections().roster().clone())
+        .expect("valid plan");
+    let _plan_id = runs.record_plan(&args, plan.clone());
+
+    assert_eq!(plan.tasks[1].dependencies, vec![0]);
+
+    let responses = vec![
+        mock_tool_call_response(
+            "w0",
+            "submit_result",
+            &submit_result_json(
+                "Found 42 records",
+                "Detailed data output from task 0",
+                "high",
+            ),
+        ),
+        mock_text_response(""),
+        mock_tool_call_response(
+            "w1",
+            "submit_result",
+            &submit_result_json("Summary complete", "Based on the collected data", "medium"),
+        ),
+        mock_text_response(""),
+    ];
+
+    let (provider, requests) = RecordingProvider::new(responses);
+    let config = WorkerLoopConfig {
+        provider: Arc::new(provider),
+        model: model(),
+        budget: LoopBudget::new(8).expect("non-zero budget"),
+        system_prompt: SystemPrompt::new("You are a worker. Call submit_result when done."),
+        cancellation: CancellationToken::new(),
+        observer_factory: None,
+    };
+
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    let store = ArtifactStore::new(dir.path().to_path_buf());
+    let executor = DagExecutor::new(
+        WorkerToolMount::new(SidecarClient::disconnected(), store.clone(), Vec::new()),
+        store,
+        config,
+        test_sections(),
+        runs,
+        InlineThreshold::DEFAULT,
+        None,
+    );
+
+    let observation = executor.execute(&plan, &ctx()).await;
+
+    let ExecutionObservation::Completed { tasks } = &observation else {
+        panic!("expected completed execution, got {observation:?}");
+    };
+    let tasks = tasks.as_slice();
+    assert_eq!(tasks.len(), 2);
+    assert!(matches!(tasks[1], TaskObservation::Completed { .. }));
+
+    let task1_user_text = requests
+        .lock()
+        .expect("requests lock poisoned")
+        .iter()
+        .filter_map(|req| req.messages.last().map(|m| m.text()))
+        .find(|text| text.contains("Summarize task 0"))
+        .expect("task 1 request was recorded");
+
+    assert!(
+        task1_user_text.contains("READ-ONLY PRIOR WORK"),
+        "task 1 user message should carry the prior-work frame: {task1_user_text}"
+    );
+    assert!(
+        task1_user_text.contains("Task 0"),
+        "task 1 user message should name the upstream task: {task1_user_text}"
+    );
+    assert!(
+        task1_user_text.contains("operations"),
+        "task 1 user message should carry the upstream worker role: {task1_user_text}"
+    );
+    assert!(
+        task1_user_text.contains("Detailed data output from task 0")
+            || task1_user_text.contains("Found 42 records"),
+        "task 1 user message should include the upstream result evidence: {task1_user_text}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// S117: independent ready tasks run concurrently
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn independent_ready_tasks_run_concurrently() {
+    let runs = RunStore::new();
+    let args = CreatePlanArgs {
+        goal: "Run two tasks in parallel".to_owned(),
+        steps: vec![StepInput::ParallelGroup {
+            items: vec![
+                StepInput::LeafTask {
+                    task: "First independent task".to_owned(),
+                    worker: Some("operations".to_owned()),
+                },
+                StepInput::LeafTask {
+                    task: "Second independent task".to_owned(),
+                    worker: Some("operations".to_owned()),
+                },
+            ],
+        }],
+        planning_rationale: "Parallel independent operations".to_owned(),
+    };
+    let plan = args
+        .to_plan(&test_sections().roster().clone())
+        .expect("valid plan");
+    let _plan_id = runs.record_plan(&args, plan.clone());
+
+    assert!(plan.tasks[0].dependencies.is_empty());
+    assert!(plan.tasks[1].dependencies.is_empty());
+
+    let responses = vec![
+        mock_tool_call_response(
+            "w0",
+            "submit_result",
+            &submit_result_json("First done", "result one", "high"),
+        ),
+        mock_text_response(""),
+        mock_tool_call_response(
+            "w1",
+            "submit_result",
+            &submit_result_json("Second done", "result two", "high"),
+        ),
+        mock_text_response(""),
+    ];
+
+    let (provider, max_concurrent) = ConcurrencyTrackingProvider::new(responses);
+    let config = WorkerLoopConfig {
+        provider: Arc::new(provider),
+        model: model(),
+        budget: LoopBudget::new(8).expect("non-zero budget"),
+        system_prompt: SystemPrompt::new("You are a worker. Call submit_result when done."),
+        cancellation: CancellationToken::new(),
+        observer_factory: None,
+    };
+
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    let store = ArtifactStore::new(dir.path().to_path_buf());
+    let executor = DagExecutor::new(
+        WorkerToolMount::new(SidecarClient::disconnected(), store.clone(), Vec::new()),
+        store,
+        config,
+        test_sections(),
+        runs,
+        InlineThreshold::DEFAULT,
+        None,
+    );
+
+    let observation = executor.execute(&plan, &ctx()).await;
+
+    let ExecutionObservation::Completed { tasks } = &observation else {
+        panic!("expected completed execution, got {observation:?}");
+    };
+    let tasks = tasks.as_slice();
+    assert_eq!(
+        tasks.len(),
+        2,
+        "the parallel group produced two task observations"
+    );
+
+    assert!(
+        max_concurrent.load(Ordering::SeqCst) >= 2,
+        "independent ready tasks should overlap; peak concurrency was {}",
+        max_concurrent.load(Ordering::SeqCst)
+    );
+}
+
+// ---------------------------------------------------------------------------
+// S117: concurrency cap is honored
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn concurrency_never_exceeds_the_global_cap() {
+    let runs = RunStore::new();
+    let args = CreatePlanArgs {
+        goal: "Run six tasks in parallel".to_owned(),
+        steps: vec![StepInput::ParallelGroup {
+            items: (0..6)
+                .map(|i| StepInput::LeafTask {
+                    task: format!("Independent task {i}"),
+                    worker: Some("operations".to_owned()),
+                })
+                .collect(),
+        }],
+        planning_rationale: "Six parallel independent operations".to_owned(),
+    };
+    let plan = args
+        .to_plan(&test_sections().roster().clone())
+        .expect("valid plan");
+    let _plan_id = runs.record_plan(&args, plan.clone());
+
+    assert_eq!(plan.tasks.len(), 6);
+    for task in &plan.tasks {
+        assert!(task.dependencies.is_empty());
+    }
+
+    // Each task that completes consumes a submit_result + end-turn pair.
+    // A task that draws the text response first fails without a second call.
+    // Twelve responses guarantees the mock never panics regardless of order.
+    let responses: Vec<Vec<agent_driver_rs::StreamEvent>> = (0..6)
+        .flat_map(|i| {
+            [
+                mock_tool_call_response(
+                    &format!("w{i}"),
+                    "submit_result",
+                    &submit_result_json(&format!("Task {i} done"), "result", "high"),
+                ),
+                mock_text_response(""),
+            ]
+        })
+        .collect();
+
+    let (provider, max_concurrent) = ConcurrencyTrackingProvider::new(responses);
+    let config = WorkerLoopConfig {
+        provider: Arc::new(provider),
+        model: model(),
+        budget: LoopBudget::new(8).expect("non-zero budget"),
+        system_prompt: SystemPrompt::new("You are a worker. Call submit_result when done."),
+        cancellation: CancellationToken::new(),
+        observer_factory: None,
+    };
+
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    let store = ArtifactStore::new(dir.path().to_path_buf());
+    let executor = DagExecutor::new(
+        WorkerToolMount::new(SidecarClient::disconnected(), store.clone(), Vec::new()),
+        store,
+        config,
+        test_sections(),
+        runs,
+        InlineThreshold::DEFAULT,
+        None,
+    );
+
+    let observation = executor.execute(&plan, &ctx()).await;
+
+    let ExecutionObservation::Completed { tasks } = &observation else {
+        panic!("expected completed execution, got {observation:?}");
+    };
+    let tasks = tasks.as_slice();
+    assert_eq!(tasks.len(), 6);
+
+    assert!(
+        max_concurrent.load(Ordering::SeqCst) <= 4,
+        "peak concurrency {} should not exceed the global cap of 4",
+        max_concurrent.load(Ordering::SeqCst)
     );
 }
