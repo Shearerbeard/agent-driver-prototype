@@ -374,8 +374,8 @@ so the stored config's token is a template, never the honored value.
 
 Before S112 the worker loop hardcoded a fixed tool set while the
 roster advertised each worker's `mcp_filter`-resolved MCP tools in the
-coordinator's planning prompt — a discovered tool never appeared in any
-completion request, so no model could call it, and the roster's
+coordinator's planning prompt: a discovered tool never appeared in any
+completion request, so no model could call it. The roster's
 advertised-equals-executable invariant held only by coincidence of what
 the configured server advertised.
 
@@ -408,10 +408,10 @@ against that request's artifact store.
 
 agent-driver-rs already ships the full MCP bridge (`McpConnection`,
 `McpManager`, `McpToolWrapper`) behind its `mcp` feature, but the crate
-pin sits on rmcp 1.7 while this repo is on rmcp 3.2 — enabling it would
+pin sits on rmcp 1.7 while this repo is on rmcp 3.2; enabling it would
 fork rmcp in the graph. Per tb/S110's interim policy (before adr/A18,
 new code lands on the prototype client), the mount rides the S106
-plain-JSON `SidecarClient` surface — no rmcp type crosses the seam —
+plain-JSON `SidecarClient` surface (no rmcp type crosses the seam)
 and mirrors the crate `McpToolWrapper` semantics (skip invalid names
 with a warning, default schema fallback, biased cancellation race, text
 extraction) so S110 deletes this module rather than migrates it. Two
@@ -429,7 +429,7 @@ returns empty text.
 Integration tests drive the real client path (handshake, `tools/list`,
 `tools/call`) against a scripted rmcp server over an in-memory duplex,
 exposed as `SidecarClient::duplex_pair` + `connect_stream` behind a
-`test-support` feature — tokio types only in the signatures, and never
+`test-support` feature: tokio types only in the signatures, and never
 compiled into a production build. The server half is spawned, not
 awaited: `serve` completes only after the client's initialize round
 trip, so awaiting it before connecting deadlocks the pair.

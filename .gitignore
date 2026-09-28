@@ -26,3 +26,6 @@ credentials.*
 
 # Claude Code local settings
 .claude/
+
+# Session review packets
+.review/

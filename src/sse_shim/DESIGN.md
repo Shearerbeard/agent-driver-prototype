@@ -282,11 +282,11 @@ abort reaches it. A task that cannot reach a yield point inside the settle
 window is logged rather than assumed closed. Its span really is still
 open at that point, and the log is the only warning anyone gets.
 
-A known mechanism limit: the pinned library's provider-call SETUP await is not
-raced against the token - the library races cancellation only around stream
-collection and tool execution - so a run stalled there ends by the backstop's
-abort, not the token. Racing that await belongs to the library half (adr/A16),
-not this repo.
+A known mechanism limit in the pinned library: cancellation covers only
+stream collection and tool execution, so the provider-call SETUP await runs
+outside its scope. A run stalled in that await ends by the backstop's abort
+rather than the token; racing it belongs to the library half (adr/A16), not
+this repo.
 
 ### Shutdown budget
 
