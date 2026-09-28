@@ -154,9 +154,8 @@ impl WorkerLoop {
     /// and budget; `None` (a task naming no rostered worker) mounts
     /// the structural pair alone.
     ///
-    /// `user_message` is the rendered worker task prompt: the task
-    /// description plus the read-only prior-work frame from completed
-    /// ancestors.
+    /// `user_message` is the rendered opening user message the agent
+    /// loop runs with; the caller owns its composition.
     ///
     /// Returns [`WorkerOutcome`] rather than `Option<WorkerSubmission>` so
     /// every non-submission case is distinguishable: a clean stop, a budget

@@ -175,19 +175,17 @@ roster-wide budget would give a verifier the debugger's depth and cap a
 24-turn operator at the coordinator's own depth.
 
 **R10 - The shared `SidecarClient` now runs concurrently by design.**
-Ready tasks dispatch through `buffer_unordered`, so the single
-`SidecarClient` the executor holds may receive concurrent `tools/call`
-requests from multiple worker loops. The current implementation assumes the
-underlying MCP peer tolerates concurrent calls on a shared session; this
-matches the `Clone`/`Arc<Shared>` design of `SidecarClient` and the other
-shared handles (`ArtifactStore`, `RunStore`, `WorkerToolMount`). If the real
-classic-SSE sidecar does not allow concurrent calls on one session, the
-cap must be paired with one client per worker.
+Ready tasks dispatch concurrently, so the shared client may receive
+concurrent `tools/call` requests; the sharing assumption and the
+one-client-per-worker fallback are recorded in §7's concurrency
+notes.
 
-**R5 - Resolved: `WorkerLoop::run_task` takes `&Task`.**
-The signature changed from `&Plan` to `&Task`. The executor passes the
-single task being dispatched, not the whole plan, so the worker's opening
-message is the task description alone.
+**R5 - Resolved: `WorkerLoop::run_task` takes `&Task` and the rendered
+user message.**
+The signature changed from `&Plan` to `&Task`, then gained a
+`user_message: &str` parameter. The executor passes the single task
+being dispatched plus the rendered opening message (the prior-work
+prompt of the §7 result-feeding notes), not the whole plan.
 
 **R6 - Resolved: the planning loop template is golden-tested.**
 The rendered loop-shaped planning message is pinned by the

@@ -29,7 +29,7 @@ use agent_driver_prototype::coordinator_loop::{
     TaskObservation, WorkerRoster, WorkerSections,
 };
 use agent_driver_prototype::dag_executor::{
-    DagExecutor, WorkerLane, WorkerLoopConfig, WorkerToolMount,
+    DEFAULT_MAX_CONCURRENT_TASKS, DagExecutor, WorkerLane, WorkerLoopConfig, WorkerToolMount,
 };
 use agent_driver_prototype::mcp_client::SidecarClient;
 use agent_driver_prototype::producers::ToolInventory;
@@ -1212,9 +1212,10 @@ async fn concurrency_never_exceeds_the_global_cap() {
     let tasks = tasks.as_slice();
     assert_eq!(tasks.len(), 6);
 
+    let cap = DEFAULT_MAX_CONCURRENT_TASKS;
     assert!(
-        max_concurrent.load(Ordering::SeqCst) <= 4,
-        "peak concurrency {} should not exceed the global cap of 4",
+        max_concurrent.load(Ordering::SeqCst) <= cap,
+        "peak concurrency {} should not exceed the global cap of {cap}",
         max_concurrent.load(Ordering::SeqCst)
     );
 }

@@ -20,6 +20,11 @@ use async_trait::async_trait;
 /// One observer per `/v1/chat/completions` request, plumbed through
 /// `DagExecutor::new` as an optional parameter. Pass `None` when lifecycle
 /// events are not needed (e.g. in integration tests).
+///
+/// Callbacks may interleave across concurrently dispatched tasks:
+/// `on_task_started` fires serially before each dispatch batch, while
+/// `on_task_completed` fires from inside concurrently running futures.
+/// Per task, started is always observed before completed.
 #[async_trait]
 pub trait DagLifecycleObserver: Send + Sync {
     /// A worker is starting task `task_id`.

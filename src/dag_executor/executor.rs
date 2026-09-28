@@ -33,10 +33,19 @@ const ORCHESTRATOR_ID: &str = "coordinator";
 
 /// Maximum number of ready tasks the executor dispatches concurrently.
 ///
-/// A small global cap lets independent ready tasks overlap without
-/// unbounded fan-out. A per-worker cap of 1 would re-serialize tasks that
-/// share a worker, so the limit is global instead.
-const DEFAULT_MAX_CONCURRENT_TASKS: usize = 4;
+/// The cap-policy rationale (global bound, not per-worker) lives in
+/// DESIGN.md §7.
+pub const DEFAULT_MAX_CONCURRENT_TASKS: usize = 4;
+
+/// A task's settled outcome, produced concurrently by dispatch and
+/// applied serially to the plan after the batch.
+struct TaskSettlement {
+    task_id: usize,
+    index: usize,
+    observation: TaskObservation,
+    new_state: TaskState,
+    structured_output: Option<StructuredTaskOutput>,
+}
 
 /// The real DAG executor.
 ///
@@ -260,7 +269,6 @@ impl PlanExecutor for DagExecutor {
                 let worker = WorkerLoop::new(config, self.mount.clone());
                 let spec = self.spec_for(&task).cloned();
                 let task_start = Instant::now();
-                let lifecycle = self.lifecycle.clone();
                 let plan_id = plan_id.clone();
                 let executor = self;
 
@@ -280,7 +288,7 @@ impl PlanExecutor for DagExecutor {
                         _ => None,
                     };
                     let duration_ms = task_start.elapsed().as_millis() as u64;
-                    if let Some(observer) = lifecycle.as_ref() {
+                    if let Some(observer) = executor.lifecycle.as_ref() {
                         observer
                             .on_task_completed(task.id, success, duration_ms, result_text)
                             .await;
@@ -289,13 +297,13 @@ impl PlanExecutor for DagExecutor {
                     let record = TaskRecord::new(plan_id, attempt, observation.clone());
                     executor.runs.record_task(record);
 
-                    (
-                        task.id,
+                    TaskSettlement {
+                        task_id: task.id,
                         index,
                         observation,
                         new_state,
-                        task.structured_output.clone(),
-                    )
+                        structured_output: task.structured_output,
+                    }
                 });
             }
 
@@ -308,7 +316,14 @@ impl PlanExecutor for DagExecutor {
             // updates before selecting the next ready set. Ready tasks have no
             // intra-batch dependencies, so `fail_descendants_of` here cannot
             // mark another task in this batch as failed.
-            for (task_id, index, observation, new_state, structured_output) in results {
+            for TaskSettlement {
+                task_id,
+                index,
+                observation,
+                new_state,
+                structured_output,
+            } in results
+            {
                 observations[index] = Some(observation);
                 work_plan.tasks[index].state = new_state;
                 work_plan.tasks[index].structured_output = structured_output;
