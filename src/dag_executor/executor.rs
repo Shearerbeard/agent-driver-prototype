@@ -7,6 +7,7 @@ use std::time::Instant;
 use agent_driver_rs::SystemPrompt;
 use agent_driver_rs::tool::ToolContext;
 use async_trait::async_trait;
+use futures::stream::{self, StreamExt};
 
 use crate::artifacts::{ArtifactFilename, ArtifactStore, InlineThreshold, SpilledBody};
 use crate::bounding::ErrorPreviewWidth;
@@ -17,7 +18,9 @@ use crate::coordinator_loop::{
     Attempt, ExecutionObservation, LoopBudget, PlanExecutor, RunStore, TaskObservation, TaskRecord,
     TerminalSlot, WorkerSections, WorkerSpec, WorkerSubmission,
 };
-use crate::types::{FailureCategory, Plan, Task, TaskState};
+use crate::producers::build_task_context;
+use crate::templates::{WorkerTaskVars, render_worker_task_prompt};
+use crate::types::{FailureCategory, Plan, StructuredTaskOutput, Task, TaskState};
 
 use super::lifecycle::DagLifecycleObserver;
 use super::mount::WorkerToolMount;
@@ -27,6 +30,22 @@ use super::worker::{WorkerLoop, WorkerLoopConfig, WorkerOutcome};
 /// The executor owns no session id (the shim's `ShimDagObserver` carries that
 /// separately), so it reports a fixed coordinator label.
 const ORCHESTRATOR_ID: &str = "coordinator";
+
+/// Maximum number of ready tasks the executor dispatches concurrently.
+///
+/// The cap-policy rationale (global bound, not per-worker) lives in
+/// DESIGN.md §7.
+pub const DEFAULT_MAX_CONCURRENT_TASKS: usize = 4;
+
+/// A task's settled outcome, produced concurrently by dispatch and
+/// applied serially to the plan after the batch.
+struct TaskSettlement {
+    task_id: usize,
+    index: usize,
+    observation: TaskObservation,
+    new_state: TaskState,
+    structured_output: Option<StructuredTaskOutput>,
+}
 
 /// The real DAG executor.
 ///
@@ -200,41 +219,44 @@ impl PlanExecutor for DagExecutor {
                 break;
             }
 
-            for task_id in ready {
-                // S90: stop before any per-task work when the run is
-                // cancelled, so tasks that never ran file no observer
-                // events and no records.
-                if ctx.cancellation.is_cancelled() {
-                    let observed: Vec<TaskObservation> =
-                        observations.iter().flatten().cloned().collect();
-                    return Self::execution_failed("execution cancelled before dispatch", observed);
-                }
+            // S90: stop before any per-task work when the run is cancelled,
+            // so tasks that never ran file no observer events and no records.
+            if ctx.cancellation.is_cancelled() {
+                let observed: Vec<TaskObservation> =
+                    observations.iter().flatten().cloned().collect();
+                return Self::execution_failed("execution cancelled before dispatch", observed);
+            }
 
+            // C2: lifecycle starts are emitted before concurrency begins so
+            // observers see a stable task-started/completed pair even when
+            // sibling tasks overlap.
+            let mut dispatches = Vec::with_capacity(ready.len());
+            for task_id in ready {
                 let index = *task_index
                     .get(&task_id)
                     .expect("ready task id exists in plan");
                 work_plan.tasks[index].start();
 
-                // C2: notify the lifecycle observer before the worker loop
-                // begins. The description and worker identity are read here
-                // so the borrow ends before the worker runs.
-                let description = work_plan.tasks[index].description.as_str();
-                let worker_id = work_plan.tasks[index]
-                    .worker
-                    .as_deref()
-                    .unwrap_or("default");
-                let task_start = Instant::now();
+                let mut task = work_plan.tasks[index].clone();
+                let description = task.description.clone();
+                let worker_id = task.worker.as_deref().unwrap_or("default").to_owned();
                 if let Some(observer) = self.lifecycle.as_ref() {
                     observer
-                        .on_task_started(task_id, description, worker_id, ORCHESTRATOR_ID)
+                        .on_task_started(task_id, &description, &worker_id, ORCHESTRATOR_ID)
                         .await;
                 }
+
+                let context_str = build_task_context(&work_plan, task_id).unwrap_or_default();
+                let user_message = render_worker_task_prompt(&WorkerTaskVars {
+                    context: &context_str,
+                    your_task: &description,
+                });
 
                 let config = WorkerLoopConfig {
                     provider: Arc::clone(&self.worker_config.provider),
                     model: self.worker_config.model.clone(),
-                    budget: self.resolve_budget(&work_plan.tasks[index]),
-                    system_prompt: self.resolve_preamble(&work_plan.tasks[index]),
+                    budget: self.resolve_budget(&task),
+                    system_prompt: self.resolve_preamble(&task),
                     // S90: the honored token is the dispatch's own child of
                     // ctx, never the stored template value (panel ruling).
                     cancellation: ctx.cancellation.child_token(),
@@ -245,36 +267,66 @@ impl PlanExecutor for DagExecutor {
 
                 let slot: TerminalSlot<WorkerSubmission> = TerminalSlot::new();
                 let worker = WorkerLoop::new(config, self.mount.clone());
-                let spec = self.spec_for(&work_plan.tasks[index]);
-                let outcome = worker
-                    .run_task(&work_plan.tasks[index], spec, slot.clone())
-                    .await;
+                let spec = self.spec_for(&task).cloned();
+                let task_start = Instant::now();
+                let plan_id = plan_id.clone();
+                let executor = self;
 
-                let label = Self::correlation_label(&work_plan.tasks[index]);
-                let (observation, new_state) = self
-                    .map_outcome(&outcome, &label, &work_plan.tasks[index])
-                    .await;
-                observations[index] = Some(observation.clone());
-
-                // C2/R5: notify the lifecycle observer after the task settles.
-                // The duration is the wall-clock task run; success and result
-                // are read from the resolved plan state.
-                let success = matches!(new_state, TaskState::Complete { .. });
-                let result_text = match &new_state {
-                    TaskState::Complete { result } => Some(result.as_str()),
-                    _ => None,
-                };
-                let duration_ms = task_start.elapsed().as_millis() as u64;
-                if let Some(observer) = self.lifecycle.as_ref() {
-                    observer
-                        .on_task_completed(task_id, success, duration_ms, result_text)
+                dispatches.push(async move {
+                    let outcome = worker
+                        .run_task(&task, spec.as_ref(), &user_message, slot.clone())
                         .await;
-                }
+                    let label = DagExecutor::correlation_label(&task);
+                    let (observation, new_state) =
+                        executor.map_outcome(&outcome, &label, &mut task).await;
 
-                let record = TaskRecord::new(plan_id.clone(), attempt, observation);
-                self.runs.record_task(record);
+                    // C2/R5: notify the lifecycle observer after the task
+                    // settles. The duration is the wall-clock task run.
+                    let success = matches!(new_state, TaskState::Complete { .. });
+                    let result_text = match &new_state {
+                        TaskState::Complete { result } => Some(result.as_str()),
+                        _ => None,
+                    };
+                    let duration_ms = task_start.elapsed().as_millis() as u64;
+                    if let Some(observer) = executor.lifecycle.as_ref() {
+                        observer
+                            .on_task_completed(task.id, success, duration_ms, result_text)
+                            .await;
+                    }
 
+                    let record = TaskRecord::new(plan_id, attempt, observation.clone());
+                    executor.runs.record_task(record);
+
+                    TaskSettlement {
+                        task_id: task.id,
+                        index,
+                        observation,
+                        new_state,
+                        structured_output: task.structured_output,
+                    }
+                });
+            }
+
+            let results: Vec<_> = stream::iter(dispatches)
+                .buffer_unordered(DEFAULT_MAX_CONCURRENT_TASKS)
+                .collect()
+                .await;
+
+            // Plan mutation stays serial: collect outcomes and apply state
+            // updates before selecting the next ready set. Ready tasks have no
+            // intra-batch dependencies, so `fail_descendants_of` here cannot
+            // mark another task in this batch as failed.
+            for TaskSettlement {
+                task_id,
+                index,
+                observation,
+                new_state,
+                structured_output,
+            } in results
+            {
+                observations[index] = Some(observation);
                 work_plan.tasks[index].state = new_state;
+                work_plan.tasks[index].structured_output = structured_output;
 
                 if matches!(work_plan.tasks[index].state, TaskState::Failed { .. }) {
                     fail_descendants_of(&mut work_plan, task_id);
@@ -311,14 +363,19 @@ impl DagExecutor {
         &self,
         outcome: &WorkerOutcome,
         label: &CorrelationLabel,
-        task: &Task,
+        task: &mut Task,
     ) -> (TaskObservation, TaskState) {
         match outcome {
             WorkerOutcome::Submitted(submission) => {
                 let result_text = submission.result().as_str();
                 let claim = submission.claim().clone();
+                let structured_output = Some(StructuredTaskOutput {
+                    summary: claim.summary().to_owned(),
+                    confidence: claim.confidence(),
+                });
 
                 if self.inline_threshold.allows_inline(result_text) {
+                    task.structured_output = structured_output;
                     let evidence = EvidenceEntry::from_completed_result(result_text, Some(claim))
                         .expect(
                             "worker submission guarantees a non-blank result; \
@@ -347,6 +404,7 @@ impl DagExecutor {
 
                     match spill_result {
                         Ok(filename) => {
+                            task.structured_output = structured_output;
                             let spilled_body =
                                 SpilledBody::new(filename.clone(), result_text.chars().count());
                             let spilled_text = format!("{}\n\n{spilled_body}", claim.summary());

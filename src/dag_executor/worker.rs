@@ -154,6 +154,9 @@ impl WorkerLoop {
     /// and budget; `None` (a task naming no rostered worker) mounts
     /// the structural pair alone.
     ///
+    /// `user_message` is the rendered opening user message the agent
+    /// loop runs with; the caller owns its composition.
+    ///
     /// Returns [`WorkerOutcome`] rather than `Option<WorkerSubmission>` so
     /// every non-submission case is distinguishable: a clean stop, a budget
     /// exhaustion, a provider interruption, and a hard failure each carry
@@ -162,6 +165,7 @@ impl WorkerLoop {
         &self,
         task: &Task,
         spec: Option<&WorkerSpec>,
+        user_message: &str,
         submission_slot: TerminalSlot<WorkerSubmission>,
     ) -> WorkerOutcome {
         let tools = self.mount.session_tools(spec, submission_slot.clone());
@@ -201,7 +205,7 @@ impl WorkerLoop {
         if let Some(lane) = lane {
             agent_loop = agent_loop.with_observer(SharedWorkerObserver(lane.observer));
         }
-        let outcome = match agent_loop.run(&task.description).await {
+        let outcome = match agent_loop.run(user_message).await {
             Ok(outcome) => outcome,
             Err(error) => return agent_loop_error_to_outcome(&error),
         };

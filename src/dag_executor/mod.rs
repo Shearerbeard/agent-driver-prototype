@@ -17,7 +17,7 @@ mod mount;
 mod tools;
 mod worker;
 
-pub use executor::DagExecutor;
+pub use executor::{DEFAULT_MAX_CONCURRENT_TASKS, DagExecutor};
 pub use lifecycle::DagLifecycleObserver;
 pub use mount::{STRUCTURAL_TOOL_NAMES, WorkerToolMount};
 pub use tools::{ReadArtifactArgs, ReadArtifactTool};
