@@ -77,8 +77,9 @@ forbids.
 `EvidenceText`, `PinnedGoal`, `PlanShape`, `WorkerClaim`, `WorkerRole` from
 `crate::context`; `render_planning_loop_prompt` with `PlanningLoopVars`,
 from `crate::templates`. The `build_worker_prompt_sections` and
-`build_planning_wrapper` producers stay as the bounded-router oracle (pinned
-by the S70 goldens and the byte-parity test); the loop's opening message
+`build_planning_wrapper` producers stay as the planning-wrapper oracle;
+since S114 the wrapper instructs the registered four, pinned by the golden
+corpus and the tool-truth suite; the loop's opening message
 renders through the loop template instead. The host-authored
 fallback renders through the ported `CompletedEntry`, `FailedEntry` and
 `BlockedEntry` renderers, so completed, hard-failed and blocked tasks on
@@ -129,8 +130,9 @@ The loop's `run` method renders the opening message through
 tools the loop registers (`create_plan`, `execute`, `inspect_run`,
 `respond`) instead of the bounded router's three. The loop template's
 rendered output is pinned by the `planning_loop_message` insta snapshot.
-The old bounded-router template (`render_planning_prompt`/`PlanningVars`)
-and `build_planning_wrapper` stay, pinned by the S70 goldens; they retire
+The legacy planning wrapper (`render_planning_prompt`/`PlanningVars`) and
+`build_planning_wrapper` stay; since S114 the wrapper carries the same
+four-tool vocabulary, pinned by the re-goldened corpus. They retire
 with `CoordinatorTurn`.
 
 **R2 - Two types named `FinalResponse` in one crate.**
@@ -141,15 +143,21 @@ has no root facade, so no path collides. The name still reads as ambiguous.
 The card names the S71 type, and the ported one retires with
 `CoordinatorTurn` when the bounded router goes.
 
-**R3 - The system prompt is unspecified by this card.**
-`config_builders::build_coordinator_preamble` is available but its tools
-section names the bounded router's surface plus `read_artifact`, none of
-which this loop registers; feeding it in would ship a system prompt that
-contradicts the tools. `fixture::envelope::compose_coordinator_preamble` is
-`#[cfg(test)]` and `pub(crate)`, so a normal build cannot reach it at all.
-S71 takes `SystemPrompt` as a constructor input and leaves the choice to the
-caller. That is honest, and it means the loop ships with no opinion about its
-own system prompt.
+**R3 - Resolved: every coordinator prompt names the registered surface (S114).**
+`config_builders::build_coordinator_preamble` now names exactly the four
+tools the loop registers, and every coordinator-directed surface derives
+from the same factory: `coordinator_tool_definitions` is the single source
+for the names and definitions a coordinator prompt may claim, the live
+driver's tools delegate to it, and the fixture envelope attaches its output
+(projected onto the wire-mirror type) in registration order. The S114
+tool-truth suite derives both sides — factory output and rendered surface —
+so no test hardcodes the four and a prompt cannot claim a tool the loop
+never registered. Aura-frame parity for coordinator frames is abandoned
+(board ruling, Option B, 2026-09-27): the golden corpus is now a coherent
+prototype-world corpus whose coordinator frames pin this surface, while
+worker frames keep their byte-parity and legitimately attach `read_artifact`
+and `load_skill`. S103 (MCP tools on the coordinator) is the next event
+that re-opens the template.
 
 **R4 - The plan digest is a 64-bit FNV-1a.**
 The derivation covers the normalized goal and the step tree, hashed with

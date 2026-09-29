@@ -136,7 +136,6 @@ impl TemplateVars for ContinuationVars<'_> {
 pub struct CoordinatorPreambleVars<'a> {
     pub orchestration_system_prompt: &'a str,
     pub tools_section: &'a str,
-    pub recon_guidance: &'a str,
 }
 
 impl TemplateVars for CoordinatorPreambleVars<'_> {
@@ -147,7 +146,6 @@ impl TemplateVars for CoordinatorPreambleVars<'_> {
                 self.orchestration_system_prompt,
             ),
             ("TOOLS_SECTION", self.tools_section),
-            ("RECON_GUIDANCE", self.recon_guidance),
         ]
     }
 }
@@ -582,7 +580,6 @@ mod tests {
             &CoordinatorPreambleVars {
                 orchestration_system_prompt: "",
                 tools_section: "",
-                recon_guidance: "",
             },
         )
         .expect("Orchestrator preamble template should match CoordinatorPreambleVars");
@@ -994,20 +991,17 @@ Do not try to compute results yourself — delegate to workers.";
         // 1. Coordinator system prompt
         // ================================================================
         let _ = writeln!(out, "\n{separator}");
-        let _ = writeln!(
-            out,
-            "PHASE: COORDINATOR SYSTEM PROMPT (routing / continuation)"
-        );
+        let _ = writeln!(out, "PHASE: COORDINATOR SYSTEM PROMPT (coordinator loop)");
         let _ = writeln!(out, "{separator}\n");
         let coordinator_preamble =
-            crate::config_builders::build_coordinator_preamble(agent_system_prompt, true, false);
+            crate::config_builders::build_coordinator_preamble(agent_system_prompt, false, false);
         let _ = writeln!(out, "{coordinator_preamble}");
 
         // ================================================================
-        // 2. Routing user message
+        // 2. Planning user message (legacy wrapper, four-tool vocabulary)
         // ================================================================
         let _ = writeln!(out, "\n{separator}");
-        let _ = writeln!(out, "PHASE: ROUTING USER MESSAGE");
+        let _ = writeln!(out, "PHASE: PLANNING USER MESSAGE");
         let _ = writeln!(out, "{separator}\n");
 
         // Replicate the format from orchestrator.rs:466-483
@@ -1033,26 +1027,12 @@ Each worker has specialized capabilities. Assign tasks to the most appropriate w
             names_json.join(", ")
         );
 
-        let error_section = "";
-
-        let planning_prompt = format!(
-            "Analyze this user query and decide on the best approach.\n\n\
-             USER QUERY: {query}{worker_section}{error_section}\n\n\
-             You have three routing tools. Call EXACTLY ONE (do not call more than one):\n\n\
-             1. **respond_directly** — For simple factual questions answerable from general knowledge, \
-                OR when the relevant workers have no tools configured (tools show \"none configured\") \
-                and the query requires external data. In that case, explain the limitation and suggest \
-                configuring MCP servers.\n\
-                Do not use for queries about system data, logs, metrics, or anything requiring tools \
-                when workers DO have tools available.\n\n\
-             2. **create_plan** — For queries requiring tool execution, data gathering, or multi-step analysis.\n\
-                When uncertain, choose create_plan only if tool execution or multi-step work is genuinely required; otherwise choose respond_directly.\n\n\
-             3. **request_clarification** — For genuinely ambiguous queries where intent is unclear.\n\
-                Use sparingly when a reasonable interpretation exists.\n\n\
-             {worker_guidelines}\n\n\
-             - For time-scoped tasks, include the current time and relevant time range in the task description so workers have explicit time context\n\n\
-             Call the appropriate routing tool now.",
-        );
+        let planning_prompt = render_planning_prompt(&PlanningVars {
+            timestamp: "2026-09-29T12:00:00Z",
+            query,
+            worker_section: &worker_section,
+            worker_guidelines: &worker_guidelines,
+        });
         let _ = writeln!(out, "{planning_prompt}");
         let _ = writeln!(
             out,

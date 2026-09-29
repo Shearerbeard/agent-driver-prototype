@@ -24,10 +24,9 @@
 //! continuation surface is covered by its template and its decision-point
 //! list.
 //!
-//! The coordinator templates still describe the retired router world, so
-//! these assertions are RED until the migration lands and re-goldens the
-//! corpus; the `planning_loop_prompt.md` control assertions are green
-//! throughout.
+//! The coordinator templates name the registered four everywhere; these
+//! assertions pin that state, and the `planning_loop_prompt.md` control
+//! assertions hold throughout.
 
 use std::collections::{BTreeSet, HashMap};
 
@@ -43,8 +42,8 @@ use crate::coordinator_loop::{
     CreatePlanArgs, WorkerRoster, WorkerSections, coordinator_tool_definitions,
 };
 use crate::fixture::{
-    CoordinatorCall, CoordinatorScenario, CoordinatorToolConfig, HistoryTools, PreambleFixture,
-    ReconTools, SessionHistoryFixture, WorkerRosterFixture, coordinator_envelope,
+    CoordinatorCall, CoordinatorScenario, PreambleFixture, SessionHistoryFixture,
+    WorkerRosterFixture, coordinator_envelope,
 };
 use crate::message::ToolDefinition as MirrorToolDefinition;
 use crate::persistence::{
@@ -138,10 +137,9 @@ fn inert_goal() -> PinnedGoal {
     PinnedGoal::new(INERT_QUERY).expect("inert query is non-empty")
 }
 
-fn inert_preamble(tools: CoordinatorToolConfig) -> PreambleFixture {
+fn inert_preamble() -> PreambleFixture {
     PreambleFixture {
         playbook: INERT_PLAYBOOK.to_owned(),
-        tools,
         skills: Vec::new(),
         vector_stores: Vec::new(),
         session_history: None,
@@ -155,10 +153,6 @@ fn inert_preamble(tools: CoordinatorToolConfig) -> PreambleFixture {
 fn isolated_preamble() -> PreambleFixture {
     PreambleFixture {
         playbook: String::new(),
-        tools: CoordinatorToolConfig {
-            recon: ReconTools::Excluded,
-            history: HistoryTools::Excluded,
-        },
         skills: Vec::new(),
         vector_stores: Vec::new(),
         session_history: None,
@@ -229,43 +223,20 @@ fn coordinator_scenarios() -> Vec<CoordinatorScenario> {
         .expect("inert scenarios are production-reachable")
     };
 
-    let mut scenarios = vec![build(
-        inert_preamble(CoordinatorToolConfig {
-            recon: ReconTools::Excluded,
-            history: HistoryTools::Excluded,
-        }),
-        ToolVisibility::Summary,
-    )];
+    let mut scenarios = vec![build(inert_preamble(), ToolVisibility::Summary)];
 
-    scenarios.push(build(
-        inert_preamble(CoordinatorToolConfig {
-            recon: ReconTools::Included,
-            history: HistoryTools::Included,
-        }),
-        ToolVisibility::None,
-    ));
-
-    let mut skills = inert_preamble(CoordinatorToolConfig {
-        recon: ReconTools::Excluded,
-        history: HistoryTools::Excluded,
-    });
+    let mut skills = inert_preamble();
     skills.skills = vec![inert_skill()];
     scenarios.push(build(skills, ToolVisibility::Summary));
 
-    let mut vector = inert_preamble(CoordinatorToolConfig {
-        recon: ReconTools::Excluded,
-        history: HistoryTools::Excluded,
-    });
+    let mut vector = inert_preamble();
     vector.vector_stores = vec![VectorStoreConfig::new(
         INERT_STORE_NAME,
         Some(INERT_STORE_DESCRIPTION),
     )];
     scenarios.push(build(vector, ToolVisibility::Summary));
 
-    let mut session = inert_preamble(CoordinatorToolConfig {
-        recon: ReconTools::Excluded,
-        history: HistoryTools::Excluded,
-    });
+    let mut session = inert_preamble();
     session.session_history =
         Some(SessionHistoryFixture::new(vec![inert_manifest()]).expect("one inert prior manifest"));
     scenarios.push(build(session, ToolVisibility::Summary));
@@ -580,9 +551,9 @@ fn composed_coordinator_preamble_names_no_retired_tool() {
     let envelope =
         coordinator_envelope(&isolated_scenario(preamble)).expect("inert envelope assembles");
     // The playbook is empty, so the composed preamble carries no
-    // user-interpolated region; the vector append is the only generated
-    // section this scan adds over the template and tools-section scans
-    // (the `vector_search_` check lives here).
+    // user-interpolated region; the coordinator path appends no
+    // vector-store context, so configuring one must not leak a
+    // `vector_search_` claim (that check lives here).
     assert!(
         envelope.system.contains("## Your Tools"),
         "the scan covers the composed coordinator preamble"

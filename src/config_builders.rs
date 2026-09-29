@@ -53,6 +53,14 @@ pub fn build_vector_store_context(stores: &[VectorStoreConfig]) -> String {
 // Preamble Builders
 // ============================================================================
 
+/// The "Resolve tool gaps" core-behavior directive, which
+/// `AURA_ESCAPE_HATCH=false` strips from the coordinator preamble.
+///
+/// The literal must stay byte-identical to the directive line in
+/// `orchestrator_preamble.md`; `escape_hatch_literal_matches_the_template`
+/// pins that sync.
+const TOOL_GAPS_DIRECTIVE: &str = "6. **Resolve tool gaps pragmatically**: If a user requests an operation with no matching tool, create a plan using the available tools and note the gap in `planning_rationale`. Do NOT deliberate at length about missing capabilities — plan what you can, report what you cannot.\n";
+
 /// Build the coordinator's system prompt by composing the orchestrator
 /// framework template with the user's domain-specific system prompt.
 ///
@@ -60,63 +68,42 @@ pub fn build_vector_store_context(stores: &[VectorStoreConfig]) -> String {
 /// details injected into user message by the planning prompt).
 ///
 /// The `agent_system_prompt` parameter is `[agent].system_prompt` from config.
+///
+/// The `include_recon_tools` and `include_history_tools` flags are retired
+/// with the bounded router's tool surface: the registered coordinator
+/// surface is `create_plan`, `execute`, `inspect_run` and `respond`
+/// regardless of either flag, so neither affects the rendered preamble.
+/// They remain in the signature until the bounded router retires; S103 is
+/// the next event that re-opens this template.
 pub fn build_coordinator_preamble(
     agent_system_prompt: &str,
     include_recon_tools: bool,
     include_history_tools: bool,
 ) -> String {
-    let artifact_tools = if include_history_tools {
-        "two **artifact/history tools** (`read_artifact`, `list_prior_runs`)"
-    } else {
-        "one **artifact tool** (`read_artifact`)"
-    };
+    let _ = (include_recon_tools, include_history_tools);
 
-    let tools_section = if include_recon_tools {
-        format!(
-            "You have three **routing tools** (`respond_directly`, `create_plan`, `request_clarification`), \
-             two **reconnaissance tools** (`list_tools`, `inspect_tool_params`), and {artifact_tools}. \
-             Call exactly one routing tool per query."
-        )
-    } else {
-        format!(
-            "You have three **routing tools** (`respond_directly`, `create_plan`, `request_clarification`) \
-             and {artifact_tools}. Call exactly one routing tool per query."
-        )
-    };
+    let tools_section = "\
+You have four tools to drive this run. Call them as needed:
 
-    let recon_guidance = if include_recon_tools {
-        "## Reconnaissance Guidance\n\n\
-         Tool names and worker capabilities are already listed in the planning context below. \
-         You do NOT need to call `list_tools` or `inspect_tool_params` to discover what's available \
-         — that information is already provided to you.\n\n\
-         Only call `inspect_tool_params` when you need the **exact parameter schema** for a tool \
-         (e.g., to decide between two similar tools based on their parameters). In most cases, \
-         the tool name and worker description are sufficient for planning.\n\n\
-         **Budget awareness**: Each planning attempt has a limited number of tool calls. \
-         Prioritize calling a routing tool (`respond_directly`, `create_plan`, or \
-         `request_clarification`) over reconnaissance. Do not spend multiple turns inspecting tools.\n\n\
-         **Worker names vs tool names**: The worker names listed below (e.g., \"arithmetic\", \
-         \"statistics\") are role assignments for task routing — they are NOT callable tools. \
-         Only the tools listed under each worker (e.g., \"add\", \"mean\", \"sin\") are MCP tools \
-         that workers can execute."
-    } else {
-        "**Worker names vs tool names**: The worker names listed below (e.g., \"arithmetic\", \
-         \"statistics\") are role assignments for task routing — they are NOT callable tools. \
-         Only the tools listed under each worker (e.g., \"add\", \"mean\", \"sin\") are MCP tools \
-         that workers can execute."
-    };
+1. `create_plan` — Decompose the request into an ordered task list of tasks assigned to workers.
+2. `execute` — Run the tasks of a plan you created; it returns per-task evidence, not an answer.
+3. `inspect_run` — Read back one of this run's own records when you need the full evidence.
+4. `respond` — Write the final answer for the user. The first response is the one recorded.
 
-    let mut preamble =
+Typical loop: `create_plan` → `execute` → `respond`, with `inspect_run` whenever an observation's summary is not enough.";
+
+    let preamble =
         super::templates::render_coordinator_preamble(&super::templates::CoordinatorPreambleVars {
             orchestration_system_prompt: agent_system_prompt,
-            tools_section: &tools_section,
-            recon_guidance,
+            tools_section,
         });
 
-    // AURA_ESCAPE_HATCH=false strips the "Resolve tool gaps" directive for A/B testing.
-    // Inlined from `aura::env_flags::bool_env("AURA_ESCAPE_HATCH", true)`; the
-    // canonical truthy/falsy vocabulary is mirrored exactly (unrecognized
-    // values fall back to the default, here `true`).
+    // AURA_ESCAPE_HATCH=false strips the "Resolve tool gaps" directive for
+    // A/B testing. The env var is read exactly once, here at the call site;
+    // `apply_escape_hatch` is pure in the toggle. Inlined from
+    // `aura::env_flags::bool_env("AURA_ESCAPE_HATCH", true)`; the canonical
+    // truthy/falsy vocabulary is mirrored exactly (unrecognized values fall
+    // back to the default, here `true`).
     let escape_hatch_on = match std::env::var("AURA_ESCAPE_HATCH") {
         Ok(v) if v.is_empty() => true,
         Ok(v) => match v.trim().to_ascii_lowercase().as_str() {
@@ -126,14 +113,20 @@ pub fn build_coordinator_preamble(
         },
         Err(_) => true,
     };
-    if !escape_hatch_on {
-        preamble = preamble.replace(
-            "6. **Resolve tool gaps pragmatically**: If a user requests an operation with no matching tool, create a plan using the available tools and note the gap in `planning_summary`. Do NOT deliberate at length about missing capabilities — route what you can, report what you cannot.\n",
-            "",
-        );
-    }
+    apply_escape_hatch(preamble, escape_hatch_on)
+}
 
-    preamble
+/// Apply the `AURA_ESCAPE_HATCH` toggle to a rendered coordinator preamble.
+///
+/// Pure in the toggle: the environment is read once at
+/// [`build_coordinator_preamble`]'s call site and passed in, so tests cover
+/// both states through this helper without process-env mutation (the corpus
+/// harness asserts the variable is unset under concurrent test execution).
+fn apply_escape_hatch(preamble: String, escape_hatch_on: bool) -> String {
+    if escape_hatch_on {
+        return preamble;
+    }
+    preamble.replace(TOOL_GAPS_DIRECTIVE, "")
 }
 
 /// Build the complete worker preamble by injecting the custom system prompt
@@ -150,4 +143,34 @@ pub fn build_worker_preamble(config: &crate::config::OrchestrationConfig) -> Str
     super::templates::render_worker_preamble(&super::templates::WorkerPreambleVars {
         worker_system_prompt: custom_prompt,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn rendered_preamble() -> String {
+        crate::templates::render_coordinator_preamble(&crate::templates::CoordinatorPreambleVars {
+            orchestration_system_prompt: "Fixture playbook for escape-hatch checks.",
+            tools_section: "You have four tools.",
+        })
+    }
+
+    #[test]
+    fn escape_hatch_on_keeps_the_tool_gaps_directive() {
+        let preamble = apply_escape_hatch(rendered_preamble(), true);
+        assert!(preamble.contains(TOOL_GAPS_DIRECTIVE));
+    }
+
+    #[test]
+    fn escape_hatch_off_strips_the_tool_gaps_directive() {
+        let preamble = apply_escape_hatch(rendered_preamble(), false);
+        assert!(!preamble.contains("Resolve tool gaps"));
+        assert!(preamble.contains("## Core Behavior"));
+    }
+
+    #[test]
+    fn escape_hatch_literal_matches_the_template() {
+        assert!(crate::templates::ORCHESTRATOR_PREAMBLE_TEMPLATE.contains(TOOL_GAPS_DIRECTIVE));
+    }
 }

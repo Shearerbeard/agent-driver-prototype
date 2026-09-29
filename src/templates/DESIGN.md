@@ -51,7 +51,7 @@ remain allowed. The table identifies each context's rendering responsibility.
 | `TemplateVars` | Rendering and validation consume the same supplied bindings. |
 | `WorkerTaskVars` | Task instructions and prior context have separate bindings. |
 | `ContinuationVars` | A continuation binds its iteration, outcomes, and reuse guidance together. |
-| `CoordinatorPreambleVars` | Coordinator policy, tool description, and recon guidance remain distinct inputs. |
+| `CoordinatorPreambleVars` | Coordinator policy and tool description remain distinct inputs. |
 | `WorkerPreambleVars` | The worker preamble binds the supplied worker policy. |
 | `SessionHistoryVars` | A history frame carries its turn count and rendered entries. |
 | `PlanningVars` | Bounded-router planning binds the query and worker roster. |

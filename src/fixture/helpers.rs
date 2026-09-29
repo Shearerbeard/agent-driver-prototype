@@ -44,6 +44,23 @@ pub fn render_skill_catalog(skills: &[crate::config::SkillConfig]) -> Option<Str
     Some(catalog)
 }
 
+/// Render the coordinator's skill-catalog append, or `None` when no skills
+/// are configured.
+///
+/// Unlike the shared worker catalog, this claims no tool: the coordinator's
+/// registered surface has no `load_skill`, so the append lists the skills
+/// as background knowledge without instructing the model to load them.
+pub fn render_coordinator_skill_catalog(skills: &[crate::config::SkillConfig]) -> Option<String> {
+    if skills.is_empty() {
+        return None;
+    }
+    let mut catalog = String::from("\n\nAvailable skills:\n");
+    for skill in skills {
+        catalog.push_str(&format!("- {}: {}\n", skill.name, skill.description));
+    }
+    Some(catalog)
+}
+
 /// Build a session context string from prior run manifests. Ported verbatim
 /// from `crates/aura/src/orchestration/persistence.rs::build_session_context`.
 pub fn build_session_context(manifests: &[RunManifest]) -> String {
@@ -77,17 +94,6 @@ pub fn build_session_context(manifests: &[RunManifest]) -> String {
             for task in &manifest.task_summaries {
                 render_task_summary(task, &mut turn_entries);
             }
-        }
-
-        let has_artifacts = manifest
-            .task_summaries
-            .iter()
-            .any(|t| !t.artifacts.is_empty());
-        if has_artifacts {
-            turn_entries.push_str(&format!(
-                "  (use run_id=\"{}\" with read_artifact for cross-run access)\n",
-                manifest.run_id
-            ));
         }
 
         turn_entries.push('\n');

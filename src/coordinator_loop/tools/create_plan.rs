@@ -108,7 +108,12 @@ fn plan_schema(roster: &WorkerRoster, worker_field: &str) -> JsonValue {
         }
     });
     if !roster.is_empty() {
-        let names: Vec<&str> = roster.names();
+        // The enum offers the names sorted: the roster derives from a config
+        // `HashMap` whose iteration order is randomized per process, and the
+        // schema reaches the wire and the golden corpus, which must be
+        // deterministic.
+        let mut names: Vec<&str> = roster.names();
+        names.sort_unstable();
         if let Some(properties) = leaf_properties.as_object_mut() {
             properties.insert(
                 "worker".to_owned(),

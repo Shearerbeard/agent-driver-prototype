@@ -15,8 +15,8 @@ pub(crate) use normalize::assert_envelope_snapshot;
 pub(crate) use normalize::{NormalizedSnapshot, normalize};
 pub(crate) use scenario::{
     CompletedResultFixture, ContinuationThread, CoordinatorCall, CoordinatorScenario,
-    CoordinatorToolConfig, FailedResultFixture, FixtureError, FrameGraph, HistoryTools,
-    IterationFixture, PlanDecision, PlanningBudget, PreambleFixture, ReconTools, ScratchpadWiring,
-    SessionHistoryFixture, SpilledStandIn, TaskOutcome, WorkerFrameFixture, WorkerPreambleAppends,
-    WorkerPreambleFixture, WorkerRosterFixture, WorkerScenario,
+    FailedResultFixture, FixtureError, FrameGraph, IterationFixture, PlanDecision, PlanningBudget,
+    PreambleFixture, ScratchpadWiring, SessionHistoryFixture, SpilledStandIn, TaskOutcome,
+    WorkerFrameFixture, WorkerPreambleAppends, WorkerPreambleFixture, WorkerRosterFixture,
+    WorkerScenario,
 };

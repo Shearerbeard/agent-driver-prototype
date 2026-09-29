@@ -1,12 +1,15 @@
 //! The S2 golden-frame snapshot corpus, ported from
 //! `crates/aura/src/orchestration/context_fixture/golden_tests.rs`.
 //!
-//! 21 snapshot tests (13 coordinator + 8 worker) prove byte-identity of the
-//! spike's generated envelopes against the canonical aura corpus. The R3/R5/R8
-//! comparison gates that call live production `Orchestrator` constructors are
-//! SKIPPED — the spike has no `Orchestrator` to compare against; the
-//! byte-diff proof against the canonical snapshots is the spike's
-//! equivalent gate.
+//! 20 snapshot tests (12 coordinator + 8 worker) pin the spike's generated
+//! envelopes. Since S114 the corpus is a coherent prototype-world corpus
+//! (Option B): coordinator frames pin this crate's registered coordinator
+//! surface — the shared factory's four tools, projected onto the wire
+//! mirror — while worker frames keep their original byte-parity. The
+//! R3/R5/R8 comparison gates that call live production `Orchestrator`
+//! constructors are SKIPPED — the spike has no `Orchestrator` to compare
+//! against; the byte-diff proof against the canonical snapshots is the
+//! spike's equivalent gate for worker frames.
 
 use std::collections::HashMap;
 
@@ -26,11 +29,11 @@ use crate::types::{
 
 use crate::fixture::{
     CompletedResultFixture, ContinuationThread, CoordinatorCall, CoordinatorScenario,
-    CoordinatorToolConfig, FailedResultFixture, FixtureError, FrameGraph, HistoryTools,
-    IterationFixture, NormalizedSnapshot, PlanDecision, PlanningBudget, PreambleFixture,
-    ReconTools, ScratchpadWiring, SessionHistoryFixture, SpilledStandIn, TaskOutcome,
-    WorkerFrameFixture, WorkerPreambleAppends, WorkerPreambleFixture, WorkerRosterFixture,
-    WorkerScenario, assert_envelope_snapshot, coordinator_envelope, normalize, worker_envelope,
+    FailedResultFixture, FixtureError, FrameGraph, IterationFixture, NormalizedSnapshot,
+    PlanDecision, PlanningBudget, PreambleFixture, ScratchpadWiring, SessionHistoryFixture,
+    SpilledStandIn, TaskOutcome, WorkerFrameFixture, WorkerPreambleAppends, WorkerPreambleFixture,
+    WorkerRosterFixture, WorkerScenario, assert_envelope_snapshot, coordinator_envelope, normalize,
+    worker_envelope,
 };
 
 /// The shared coordinator playbook, preserving the 14 headed blocks of
@@ -152,20 +155,12 @@ fn fixture_skills() -> Vec<SkillConfig> {
     ]
 }
 
-fn preamble(tools: CoordinatorToolConfig) -> PreambleFixture {
+fn preamble() -> PreambleFixture {
     PreambleFixture {
         playbook: SOURCE_PLAYBOOK.to_owned(),
-        tools,
         skills: Vec::new(),
         vector_stores: Vec::new(),
         session_history: None,
-    }
-}
-
-fn no_optional_tools() -> CoordinatorToolConfig {
-    CoordinatorToolConfig {
-        recon: ReconTools::Excluded,
-        history: HistoryTools::Excluded,
     }
 }
 
@@ -389,18 +384,16 @@ fn snapshot_worker(name: &str, scenario: &WorkerScenario) {
     assert_envelope_snapshot(name, &envelope);
 }
 
+/// The None-visibility roster render: workers listed with descriptions only,
+/// no per-worker tool lists.
 #[test]
-fn coordinator_call1_recon() {
-    let preamble = preamble(CoordinatorToolConfig {
-        recon: ReconTools::Included,
-        history: HistoryTools::Excluded,
-    });
+fn coordinator_call1_no_tool_visibility() {
     let roster = WorkerRosterFixture::new(
         roster_config(analyst_operator_workers(), ToolVisibility::None),
         Vec::new(),
     );
-    let scenario = scenario(preamble, roster, CoordinatorCall::Initial);
-    snapshot_coordinator("coordinator_call1_recon", &scenario);
+    let scenario = scenario(preamble(), roster, CoordinatorCall::Initial);
+    snapshot_coordinator("coordinator_call1_no_tool_visibility", &scenario);
 }
 
 #[test]
@@ -427,7 +420,7 @@ fn coordinator_call1_nonrecon_summary() {
         ..roster_config(workers, ToolVisibility::Summary)
     };
     let scenario = scenario(
-        preamble(no_optional_tools()),
+        preamble(),
         WorkerRosterFixture::new(config, Vec::new()),
         CoordinatorCall::Initial,
     );
@@ -462,7 +455,7 @@ fn coordinator_call1_full_visibility() {
         Some("Operational runbooks for the payments platform"),
     )];
     let scenario = scenario(
-        preamble(no_optional_tools()),
+        preamble(),
         WorkerRosterFixture::new(config, catalog),
         CoordinatorCall::Initial,
     );
@@ -472,7 +465,7 @@ fn coordinator_call1_full_visibility() {
 #[test]
 fn coordinator_call1_no_workers() {
     let scenario = scenario(
-        preamble(no_optional_tools()),
+        preamble(),
         WorkerRosterFixture::new(
             roster_config(HashMap::new(), ToolVisibility::Summary),
             Vec::new(),
@@ -486,11 +479,10 @@ fn coordinator_call1_no_workers() {
 fn coordinator_preamble_full_appends() {
     let preamble = PreambleFixture {
         playbook: SOURCE_PLAYBOOK.to_owned(),
-        tools: CoordinatorToolConfig {
-            recon: ReconTools::Excluded,
-            history: HistoryTools::Included,
-        },
         skills: fixture_skills(),
+        // Configured but inert on the coordinator path: the vector-search
+        // tools are worker-side registrations, so the coordinator preamble
+        // renders no knowledge-base section (S114 surface 10).
         vector_stores: vec![vector_store(
             "runbooks",
             Some("Operational runbooks for the payments platform"),
@@ -513,7 +505,6 @@ fn coordinator_preamble_full_appends() {
 fn session_history_catch_all() {
     let preamble = PreambleFixture {
         playbook: SOURCE_PLAYBOOK.to_owned(),
-        tools: no_optional_tools(),
         skills: Vec::new(),
         vector_stores: Vec::new(),
         session_history: Some(
@@ -529,23 +520,6 @@ fn session_history_catch_all() {
         CoordinatorCall::Initial,
     );
     snapshot_coordinator("session_history_catch_all", &scenario);
-}
-
-#[test]
-fn tools_coordinator_recon_history() {
-    let preamble = preamble(CoordinatorToolConfig {
-        recon: ReconTools::Included,
-        history: HistoryTools::Included,
-    });
-    let scenario = scenario(
-        preamble,
-        WorkerRosterFixture::new(
-            roster_config(analyst_operator_workers(), ToolVisibility::None),
-            Vec::new(),
-        ),
-        CoordinatorCall::Initial,
-    );
-    snapshot_coordinator("tools_coordinator_recon_history", &scenario);
 }
 
 /// The clean iteration behind `coordinator_call2_clean`.
@@ -600,7 +574,7 @@ fn clean_iteration() -> IterationFixture {
 #[test]
 fn coordinator_call2_clean() {
     let scenario = scenario(
-        preamble(no_optional_tools()),
+        preamble(),
         WorkerRosterFixture::new(
             roster_config(analyst_operator_workers(), ToolVisibility::Summary),
             Vec::new(),
@@ -617,7 +591,7 @@ fn coordinator_call_completed_task_tool_chain() {
     let mut config = roster_config(analyst_operator_workers(), ToolVisibility::Summary);
     config.artifacts.show_tool_reasoning_in_continuation = true;
     let scenario = scenario(
-        preamble(no_optional_tools()),
+        preamble(),
         WorkerRosterFixture::new(config, Vec::new()),
         CoordinatorCall::Continuation(
             ContinuationThread::new(vec![clean_iteration()]).expect("one iteration"),
@@ -669,7 +643,7 @@ fn coordinator_call2_all_failed() {
     )
     .expect("all-failed iteration validates");
     let scenario = scenario(
-        preamble(no_optional_tools()),
+        preamble(),
         WorkerRosterFixture::new(
             roster_config(analyst_operator_workers(), ToolVisibility::Summary),
             Vec::new(),
@@ -719,7 +693,7 @@ fn coordinator_call_all_failure_categories() {
     )
     .expect("all-failure iteration validates");
     let scenario = scenario(
-        preamble(no_optional_tools()),
+        preamble(),
         WorkerRosterFixture::new(
             roster_config(analyst_operator_workers(), ToolVisibility::Summary),
             Vec::new(),
@@ -865,7 +839,7 @@ fn coordinator_call3_failures() {
         ..roster_config(analyst_operator_workers(), ToolVisibility::Summary)
     };
     let scenario = scenario(
-        preamble(no_optional_tools()),
+        preamble(),
         WorkerRosterFixture::new(config, Vec::new()),
         CoordinatorCall::Continuation(
             ContinuationThread::new(failure_thread_iterations()).expect("two iterations"),
@@ -903,7 +877,7 @@ fn coordinator_call4_final_urgency() {
         ..roster_config(analyst_operator_workers(), ToolVisibility::Summary)
     };
     let scenario = scenario(
-        preamble(no_optional_tools()),
+        preamble(),
         WorkerRosterFixture::new(config, Vec::new()),
         CoordinatorCall::Continuation(
             ContinuationThread::new(vec![
@@ -1190,22 +1164,7 @@ fn fixture_constructors_reject_unreachable_states() {
     ));
     assert!(matches!(
         CoordinatorScenario::new(
-            preamble(CoordinatorToolConfig {
-                recon: ReconTools::Included,
-                history: HistoryTools::Excluded,
-            }),
-            goal(),
-            WorkerRosterFixture::new(
-                roster_config(analyst_operator_workers(), ToolVisibility::Summary),
-                Vec::new(),
-            ),
-            CoordinatorCall::Initial,
-        ),
-        Err(FixtureError::ReconRequiresUninlinedTools)
-    ));
-    assert!(matches!(
-        CoordinatorScenario::new(
-            preamble(no_optional_tools()),
+            preamble(),
             goal(),
             WorkerRosterFixture::new(
                 roster_config(HashMap::new(), ToolVisibility::Summary),
@@ -1223,7 +1182,7 @@ fn fixture_constructors_reject_unreachable_states() {
     };
     assert!(matches!(
         CoordinatorScenario::new(
-            preamble(no_optional_tools()),
+            preamble(),
             goal(),
             WorkerRosterFixture::new(one_cycle, Vec::new()),
             CoordinatorCall::Continuation(

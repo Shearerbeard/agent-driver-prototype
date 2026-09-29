@@ -13,7 +13,7 @@
 //! [`OrchestrationConfig`]); they never re-model what those already forbid.
 
 use crate::config::OrchestrationConfig;
-use crate::config::{SkillConfig, ToolVisibility, VectorStoreConfig};
+use crate::config::{SkillConfig, VectorStoreConfig};
 use crate::context::{
     ContextError, EvidenceText, PinnedGoal, ResultPreview, SpilledArtifact, WorkerClaim,
 };
@@ -40,8 +40,6 @@ pub(crate) enum FixtureError {
     IterationsExhaustBudget { iterations: usize, budget: usize },
     #[error("planning budget is zero")]
     ZeroPlanningBudget,
-    #[error("recon tools require tools_in_planning = none")]
-    ReconRequiresUninlinedTools,
     #[error("session-history fixture has no prior-run manifests")]
     EmptySessionHistory,
     #[error("session-history manifests must be sorted most-recent-first")]
@@ -71,24 +69,6 @@ impl PlanningBudget {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum ReconTools {
-    Included,
-    Excluded,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum HistoryTools {
-    Included,
-    Excluded,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct CoordinatorToolConfig {
-    pub(crate) recon: ReconTools,
-    pub(crate) history: HistoryTools,
-}
-
 #[derive(Debug, Clone)]
 pub(crate) struct SessionHistoryFixture(Vec<RunManifest>);
 
@@ -114,7 +94,6 @@ impl SessionHistoryFixture {
 #[derive(Debug, Clone)]
 pub(crate) struct PreambleFixture {
     pub(crate) playbook: String,
-    pub(crate) tools: CoordinatorToolConfig,
     pub(crate) skills: Vec<SkillConfig>,
     pub(crate) vector_stores: Vec<VectorStoreConfig>,
     pub(crate) session_history: Option<SessionHistoryFixture>,
@@ -333,12 +312,6 @@ impl CoordinatorScenario {
         call: CoordinatorCall,
     ) -> Result<Self, FixtureError> {
         let budget = PlanningBudget::new(roster.config().max_planning_cycles)?;
-
-        if preamble.tools.recon == ReconTools::Included
-            && roster.config().tools_in_planning != ToolVisibility::None
-        {
-            return Err(FixtureError::ReconRequiresUninlinedTools);
-        }
 
         if let CoordinatorCall::Continuation(thread) = &call {
             let iterations = thread.iterations().len();
