@@ -73,21 +73,27 @@ impl CreatePlanTool {
     /// The roster reaches both the schema, which offers the configured names
     /// and nothing else, and the parse, which rejects a name the schema did
     /// not offer.
-    pub fn new(runs: RunStore, sections: &WorkerSections) -> Self {
-        let roster = sections.roster().clone();
+    pub fn new(sections: &WorkerSections, runs: RunStore) -> Self {
         Self {
-            definition: native_definition(
-                "create_plan",
-                "Decompose the request into an ordered task list. Creating a plan does not run \
-                 it and does not answer the user: it returns a plan_id you pass to `execute`. \
-                 You may create a plan, look at it, revise it, or execute it - this call leaves \
-                 you in control either way.",
-                plan_schema(&roster, sections.worker_field()),
-            ),
+            definition: definition(sections),
             runs,
-            roster,
+            roster: sections.roster().clone(),
         }
     }
+}
+
+/// The `create_plan` definition. The schema offers the configured roster's
+/// names and the worker-field fragment, so it renders from the worker
+/// sections alone and carries no run state.
+pub(super) fn definition(sections: &WorkerSections) -> ToolDefinition {
+    native_definition(
+        "create_plan",
+        "Decompose the request into an ordered task list. Creating a plan does not run \
+         it and does not answer the user: it returns a plan_id you pass to `execute`. \
+         You may create a plan, look at it, revise it, or execute it - this call leaves \
+         you in control either way.",
+        plan_schema(sections.roster(), sections.worker_field()),
+    )
 }
 
 /// The planning schema, with the worker property present only when workers

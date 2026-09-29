@@ -5,6 +5,7 @@ use agent_driver_rs::tool::{Tool, ToolContext, ToolDefinition, ToolInput, ToolRe
 use async_trait::async_trait;
 use serde::Deserialize;
 
+use super::super::driver::WorkerSections;
 use super::super::error::CoordinatorLoopError;
 use super::super::terminal::{FinalResponse, TerminalSlot};
 use super::native_definition;
@@ -43,32 +44,38 @@ pub struct RespondTool {
 
 impl RespondTool {
     /// Mount the answer tool over a run's answer slot.
-    pub fn new(answer: TerminalSlot<FinalResponse>) -> Self {
+    pub fn new(sections: &WorkerSections, answer: TerminalSlot<FinalResponse>) -> Self {
         Self {
-            definition: native_definition(
-                "respond",
-                "Write the final answer for the user. The user never sees task results, so the \
-                 answer must state the concrete findings itself rather than refer to work that \
-                 was done. Write it once: the first answer is the one delivered, and a second \
-                 call is refused. Once you have written it, stop calling tools.",
-                serde_json::json!({
-                    "type": "object",
-                    "properties": {
-                        "response": {
-                            "type": "string",
-                            "description": "The complete answer, with the findings inlined."
-                        },
-                        "response_summary": {
-                            "type": "string",
-                            "description": "Optional one-line gloss of the answer."
-                        }
-                    },
-                    "required": ["response"]
-                }),
-            ),
+            definition: definition(sections),
             answer,
         }
     }
+}
+
+/// The `respond` definition. It reads no answer state; the sections
+/// parameter keeps the four definition builders one shape.
+pub(super) fn definition(_sections: &WorkerSections) -> ToolDefinition {
+    native_definition(
+        "respond",
+        "Write the final answer for the user. The user never sees task results, so the \
+         answer must state the concrete findings itself rather than refer to work that \
+         was done. Write it once: the first answer is the one delivered, and a second \
+         call is refused. Once you have written it, stop calling tools.",
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "response": {
+                    "type": "string",
+                    "description": "The complete answer, with the findings inlined."
+                },
+                "response_summary": {
+                    "type": "string",
+                    "description": "Optional one-line gloss of the answer."
+                }
+            },
+            "required": ["response"]
+        }),
+    )
 }
 
 #[async_trait]

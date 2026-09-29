@@ -28,6 +28,23 @@ use agent_driver_rs::types::ToolName;
 use serde::Serialize;
 use serde_json::Value as JsonValue;
 
+use super::driver::WorkerSections;
+
+/// The coordinator's registered tool definitions, in registration order.
+///
+/// This is the single source for the coordinator's tool surface: the live
+/// driver's four tools and any coordinator prompt that names tools derive
+/// from these builders, so a prompt cannot claim a tool the loop never
+/// registered.
+pub fn coordinator_tool_definitions(sections: &WorkerSections) -> Vec<ToolDefinition> {
+    vec![
+        create_plan::definition(sections),
+        execute::definition(sections),
+        inspect_run::definition(sections),
+        respond::definition(sections),
+    ]
+}
+
 /// Build a native tool definition from this module's literals.
 ///
 /// Both conversions are fallible in general and infallible here: the names

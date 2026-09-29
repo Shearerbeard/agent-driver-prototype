@@ -7,6 +7,7 @@ use agent_driver_rs::tool::{Tool, ToolContext, ToolDefinition, ToolInput, ToolRe
 use async_trait::async_trait;
 use serde::Deserialize;
 
+use super::super::driver::WorkerSections;
 use super::super::executor::PlanExecutor;
 use super::super::plan_id::PlanId;
 use super::super::run_store::RunStore;
@@ -35,29 +36,35 @@ pub struct ExecuteTool {
 
 impl ExecuteTool {
     /// Mount the execution tool over a run's records and an executor.
-    pub fn new(runs: RunStore, executor: Arc<dyn PlanExecutor>) -> Self {
+    pub fn new(sections: &WorkerSections, runs: RunStore, executor: Arc<dyn PlanExecutor>) -> Self {
         Self {
-            definition: native_definition(
-                "execute",
-                "Run the tasks of a plan you created and observe what they produced. Returns \
-                 per-task evidence and an outcome tally; it does not answer the user. You stay \
-                 in control after it returns: read the evidence, execute another plan, or write \
-                 the answer with `respond`.",
-                serde_json::json!({
-                    "type": "object",
-                    "properties": {
-                        "plan_id": {
-                            "type": "string",
-                            "description": "The plan_id returned by `create_plan`."
-                        }
-                    },
-                    "required": ["plan_id"]
-                }),
-            ),
+            definition: definition(sections),
             runs,
             executor,
         }
     }
+}
+
+/// The `execute` definition. It reads no run state; the sections parameter
+/// keeps the four definition builders one shape.
+pub(super) fn definition(_sections: &WorkerSections) -> ToolDefinition {
+    native_definition(
+        "execute",
+        "Run the tasks of a plan you created and observe what they produced. Returns \
+         per-task evidence and an outcome tally; it does not answer the user. You stay \
+         in control after it returns: read the evidence, execute another plan, or write \
+         the answer with `respond`.",
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "plan_id": {
+                    "type": "string",
+                    "description": "The plan_id returned by `create_plan`."
+                }
+            },
+            "required": ["plan_id"]
+        }),
+    )
 }
 
 #[async_trait]

@@ -40,4 +40,5 @@ pub use terminal::{FinalResponse, TerminalSlot, WorkerSubmission};
 pub use tools::{
     CreatePlanArgs, CreatePlanTool, ExecuteArgs, ExecuteTool, InspectRunArgs, InspectRunTool,
     RespondArgs, RespondTool, RunSelector, SubmitResultArgs, SubmitResultTool,
+    coordinator_tool_definitions,
 };

@@ -25,3 +25,5 @@ pub mod types;
 
 #[cfg(test)]
 mod golden_tests;
+#[cfg(test)]
+mod tool_truth_tests;

@@ -359,11 +359,15 @@ impl CoordinatorLoop {
         let answer: TerminalSlot<FinalResponse> = TerminalSlot::new();
 
         let create_plan: DynTool =
-            Arc::new(CreatePlanTool::new(runs.clone(), &config.worker_sections));
-        let execute: DynTool =
-            Arc::new(ExecuteTool::new(runs.clone(), Arc::clone(&config.executor)));
-        let inspect_run: DynTool = Arc::new(InspectRunTool::new(runs.clone()));
-        let respond: DynTool = Arc::new(RespondTool::new(answer.clone()));
+            Arc::new(CreatePlanTool::new(&config.worker_sections, runs.clone()));
+        let execute: DynTool = Arc::new(ExecuteTool::new(
+            &config.worker_sections,
+            runs.clone(),
+            Arc::clone(&config.executor),
+        ));
+        let inspect_run: DynTool =
+            Arc::new(InspectRunTool::new(&config.worker_sections, runs.clone()));
+        let respond: DynTool = Arc::new(RespondTool::new(&config.worker_sections, answer.clone()));
 
         let session = SessionBuilder::new()
             .provider(config.provider)

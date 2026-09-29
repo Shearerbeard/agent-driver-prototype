@@ -5,6 +5,7 @@ use agent_driver_rs::tool::{Tool, ToolContext, ToolDefinition, ToolInput, ToolRe
 use async_trait::async_trait;
 use serde::Deserialize;
 
+use super::super::driver::WorkerSections;
 use super::super::plan_id::PlanId;
 use super::super::run_store::{Attempt, RunStore};
 use super::{native_definition, observation_result};
@@ -55,73 +56,79 @@ pub struct InspectRunTool {
 
 impl InspectRunTool {
     /// Mount the inspection tool over a run's records.
-    pub fn new(runs: RunStore) -> Self {
+    pub fn new(sections: &WorkerSections, runs: RunStore) -> Self {
         Self {
-            definition: native_definition(
-                "inspect_run",
-                "Read back one of this run's own records: a plan you created, the most recent \
-                 plan, the most recent execution, or a per-task record by plan, task id, and \
-                 attempt. Use it when you need the task text or the full evidence that an \
-                 earlier observation summarised.",
-                serde_json::json!({
-                    "type": "object",
-                    "properties": {
-                        "selector": {
-                            "type": "object",
-                            "description": "Which record to read.",
-                            "oneOf": [
-                                {
-                                    "type": "object",
-                                    "properties": {
-                                        "record": { "const": "plan" },
-                                        "plan_id": {
-                                            "type": "string",
-                                            "description": "The plan_id returned by \
-                                                            `create_plan`."
-                                        }
-                                    },
-                                    "required": ["record", "plan_id"]
-                                },
-                                {
-                                    "type": "object",
-                                    "properties": { "record": { "const": "latest_plan" } },
-                                    "required": ["record"]
-                                },
-                                {
-                                    "type": "object",
-                                    "properties": { "record": { "const": "latest_execution" } },
-                                    "required": ["record"]
-                                },
-                                {
-                                    "type": "object",
-                                    "properties": {
-                                        "record": { "const": "task" },
-                                        "plan_id": {
-                                            "type": "string",
-                                            "description": "The plan_id that created the task."
-                                        },
-                                        "task_id": {
-                                            "type": "integer",
-                                            "minimum": 0,
-                                            "description": "The task id to read."
-                                        },
-                                        "attempt": {
-                                            "type": "integer",
-                                            "minimum": 1,
-                                            "description": "The attempt number (1-indexed)."
-                                        }
-                                    },
-                                    "required": ["record", "plan_id", "task_id", "attempt"]
-                                }
-                            ]
-                        }
-                    },
-                    "required": ["selector"]
-                }),
-            ),
+            definition: definition(sections),
             runs,
         }
     }
+}
+
+/// The `inspect_run` definition. It reads no run state; the sections
+/// parameter keeps the four definition builders one shape.
+pub(super) fn definition(_sections: &WorkerSections) -> ToolDefinition {
+    native_definition(
+        "inspect_run",
+        "Read back one of this run's own records: a plan you created, the most recent \
+         plan, the most recent execution, or a per-task record by plan, task id, and \
+         attempt. Use it when you need the task text or the full evidence that an \
+         earlier observation summarised.",
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "selector": {
+                    "type": "object",
+                    "description": "Which record to read.",
+                    "oneOf": [
+                        {
+                            "type": "object",
+                            "properties": {
+                                "record": { "const": "plan" },
+                                "plan_id": {
+                                    "type": "string",
+                                    "description": "The plan_id returned by \
+                                                    `create_plan`."
+                                }
+                            },
+                            "required": ["record", "plan_id"]
+                        },
+                        {
+                            "type": "object",
+                            "properties": { "record": { "const": "latest_plan" } },
+                            "required": ["record"]
+                        },
+                        {
+                            "type": "object",
+                            "properties": { "record": { "const": "latest_execution" } },
+                            "required": ["record"]
+                        },
+                        {
+                            "type": "object",
+                            "properties": {
+                                "record": { "const": "task" },
+                                "plan_id": {
+                                    "type": "string",
+                                    "description": "The plan_id that created the task."
+                                },
+                                "task_id": {
+                                    "type": "integer",
+                                    "minimum": 0,
+                                    "description": "The task id to read."
+                                },
+                                "attempt": {
+                                    "type": "integer",
+                                    "minimum": 1,
+                                    "description": "The attempt number (1-indexed)."
+                                }
+                            },
+                            "required": ["record", "plan_id", "task_id", "attempt"]
+                        }
+                    ]
+                }
+            },
+            "required": ["selector"]
+        }),
+    )
 }
 
 #[async_trait]
