@@ -6,9 +6,15 @@
 //! is the single source for the names and definitions a coordinator may
 //! claim, and no test hardcodes the four. The checks are section-scoped:
 //! they scan the coordinator-owned template sources and framework-owned
-//! generated sections rendered with inert inputs, never whole `.rs` files.
-//! The inert inputs carry none of the banned vocabulary, so a banned token
-//! found in rendered output belongs to the framework, not the caller.
+//! generated sections, never whole `.rs` files and never user-interpolated
+//! regions. Reachable section constructors are rendered directly with an
+//! empty playbook; fixture-private composers are reached through the
+//! envelope of a single-append scenario — empty playbook, one append axis
+//! carrying only placeholder values — and every such scan first asserts
+//! its inertness preconditions: the fixture values carry none of the
+//! banned vocabulary and no non-placeholder fixture text reaches the
+//! scanned region, so fixture drift fails loudly as a
+//! test-infrastructure error instead of a misattributed ban verdict.
 //!
 //! Scope is coordinator-only: worker surfaces legitimately keep
 //! `read_artifact` and `load_skill`, and the one worker-directed
@@ -42,7 +48,7 @@ use crate::fixture::{
 };
 use crate::message::ToolDefinition as MirrorToolDefinition;
 use crate::persistence::{
-    ArtifactEntry, ArtifactKind, RoutingMode, RunManifest, RunStatus, TaskSummary,
+    ArtifactEntry, ArtifactKind, RoutingMode, RunManifest, RunStatus, TaskSummary, ToolOutcome,
 };
 use crate::producers::ToolInventory;
 use crate::templates::{
@@ -54,16 +60,19 @@ use crate::templates::{
 use crate::types::{StepInput, TaskStatus};
 
 // ============================================================================
-// The banned vocabulary (coordinator surfaces only)
+// The banned vocabulary (coordinator surfaces only). `load_skill` is a
+// worker-side registration — workers legitimately attach it — and sits on
+// this list only because every scanned surface is coordinator-directed.
 // ============================================================================
 
-const BANNED_TOOL_NAMES: [&str; 6] = [
+const BANNED_TOOL_NAMES: [&str; 7] = [
     "respond_directly",
     "request_clarification",
     "read_artifact",
     "list_prior_runs",
     "list_tools",
     "inspect_tool_params",
+    "load_skill",
 ];
 const BANNED_TOOL_PHRASE: &str = "routing tool";
 const BANNED_TOOL_PREFIX: &str = "vector_search_";
@@ -97,6 +106,12 @@ fn assert_no_banned_tokens(surface: &str, text: &str) {
 
 const INERT_QUERY: &str = "Inert query for tool-truth checks.";
 const INERT_PLAYBOOK: &str = "Inert playbook for tool-truth checks.";
+const INERT_WORKER_DESCRIPTION: &str = "Inert worker for tool-truth checks.";
+const INERT_STORE_NAME: &str = "inert_store";
+const INERT_STORE_DESCRIPTION: &str = "Inert vector store for tool-truth checks.";
+const INERT_SKILL_NAME: &str = "inert-skill";
+const INERT_SKILL_DESCRIPTION: &str = "Inert skill for tool-truth checks.";
+const INERT_PRIOR_GOAL: &str = "Inert prior goal";
 
 fn inert_roster_config(visibility: ToolVisibility) -> OrchestrationConfig {
     OrchestrationConfig {
@@ -104,7 +119,7 @@ fn inert_roster_config(visibility: ToolVisibility) -> OrchestrationConfig {
         workers: HashMap::from([(
             "inert_worker".to_owned(),
             WorkerConfig {
-                description: "Inert worker for tool-truth checks.".to_owned(),
+                description: INERT_WORKER_DESCRIPTION.to_owned(),
                 preamble: String::new(),
                 mcp_filter: Vec::new(),
                 vector_stores: Vec::new(),
@@ -133,10 +148,37 @@ fn inert_preamble(tools: CoordinatorToolConfig) -> PreambleFixture {
     }
 }
 
+/// A single-append preamble: an empty playbook (no user-interpolated
+/// region) and every append axis empty, so the composed envelope's only
+/// fixture-derived text is the placeholder values of the one axis the
+/// caller fills in.
+fn isolated_preamble() -> PreambleFixture {
+    PreambleFixture {
+        playbook: String::new(),
+        tools: CoordinatorToolConfig {
+            recon: ReconTools::Excluded,
+            history: HistoryTools::Excluded,
+        },
+        skills: Vec::new(),
+        vector_stores: Vec::new(),
+        session_history: None,
+    }
+}
+
+fn isolated_scenario(preamble: PreambleFixture) -> CoordinatorScenario {
+    CoordinatorScenario::new(
+        preamble,
+        inert_goal(),
+        WorkerRosterFixture::new(inert_roster_config(ToolVisibility::Summary), Vec::new()),
+        CoordinatorCall::Initial,
+    )
+    .expect("isolated scenarios are production-reachable")
+}
+
 fn inert_skill() -> SkillConfig {
     SkillConfig {
-        name: SkillName::new("inert-skill").expect("valid inert skill name"),
-        description: "Inert skill for tool-truth checks.".to_owned(),
+        name: SkillName::new(INERT_SKILL_NAME).expect("valid inert skill name"),
+        description: INERT_SKILL_DESCRIPTION.to_owned(),
         path: std::path::PathBuf::from("/fixtures/skills/inert-skill"),
     }
 }
@@ -146,7 +188,7 @@ fn inert_manifest() -> RunManifest {
         run_id: "run-inert-0001".to_owned(),
         session_id: Some("tool-truth".to_owned()),
         timestamp: "2026-09-29T00:00:00Z".to_owned(),
-        goal: "Inert prior goal".to_owned(),
+        goal: INERT_PRIOR_GOAL.to_owned(),
         status: RunStatus::Success,
         iterations: 1,
         routing_mode: Some(RoutingMode::Orchestrated),
@@ -215,8 +257,8 @@ fn coordinator_scenarios() -> Vec<CoordinatorScenario> {
         history: HistoryTools::Excluded,
     });
     vector.vector_stores = vec![VectorStoreConfig::new(
-        "inert_store",
-        Some("Inert vector store for tool-truth checks."),
+        INERT_STORE_NAME,
+        Some(INERT_STORE_DESCRIPTION),
     )];
     scenarios.push(build(vector, ToolVisibility::Summary));
 
@@ -384,6 +426,95 @@ fn steps_name_a_worker(value: &serde_json::Value) -> bool {
 }
 
 // ============================================================================
+// Inertness preconditions for scans over fixture-composed regions
+// ============================================================================
+
+/// Fixture values that render into a scanned region must carry none of the
+/// banned vocabulary: a banned token in fixture-supplied text would be
+/// misattributed to the framework by the scan, so this fails as a
+/// test-infrastructure error, never as a ban verdict.
+fn assert_inert_fixture_text(surface: &str, fixture_text: &str) {
+    let hits = banned_hits(fixture_text);
+    assert!(
+        hits.is_empty(),
+        "test-infrastructure error: the {surface} fixture value carries banned vocabulary \
+         {hits:?}; make the fixture inert before trusting the scan"
+    );
+}
+
+/// Fixture values behind a claimed-tools scan must carry no backticks:
+/// every backticked token in the scanned region is attributed to the
+/// framework, so a quoted fixture value would counterfeit a tool claim.
+fn assert_fixture_text_has_no_backticks(surface: &str, fixture_text: &str) {
+    assert!(
+        !fixture_text.contains('`'),
+        "test-infrastructure error: the {surface} fixture value carries backticks, so \
+         claimed-tool tokens could not be attributed to the framework"
+    );
+}
+
+/// Non-placeholder fixture text (the query, the roster's worker
+/// description) must never reach a scanned region; its presence is fixture
+/// plumbing drift and fails here instead of as a misattributed verdict.
+fn assert_no_fixture_leakage(surface: &str, region: &str) {
+    for leaked in [INERT_QUERY, INERT_WORKER_DESCRIPTION] {
+        assert!(
+            !region.contains(leaked),
+            "test-infrastructure error: fixture text {leaked:?} leaked into the {surface} scan"
+        );
+    }
+}
+
+/// Every fixture-supplied string that renders into the session-history
+/// block, collected for the inertness precondition.
+fn manifest_fixture_text(manifest: &RunManifest) -> String {
+    let mut lines = vec![
+        manifest.run_id.clone(),
+        manifest.timestamp.clone(),
+        manifest.goal.clone(),
+    ];
+    if let Some(outcome) = &manifest.outcome {
+        lines.push(outcome.clone());
+    }
+    if let Some(summary) = &manifest.response_summary {
+        lines.push(summary.clone());
+    }
+    for task in &manifest.task_summaries {
+        lines.push(task.description.clone());
+        if let Some(worker) = &task.worker {
+            lines.push(worker.clone());
+        }
+        if let Some(preview) = &task.result_preview {
+            lines.push(preview.clone());
+        }
+        if let Some(confidence) = &task.confidence {
+            lines.push(confidence.clone());
+        }
+        if let Some(error) = &task.error {
+            lines.push(error.clone());
+        }
+        if let Some(context) = &task.error_context {
+            if let Some(tool) = &context.last_tool_call {
+                lines.push(tool.clone());
+            }
+            if let Some(partial) = &context.partial_result {
+                lines.push(partial.clone());
+            }
+        }
+        for trace in &task.tool_trace {
+            lines.push(trace.tool.clone());
+            if let ToolOutcome::Error { message } = &trace.outcome {
+                lines.push(message.clone());
+            }
+        }
+        for artifact in &task.artifacts {
+            lines.push(artifact.filename.clone());
+        }
+    }
+    lines.join("\n")
+}
+
+// ============================================================================
 // (a)(i) Ban assertions against the coordinator-owned template sources
 // ============================================================================
 
@@ -420,14 +551,16 @@ fn planning_loop_prompt_control_names_no_retired_tool() {
 }
 
 // ============================================================================
-// (a)(ii) Ban assertions against framework-owned generated sections,
-// rendered in isolation with inert inputs
+// (a)(ii) Ban assertions against framework-owned generated sections.
+// Reachable constructors render in isolation; fixture-private composers are
+// scanned through the marker-delimited slice of a single-append envelope
+// whose only fixture-derived strings are that axis' placeholder values.
 // ============================================================================
 
 #[test]
 fn preamble_tools_section_names_no_retired_tool() {
     for (recon, history) in [(true, true), (true, false), (false, true), (false, false)] {
-        let preamble = build_coordinator_preamble(INERT_PLAYBOOK, recon, history);
+        let preamble = build_coordinator_preamble("", recon, history);
         let tools_section = section_between(&preamble, "## Your Tools", "## Core Behavior");
         assert_no_banned_tokens("coordinator preamble tools section", tools_section);
     }
@@ -435,33 +568,63 @@ fn preamble_tools_section_names_no_retired_tool() {
 
 #[test]
 fn composed_coordinator_preamble_names_no_retired_tool() {
-    let scenario = coordinator_scenarios()
-        .into_iter()
-        .find(|scenario| !scenario.preamble().vector_stores.is_empty())
-        .expect("a scenario configures vector stores");
-    let envelope = coordinator_envelope(&scenario).expect("inert envelope assembles");
+    assert_inert_fixture_text(
+        "vector-store",
+        &format!("{INERT_STORE_NAME}\n{INERT_STORE_DESCRIPTION}"),
+    );
+    let mut preamble = isolated_preamble();
+    preamble.vector_stores = vec![VectorStoreConfig::new(
+        INERT_STORE_NAME,
+        Some(INERT_STORE_DESCRIPTION),
+    )];
+    let envelope =
+        coordinator_envelope(&isolated_scenario(preamble)).expect("inert envelope assembles");
+    // The playbook is empty, so the composed preamble carries no
+    // user-interpolated region; the vector append is the only generated
+    // section this scan adds over the template and tools-section scans
+    // (the `vector_search_` check lives here).
+    assert!(
+        envelope.system.contains("## Your Tools"),
+        "the scan covers the composed coordinator preamble"
+    );
+    assert_no_fixture_leakage("composed coordinator preamble", &envelope.system);
     assert_no_banned_tokens("composed coordinator preamble", &envelope.system);
 }
 
 #[test]
 fn session_history_block_names_no_retired_tool() {
-    let scenario = coordinator_scenarios()
-        .into_iter()
-        .find(|scenario| scenario.preamble().session_history.is_some())
-        .expect("a scenario carries session history");
-    let envelope = coordinator_envelope(&scenario).expect("inert envelope assembles");
+    let manifest = inert_manifest();
+    assert_inert_fixture_text("session-history", &manifest_fixture_text(&manifest));
+    let mut preamble = isolated_preamble();
+    preamble.session_history =
+        Some(SessionHistoryFixture::new(vec![manifest]).expect("one inert prior manifest"));
+    let envelope =
+        coordinator_envelope(&isolated_scenario(preamble)).expect("inert envelope assembles");
     let block = section_from(&envelope.system, "## Session History");
+    assert!(
+        block.contains(INERT_PRIOR_GOAL),
+        "the scan covers the rendered placeholder manifest"
+    );
+    assert_no_fixture_leakage("rendered session-history block", block);
     assert_no_banned_tokens("rendered session-history block", block);
 }
 
 #[test]
 fn skill_catalog_append_names_no_retired_tool() {
-    let scenario = coordinator_scenarios()
-        .into_iter()
-        .find(|scenario| !scenario.preamble().skills.is_empty())
-        .expect("a scenario configures skills");
-    let envelope = coordinator_envelope(&scenario).expect("inert envelope assembles");
+    assert_inert_fixture_text(
+        "skill-catalog",
+        &format!("{INERT_SKILL_NAME} {INERT_SKILL_DESCRIPTION}"),
+    );
+    let mut preamble = isolated_preamble();
+    preamble.skills = vec![inert_skill()];
+    let envelope =
+        coordinator_envelope(&isolated_scenario(preamble)).expect("inert envelope assembles");
     let catalog = section_from(&envelope.system, "Available skills");
+    assert!(
+        catalog.contains(INERT_SKILL_NAME),
+        "the scan covers the rendered placeholder skill"
+    );
+    assert_no_fixture_leakage("coordinator skill-catalog append", catalog);
     assert_no_banned_tokens("coordinator skill-catalog append", catalog);
 }
 
@@ -474,7 +637,7 @@ fn preamble_tools_section_names_the_registered_tools() {
     let sections = worker_sections_for(&coordinator_scenarios()[0]);
     let factory = factory_names(&sections);
     for (recon, history) in [(true, true), (true, false), (false, true), (false, false)] {
-        let preamble = build_coordinator_preamble(INERT_PLAYBOOK, recon, history);
+        let preamble = build_coordinator_preamble("", recon, history);
         let tools_section = section_between(&preamble, "## Your Tools", "## Core Behavior");
         assert_eq!(
             backticked_tokens(tools_section),
@@ -572,17 +735,36 @@ fn coordinator_envelopes_attach_the_registered_definitions() {
 fn coordinator_envelopes_claim_what_they_attach() {
     for scenario in coordinator_scenarios() {
         let envelope = coordinator_envelope(&scenario).expect("inert envelope assembles");
-        let attached: BTreeSet<String> = envelope
-            .tools
-            .iter()
-            .map(|definition| definition.name.clone())
-            .collect();
+        let factory = factory_names(&worker_sections_for(&scenario));
+
+        // Region 1 — the tools section claims exactly the factory's tools.
         let tools_section = section_between(&envelope.system, "## Your Tools", "## Core Behavior");
         assert_eq!(
             backticked_tokens(tools_section),
-            attached,
-            "coordinator preamble must claim exactly the tools the envelope attaches"
+            factory,
+            "coordinator preamble must claim exactly the factory's tools"
         );
+
+        // Region 2 — the skill-catalog append claims no tool outside the
+        // factory's set. The skill entries themselves are fixture values,
+        // so their inertness (no backticks) is asserted first: every
+        // backticked token in the region is then a framework-owned claim.
+        if !scenario.preamble().skills.is_empty() {
+            for skill in &scenario.preamble().skills {
+                assert_fixture_text_has_no_backticks(
+                    "skill-catalog",
+                    &format!("{} {}", skill.name, skill.description),
+                );
+            }
+            let catalog = section_from(&envelope.system, "Available skills");
+            let claimed = backticked_tokens(catalog);
+            let unregistered: Vec<&String> = claimed.difference(&factory).collect();
+            assert!(
+                unregistered.is_empty(),
+                "coordinator skill-catalog append claims tools outside the factory's set: \
+                 {unregistered:?}"
+            );
+        }
     }
 }
 
