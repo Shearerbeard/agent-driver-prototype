@@ -1,0 +1,95 @@
+# boardkit.toml — agent-driver-prototype workflow board.
+# Minted 2026-09-29 from the workflow-mvp plan (.review/workflow-mvp/PLAN.md;
+# the plan is the session record, this board is the durable work state).
+
+[board]
+cards_dir = "docs/board/cards"
+# The opening wave is exactly two cards (W1 types ∥ W5 ops tools); raise
+# only if the W3/W4/W5 lanes need it.
+wip = 2
+id_prefix = "W"
+# S103-S110 are the prototype-scoped cards re-minted from the tb board
+# 2026-09-29 (single source of truth for this repo). They keep their S
+# ids so cross-references and the CLI-drivability lineage stay legible;
+# new prototype cards mint under the W prefix.
+sentinel_ids = ["MILESTONE", "S103", "S104", "S105", "S107", "S110"]
+base_branch = "main"
+
+[review]
+repo = "."
+output_dir = "docs/board/reviews"
+
+# Charter: this board owns the workflow-proposal mechanism in this repo.
+# It is deliberately NOT the aura product board and not the tb S-card
+# stack, so a collaborator can pull workflow cards without either context.
+[charter]
+owns = "all work scoped to agent-driver-prototype: the workflow-proposal mechanism (W1-W6) and the re-minted CLI-drivability tail (S103, S104, S105, S107, S110)"
+not = "aura product implementation (the governance workstream owns the AURA Workflows direction), agent-driver-rs crate internals (the agent-driver-rs-adr board owns those), terminalbench-aura rig-scoped cards (the tb board keeps those), mock-mcp-service internals beyond W5's ops surface"
+
+[charter.route]
+tb = "terminalbench-aura rig-scoped cards and the done-card history of the S series: the tb board in terminalbench-aura (the five open prototype-scoped cards moved here 2026-09-29)"
+governance = "the AURA Workflows direction and its open decisions: workstreams/governance.md in aura-session-docs (surface, never edit; garden process)"
+adr = "agent-driver-rs crate internals incl. adr/A18 (S110's pull gate): the agent-driver-rs-adr board in aura-session-docs"
+
+[contract]
+version = 2
+
+# In-harness lanes for an OpenCode board-owner session: the pinned
+# subagent pool per the harness-bindings table, dispatched in-session —
+# never the opencode CLI from inside a session.
+[routes.opencode-executor]
+adapter = "opencode"
+skill = ""
+pin_source = "docs/board/REVIEW-TOOLING.md#harness-bindings"
+preflight = []
+staging = "repo-native"
+
+[routes.opencode-reviewer]
+adapter = "opencode"
+skill = ""
+pin_source = "docs/board/REVIEW-TOOLING.md#harness-bindings"
+preflight = []
+staging = "repo-native"
+
+[routes.opencode-canary]
+adapter = "opencode"
+skill = ""
+pin_source = "docs/board/REVIEW-TOOLING.md#harness-bindings"
+preflight = []
+staging = "repo-native"
+
+# The frontier lane Mike ruled 2026-09-29 (the workflow-mvp plan vet ran
+# this way): kimi CLI, K3, read-only, packet passed inline, cwd at the
+# repo under review. Invocation pinned in the harness-bindings table.
+[routes.kimi-frontier]
+adapter = "kimi"
+skill = ""
+pin_source = "docs/board/REVIEW-TOOLING.md#harness-bindings"
+preflight = ["test -x ~/.kimi-code/bin/kimi"]
+staging = "repo-native"
+
+# Billable: ask Mike before dispatching (standing rule).
+[routes.codex-reviewer]
+adapter = "codex"
+skill = "codex-cli"
+pin_source = "docs/board/REVIEW-TOOLING.md#harness-bindings"
+preflight = ["codex --version"]
+staging = "repo-native"
+
+[roles.executor]
+routes = ["opencode-executor"]
+
+[roles.code-review]
+routes = ["opencode-reviewer", "codex-reviewer"]
+
+[roles.prose-review]
+routes = ["kimi-frontier", "codex-reviewer"]
+
+[roles.frontier-review]
+routes = ["kimi-frontier", "codex-reviewer"]
+
+[roles.drift-audit]
+routes = ["opencode-executor"]
+
+[roles.canary]
+routes = ["opencode-canary", "kimi-frontier"]
