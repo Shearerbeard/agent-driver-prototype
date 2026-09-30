@@ -102,3 +102,24 @@ stays on `main` and holds the board).
   pass); standing U(code-review) inserted (every code card carries it
   after Gate A; W2/S103 already had it) and the missing Gate checklist
   section added. Board owner.
+- 2026-09-29 Executor-fallback takeover, logged per PROCESS: the
+  rust-write lane was refused by the harness (agent not in this
+  session's subagent pool; its config file carries duplicate `model:`
+  keys and a pin that disagrees with the REVIEW-TOOLING bindings
+  table); the remaining in-harness executor lanes (rust-fill,
+  general) are barred from a `executor: smart` card. The board owner
+  authored the Layer-1 skeleton (commit `b66f982`); Gate A remains
+  closable under the reviewer-differs-from-author invariant (author
+  GLM, reviewer must be another family). Dispatch attempts on the
+  unit: 1 (harness refusal, deterministic). Process feedback noted:
+  the bindings table needs re-reading against live dispatchability,
+  not just config files. Board owner.
+- 2026-09-29 Design-panel dispatch record: in-harness reviewer seats
+  failed on dispatch - rust-reviewer once and frontier-reviewer twice,
+  all resolving to the dead `gpt-6-astra` pin this OpenCode process
+  loaded before the config re-pins (both agent files carry a
+  restore-and-restart note). Panel seat 1 re-routed to the
+  kimi-frontier CLI route (K3, read-only, 15-minute caller-owned
+  deadline) per the stall protocol; seat 2 pending - codex needs Mike's
+  approval, a single-seat panel is a weakened typed-holes gate. Board
+  owner.
