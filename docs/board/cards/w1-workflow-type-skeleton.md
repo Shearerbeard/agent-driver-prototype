@@ -87,8 +87,9 @@ boardkit check never sees a dangling target. The record carries the
       round 2: codex fallback seat, round 1 FAIL with one BLOCKING
       finding fixed in 16d2474, round 2 PASS verifying the repair;
       ledger in the Log section.)
-- [ ] Gate U (code-review): board owner presents the review packet and
-      STOPS.
+- [x] Gate U (code-review): board owner presents the review packet and
+      STOPS. (Approved 2026-09-29 by Mike in session; packet and gate
+      results presented, push deferred to his word.)
 - [ ] Gate U (type-surface): board owner presents the type surface and
       its ADR-relevant rulings (field naming, bounds semantics), STOPS.
 
@@ -252,3 +253,11 @@ stays on `main` and holds the board).
   (8,894 probe + 120,006 round 1 + 65,531 round 2), both rounds under
   Mike's conditional pre-approval via the codex fallback. Gate A
   checklist box ticked this turn. Board owner.
+- 2026-09-29 Gate U (code-review) approved by Mike in session
+  ("continue"). Packet, Gate A round-1/round-2 record, Gate D
+  dispositions, and the highest-risk surface (capability wrapper,
+  five custom serde paths, ingress map visitor, schema subset
+  validator) presented at the stop. Push question asked and not yet
+  answered: main stays ahead of origin, unpushed, pending his word;
+  it re-surfaces before the PR. Checklist box ticked this turn.
+  Board owner.
