@@ -1,0 +1,80 @@
+---
+id: W6
+title: End-to-end demo - investigate, propose, approve, apply, heal, unwind
+status: backlog
+depends: [W2, W3, W4, W5]
+serialize-with: []
+lineage: none
+executor: any
+gates: "S -> A -> M -> T"
+user-gates: [demo]
+---
+
+# W6: End-to-end demo - investigate, propose, approve, apply, heal, unwind
+
+The proof run. Context:
+[the plan](../notes/2026-09-29-workflow-mvp-plan.md) (the demo workflow
+spec below is its goal-2 deliverable). Mechanics:
+[PROCESS.md](../PROCESS.md). Review routing:
+[REVIEW-TOOLING.md](../REVIEW-TOOLING.md).
+
+## Scope
+
+Demo config + evidence only; no `src/` changes expected. If the run
+exposes a defect, mint the fix as its own card rather than widening this
+one.
+
+## Deliverable
+
+1. Live run one (the heal): workers investigate db-pool-exhaustion
+   read-only; the coordinator proposes the demo workflow; a human
+   approves via the sync webhook (aura-sandbox rig or loopback
+   receiver); the executor applies; the logs heal; the run files
+   evidence (SSE capture, approval payload, run record, before/after
+   histograms).
+2. Live run two (the unwind): the same workflow with a forced mid-plan
+   failure; the unwind runs the declared rollbacks in reverse and the
+   observation reports the outcome.
+3. The demo workflow spec, executed as proposed (exact args for the
+   verify step pinned at pull against the real `get_log_histogram`
+   schema):
+
+```jsonc
+{
+  "goal": "Mitigate the payments db-primary connection pool exhaustion: scale the payments deployment to restore connection capacity",
+  "steps": [
+    { "id": "state", "dependencies": [], "tool": "ops_get_cluster_state",
+      "args": { "app": "payments" },
+      "exports": { "current_replicas": "$.deployment.replicas",
+                   "image": "$.deployment.image" },
+      "rollback": null },
+    { "id": "scale", "dependencies": ["state"], "tool": "ops_scale_app",
+      "args": { "app": "payments", "replicas": 6 },
+      "exports": {},
+      "rollback": { "tool": "ops_scale_app",
+        "args": { "app": "payments",
+                  "replicas": { "$from": "state.current_replicas", "min": 1, "max": 20 } } } },
+    { "id": "verify", "dependencies": ["scale"], "tool": "get_log_histogram",
+      "args": { "window": "post-remediation, app:payments level:error" },
+      "exports": {}, "rollback": null }
+  ]
+}
+```
+
+## Acceptance
+
+- Gate M: the agent runs both demos and files the evidence, linked from
+  this card.
+- Gate T: Mike watches both runs - handout with run commands, expected
+  observations in order (proposal on the stream -> approval payload ->
+  apply -> healed histogram; failure run -> unwind record), failure
+  signatures, revert steps.
+
+## Branch
+
+`card/w6` off `main` when pulled (after W2, W3, W4, W5); closes at its
+Gate T.
+
+## Log
+
+- 2026-09-29 Minted backlog behind W2/W3/W4/W5. Board owner.

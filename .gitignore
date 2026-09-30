@@ -29,3 +29,6 @@ credentials.*
 
 # Session review packets
 .review/
+docs/board/reviews/
+.boardkit/local.toml
+.claude/settings.local.json
