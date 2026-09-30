@@ -135,3 +135,11 @@ stays on `main` and holds the board).
   dispatched to the K3 seat on the subscription lane; the codex seat's
   dispositions verified in the same packet and by the board owner,
   within the one approved codex dispatch. Board owner.
+- 2026-09-29 Design panel PASSED round 2 (K3 seat, same session:
+  all seven round-1 findings CONFIRMED repaired, no type-surface
+  regressions; transcript .review/w1-panel/round2/kimi-round2.md).
+  Three doc-sweep minors it raised (stale Narrowings paragraph, stale
+  validate doc, ArgsFailSchema wording) fixed in the round-2 sweep
+  commit 950c138; deterministic checks green, vale clean. Layer 1 is
+  closed: the typed-holes design panel gate between skeleton and fill
+  has passed. Board owner.
