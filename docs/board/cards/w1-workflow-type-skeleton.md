@@ -82,8 +82,11 @@ boardkit check never sees a dangling target. The record carries the
       tests / 0 failed repo-wide, 52 in the module; board owner re-ran
       every command itself; typed-holes design panel also passed round
       2.)
-- [ ] Gate A: fresh cross-family review (code-review role) of the full
-      commit range against the acceptance criteria.
+- [x] Gate A: fresh cross-family review (code-review role) of the full
+      commit range against the acceptance criteria. (Passed 2026-09-29
+      round 2: codex fallback seat, round 1 FAIL with one BLOCKING
+      finding fixed in 16d2474, round 2 PASS verifying the repair;
+      ledger in the Log section.)
 - [ ] Gate U (code-review): board owner presents the review packet and
       STOPS.
 - [ ] Gate U (type-surface): board owner presents the type surface and
@@ -233,3 +236,19 @@ stays on `main` and holds the board).
   user-level vale style flags; kept as evidence. Report linked at
   .review/w1-gateD/ (gitignored working material; this log is the
   durable record). Board owner.
+- 2026-09-29 Gate A passed (round 2 re-review over the extended range
+  b66f982^..3e2b297, per the fix-commit duty). Same codex seat family
+  (gpt-5.6-terra; session 01a0f0bf-25a5-7583-b29c-226370939566;
+  65,531 tokens). Disposition verification: finding 1
+  CONFIRMED-REPAIRED - plan.rs:705 routes both halves through
+  StepId::parse/ExportName::parse with failures mapped to
+  MalformedExportRef (parsers reject whitespace-only at 440-447 and
+  494-501), and the regression test at plan.rs:1155 covers
+  whitespace-only halves on both sides plus the reference-level error
+  mapping. New findings from the fix commits: none. Regressions:
+  none. Scope not expanded past round-1 ground. Cargo checks
+  UNVERIFIED in the reviewer sandbox; board owner re-ran the suite
+  green (428 tests). Cumulative Gate A reviewer spend: 194,431 tokens
+  (8,894 probe + 120,006 round 1 + 65,531 round 2), both rounds under
+  Mike's conditional pre-approval via the codex fallback. Gate A
+  checklist box ticked this turn. Board owner.
