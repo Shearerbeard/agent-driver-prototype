@@ -22,6 +22,7 @@ pub mod sse_shim;
 pub mod templates;
 pub mod tools;
 pub mod types;
+pub mod workflow;
 
 #[cfg(test)]
 mod golden_tests;
