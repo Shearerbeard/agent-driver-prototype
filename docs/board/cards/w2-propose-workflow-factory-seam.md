@@ -152,3 +152,29 @@ on `integration/workflow` after its second Gate U. Worktree:
   lands with the Layer-1 commit. Stray .agy-mcp/ directory in the
   worktree from the executor's transport attempt - remove at
   integration. Board owner.
+- 2026-09-30 Layer 1 landed as f056603 after board-owner integration:
+  the rust-write rework round fixed the seam's first cut (which had
+  shortened the four tools' JSON descriptions and made the derived
+  preamble render the full definitions, breaking 13 goldens in both
+  directions); the landed shape keeps the definitions' prose
+  byte-identical and derives both prompt surfaces from per-tool
+  summary pairs (PREAMBLE_SUMMARY / PLANNING_LOOP_SUMMARY) aggregated
+  at the registration site, so each surface's prose is stated once.
+  Board-owner integration on top: Tool-trait import at the driver
+  registration site, associated summary consts on ProposeWorkflowTool,
+  test call-sites for the new config/template fields (unmounted
+  defaults: propose_workflow None, WorkflowSection default, factory-
+  derived tools section), the renderer's blank-line join matched to
+  the old template bytes, and one stale template test re-aimed at the
+  derived shape. Scope ruling recorded in the commit: the card's seven
+  files plus the adjacent registration/wiring surface the seam cannot
+  compile without (driver.rs, coordinator_loop/mod.rs, templates.rs,
+  bin/server.rs, four tool modules, test call-sites); guard is the
+  byte-identity itself. Gate green at this commit: fmt clean, clippy
+  zero warnings, the suite green at 435 tests (seven over the W1-merge
+  baseline; the mounted-skeleton and template-shape additions), zero
+  snapshot changes.
+  Executor dispatch record: rust-write twice (ses_f0e449989ffesnNtc4u-
+  pQYEnbE skeleton, ses_f0e16bd3effe770QjTpLHalnzK rework); its shell
+  stays permission-denied in the subagent sandbox, so the board owner
+  ran all cargo gates. Board owner.
