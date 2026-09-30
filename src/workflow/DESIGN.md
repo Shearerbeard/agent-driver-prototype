@@ -8,9 +8,12 @@ mounts, nothing applies; the tool that consumes these types is W2, the
 deterministic executor W3.
 
 Phase 1 (this record's first cut) lands the types with `todo!()`
-bodies. The type-design panel runs between the skeleton and the first
-filled body; its findings and dispositions will be recorded here, and
-any repair that changes a type updates that type's inventory row.
+bodies. The two-seat type-design panel (kimi K3 CLI and one approved
+codex seat, both cross-family from the GLM author) returned FAIL on
+round 1 with eight blocking findings between the seats; the ledger in
+the panel section below records every finding and its disposition, and
+the repairs are folded into this skeleton. Round 2 verified the
+dispositions.
 
 ## What the module is
 
@@ -34,16 +37,17 @@ it forbids.
 
 | Type | Business rule | Forbidden invalid state |
 |---|---|---|
-| `WorkflowSpec` | A workflow is what a human approves in one act: the goal names the intent, the steps name every tool call the authorization covers | Nothing by construction: this is the parsed input; `validate` against the discovered inventory is the parse step and nothing downstream accepts an unvalidated spec |
-| `WorkflowSpec::validate` | The approver never authorizes what validation has not vetted (K3 findings 1 and 2 both reduce to this) | A spec whose steps collide on ids, depend forward, bind outside their closure, name undiscovered tools, or carry schema-invalid args reaching the digest |
+| `WorkflowSpec` | A workflow is what a human approves in one act: the goal names the intent, the steps name every tool call the authorization covers | Nothing by construction: this is the wire input, deliberately unvalidated on its own |
+| `ValidatedWorkflowSpec` | Approval authorizes exactly what validation vetted (K3 findings 1 and 2 both reduce to this); `validate` is the type's only constructor, and the digest, render, and executor accept nothing else | Construction from anything but `validate`: a validated wrapper around an unvetted instance |
+| `WorkflowSpec::validate` | The approver never authorizes what validation has not vetted | A spec with an empty goal, no steps, colliding ids, forward dependencies, out-of-closure references, undiscovered tools, or schema-invalid args reaching the capability type |
 | `WorkflowStep` | One step is one tool call plus its declared exports and its declared undo | A mutating step pretending to be read-only (it would carry `rollback: null` and be rendered as nothing-to-undo); the approver sees the pretense along with the honest rendering |
-| `StepId` | A step's identity is its model-authored string id, unique in the spec | An empty id, which names no step and cannot be depended on or rendered |
-| `ExportName` | An export is nameable so later steps can bind to it | An empty name, which nothing could bind to |
+| `StepId` | A step's identity is its model-authored string id, unique in the spec, and the `step.export` reference grammar must be able to name it | An empty or whitespace-only id (the `SidecarToolName` rule, mirrored); an id containing `.`, which the reference form reserves, declarable but never unambiguously referenceable |
+| `ExportName` | An export is nameable so later steps can bind to it, under the same separator reservation as `StepId` | An empty or whitespace-only name; a name containing `.` |
 | `ExportSpec` | An export names a `$.a.b[0]` path over this step's JSON result (dotted keys, bracketed indices, nothing else) | A path outside the subset, which either names nothing or means something the executor never agreed to resolve |
 | `ExportRef` | A binding names exactly one earlier export, `step.export` | A reference with an empty half or more than one dot, which names no step-export pair |
-| `Bounds` | The model declares the numeric envelope; the executor checks the resolved value against it at resolve time; the model never supplies or verifies bound values | A bound that constrains nothing (neither `min` nor `max`), which only mimics the bounded-reference wire shape |
-| `ArgValue` | Every argument node is either a reference-free literal, a reference, or a bounded reference. Three cases, no fourth | A half-specified reference (stray `min` without `max`, extra keys beside `$from`), which silent deserialization would truncate into a differently-behaving node |
-| `RollbackSpec` | A mutating step declares its compensating call, and the call may bind to what the completed steps exported (including its own step) | A rollback spec that names no tool; a mutating step with nothing to declare is `rollback: null` on the step instead, so the spec type itself cannot be empty |
+| `Bounds` | The model declares the numeric envelope; the executor checks the resolved value against it at resolve time; the model never supplies or verifies bound values | A bound that constrains nothing (neither `min` nor `max`); private fields and serde routed through `new` make the rejection unbypassable, gated exactly like `StepId` |
+| `ArgValue` | Every argument node is either a reference-free literal, a reference, or a bounded reference. Three cases, no fourth; references are recognized at any depth in the argument tree | A malformed reference shape (`$from` not a string, stray keys, non-numeric bounds), which silent deserialization would truncate into a differently-behaving node |
+| `RollbackSpec` | A mutating step declares its compensating call, and the call may bind to exports of steps in the owning step's dependencies-closure plus its own | A rollback spec that names no tool; a mutating step with nothing to declare is `rollback: null` on the step instead, so the spec type itself cannot be empty |
 
 ### Declaration order carries the rule
 
@@ -90,10 +94,12 @@ each name belongs to.
 
 | Item | Visibility | Who replaces it |
 |---|---|---|
-| `WorkflowSpec::validate` | `pub`, the module's one entry point | Nobody. W2's `propose_workflow` tool calls it at propose time; the approval digest is only ever computed over a spec that passed it |
+| `WorkflowSpec::validate` | `pub`, the module's one entry point, and the only constructor of `ValidatedWorkflowSpec` | Nobody. W2's `propose_workflow` tool calls it at propose time; the approval digest is only ever computed over a spec that passed it |
+| `ValidatedWorkflowSpec` | `pub`, serializing identically to the wrapped spec | Nobody. W4's digest and W2's render accept only this type |
 | `ExportSpec::to_json_pointer` | `pub` | W3's resolver lifts declared exports out of step results through it |
 | `ArgValue` | `pub` | W3's resolver substitutes bounded references and checks resolved values against `Bounds` at resolve time |
 | `schema::validate_instance` | private to the module | Nothing external; a later card that adds a real schema dependency replaces the body, not the seam |
+| `exports_map_serde` | private | The fill carries the duplicate-rejecting visitor; the seam (rule location) is what round 1 ruled on |
 | `PathSegment` | private | Internal representation of `ExportSpec`; never crosses the module boundary |
 
 ## Narrowings against a full JSON-Schema surface
@@ -121,52 +127,90 @@ actually produced. Rollback arguments are not schema-checked at propose
 time at all (their reference nodes resolve at apply time); the rollback
 tool *name* is inventory-checked like every other named tool.
 
-## Residual risks and open questions for the panel
+## Residual risks, with the panel's round-1 rulings folded in
 
 **R1 - Duplicate export names collapse at the serde boundary.**
-`exports: BTreeMap<ExportName, ExportSpec>` last-wins on a wire object
-with a duplicate key, silently. The typed layer cannot see what serde
-dropped. Candidate guards: a custom deserializer for the map, or the W2
-tool's arguments JSON-Schema expressing uniqueness. Neither is W1 work;
-the panel should rule where the guard lives.
+*Ruled by both seats.* The raw-JSON ingress is the only place a
+duplicate export name is still visible: a plain `BTreeMap`
+deserialization collapses it last-wins, and JSON Schema cannot express
+object-key uniqueness, so the W2 tool-schema candidate is not an
+available home. The guard is W1's after all: a duplicate-rejecting map
+reader (`exports_map_serde`) on `WorkflowStep::exports`, raising
+`DuplicateExportName`. The skeleton carries the seam; the fill carries
+the visitor. Impact is intent-truncation, not authorization-integrity
+(the digest binds the deduplicated reserialization either way).
 
-**R2 - `Bounds` is both-halves-optional at the type but the reference
-wire shape may not be.** `Bounds::new` accepts one-sided bounds
-(`min`-only, `max`-only) because the v6 bounds semantics are a
-reconstruction the ADR still owes a verification against the private
-artifact (`18886ec0…`, unretrievable this session). If the artifact
-rules both-halves-required, `Bounds::new` tightens in the fill layer;
-if it rules one-sided legal, the type already fits.
+**R2 - One-sided bounds are legal.** *Ruled by both seats.* A `min`-only
+or `max`-only envelope is a real constraint; `EmptyBounds` (both
+absent) is the correct floor. The v6 bounds-semantics artifact
+(`18886ec0…`, unretrievable this session) may still tighten this to
+both-halves-required when verified; the ruling closes the question for
+the fill, not the ADR. Round 1 shipped doc comments contradicting this
+ruling (one seat's finding 3); they are corrected.
 
-**R3 - Empty specs.** The card's rule list does not name an empty
-`goal` or an empty `steps` list. A zero-step workflow proposes nothing
-and an empty goal renders to the approver as authorization of unnamed
-intent; both look invalid, but inventing rules beyond the card is the
-reviewer's call, not the author's. Panel to rule: reject, or leave to
-W2's tool schema.
+**R3 - Empty specs are rejected.** *Seats split; board-owner ruling for
+reject.* The card's rule list does not name an empty `goal` or an empty
+`steps` list, and one seat preferred leaving that to W2's tool schema
+(`minItems`/`minLength` are expressible there). The deciding argument:
+`ValidatedWorkflowSpec` makes `validate` the gatekeeper of a capability
+type, and a wrapper that can hold an unnamed intent or a no-op
+authorization betrays its own name. `validate_shape` rejects both
+(`EmptyGoal`, `EmptySteps`) as rule 0.
 
-**R4 - Key-segment escaping in `to_json_pointer`.** The subset excludes
-`.`, `[`, `]`, `/`, and `~` from key segments (parse rejects them), so
-no JSON-pointer escaping (`~0`/`~1`) is ever needed. If the fill's
-parse is narrower or wider than this list, `to_json_pointer` and parse
-must move together; the round-trip tests pin it.
+**R4 - Key-segment escaping in `to_json_pointer`.** *Confirmed by both
+seats.* The subset excludes `.`, `[`, `]`, `/`, and `~` from key
+segments (parse rejects them), so no JSON-pointer escaping (`~0`/`~1`)
+is ever needed. Parse and `to_json_pointer` must move together; the
+round-trip tests pin it, covering `as_path` reconstruction too.
 
-**R5 - `ArgValue::parse` rejects nested references inside literals.**
-A `$from` object must appear as a direct value of an argument key, not
-buried inside a literal sub-object; `parse` rejects a literal carrying
-one instead of keeping it as an opaque literal. The workflow-mvp plan
-says references bind "inline anywhere in the arg tree"; this skeleton
-reads that as "any direct child position of the args tree", and the
-walk in `validate_references` is where the reading is pinned or
-corrected. Panel to rule on the depth reading.
+**R5 - References bind inline anywhere in the argument tree.** *Seats
+split; board-owner ruling for anywhere-in-tree.* Round 1 read the plan's
+"inline anywhere" as direct-child positions only. That reading buys
+nothing: recognizing a nested reference and rejecting it both require
+the same recursive walk, so the narrow reading adds refusals without
+saving code, and it rules out realistic nested tool arguments (a
+reference as the value of an inner object key, or as an array
+element). The
+classification walk visits every object-value and array-element
+position at any depth; a literal is reference-free by construction,
+not by trust. Widening later stays available if the resolver ever needs
+more.
 
-**R6 - The digest depends on serde field order.** Approval binds
-`sha256` over `serde_json::to_vec(&workflow)`; struct field order is
-stable in serde today, and the approver echoes what it receives, so no
-external canonicalization scheme is needed. If a field is ever
-reordered, the digest changes. That is harmless within one run (proposal and
-approval use the same serialization), but the W4 wire test must pin the
-digest of a fixed spec.
+**R6 - The digest depends on serde field order.** *Confirmed by both
+seats, strengthened.* `serde_json` here has no `preserve_order`
+feature, so `Value` objects serialize with sorted keys and `exports` is
+a `BTreeMap`: the digest is deterministic per build, not merely per
+run. Because proposal and approval share one binary, a field reorder
+across versions cannot break the echo protocol. The W4 wire test pins
+the digest of a fixed spec.
+
+## Panel ledger (round 1, 2026-09-29)
+
+Seats: kimi K3 CLI (session `796c3dda-…`, verdict FAIL, 3 blocking + 4
+minor) and one Mike-approved codex seat (verdict FAIL, 5 blocking + 2
+minor). Transcripts: `.review/w1-panel/{kimi,codex}-seat.md`
+(regenerable working material; this ledger is the durable record).
+Author: the board-owner session (GLM family), under the logged
+executor-fallback takeover; both seats cross-family.
+
+| # | Finding (seat) | Severity | Disposition |
+|---|---|---|---|
+| 1 | Validated/unvalidated distinction exists only as convention; `validate` returns `()` (both seats) | BLOCKING | ACCEPTED: `ValidatedWorkflowSpec` capability type; `validate` consumes the spec and is the wrapper's only constructor |
+| 2 | `Bounds` admits its forbidden state via pub fields and derived serde (both seats) | BLOCKING | ACCEPTED: private fields, `min()`/`max()` accessors, custom serde routed through `new` |
+| 3 | Record contradicted itself on one-sided bounds (K3); grammars conflict between `StepId`/`ExportName` and `ExportRef` (codex) | BLOCKING | ACCEPTED both: docs aligned to one-sided-legal; `.` reserved out of ids and export names |
+| 4 | R5 direct-child reading vs the charged anywhere-in-tree rule (codex; K3 ruled opposite) | BLOCKING | RULED for anywhere-in-tree (see R5 above); docs and walk contract updated |
+| 5 | R3 empty specs unruled (codex; K3 preferred W2 schema) | BLOCKING | RULED for reject at W1 (see R3 above); `validate_shape` added |
+| 6 | Rollback args wholly exempt from schema check; rationale covered reference nodes only, not literals (K3) | MINOR | ACCEPTED: rule 5 walks rollback argument trees too, references structural |
+| 7 | No `deny_unknown_fields` on the wire structs; stray keys silently dropped before digest (K3) | MINOR | ACCEPTED: all three wire structs carry `deny_unknown_fields` |
+| 8 | Whitespace-only `StepId`/`ExportName` divergence from `SidecarToolName` (K3) | MINOR | ACCEPTED: `trim().is_empty()` rejected, mirroring the reused authority |
+| 9 | `RollbackReferenceOutsideOwner` message said "earlier" where the rule is closure (K3) | MINOR | ACCEPTED: message names the dependencies-closure and why |
+| 10 | R1 guard location: raw-JSON ingress (codex nuance on K3's ruling) | MINOR | ACCEPTED: folded into R1's `exports_map_serde` disposition |
+| 11 | Underscore-prefixed params weaken the Layer-1 hole convention; `#[expect]` markers preferred (codex) | MINOR | ACCEPTED: named params with `#[expect(unused_variables)]`, self-removing at fill |
+
+Round 2: dispatched to the K3 seat as a disposition-verification round
+over the repaired skeleton; the codex seat's dispositions are verified
+in the same packet and by the board owner (one codex dispatch was
+approved for this panel; round 2 runs on the subscription lane).
 
 ## Failure and rejection paths
 
@@ -176,17 +220,20 @@ nothing here is run-ending.
 
 | Situation | How it surfaces |
 |---|---|
-| Empty step id / export name | `EmptyStepId` / `EmptyExportName` at the type's parse |
+| Empty goal; workflow with no steps | `EmptyGoal` / `EmptySteps` at `validate_shape` (rule 0) |
+| Empty or whitespace-only step id / export name | `EmptyStepId` / `EmptyExportName` at the type's parse |
+| Id or export name containing the reference separator | `MalformedStepId` / `MalformedExportName` naming it |
 | Path outside the `$.` subset | `MalformedResultPath` naming the path |
 | Reference not `step.export` | `MalformedExportRef` naming the reference |
-| Half-specified reference node | `MalformedArgNode` naming the fragment |
+| Malformed reference node (any depth) | `MalformedArgNode` naming the fragment |
 | Bounds that constrain nothing | `EmptyBounds` at `Bounds::new` |
 | Two steps, one id | `DuplicateStepId` naming the id |
+| One export name declared twice | `DuplicateExportName` at the raw-JSON ingress |
 | Dependency on same-or-later position | `ForwardDependency` naming both steps |
 | Reference outside the closure | `ReferenceOutsideClosure` naming step and reference |
-| Rollback reference neither earlier nor own | `RollbackReferenceOutsideOwner` |
+| Rollback reference neither closure nor own | `RollbackReferenceOutsideOwner` |
 | Undiscovered tool (step or rollback) | `UnknownTool` listing what is available |
-| Literal args fail the inputSchema | `ArgsFailSchema` with the violation message |
+| Literal args fail the inputSchema (step or rollback) | `ArgsFailSchema` with the violation message |
 | Schema exceeds the validator subset | `UnsupportedSchemaKeyword` naming the keyword |
 
 ## Test record

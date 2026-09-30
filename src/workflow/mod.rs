@@ -16,6 +16,6 @@ mod schema;
 
 pub use error::WorkflowError;
 pub use plan::{
-    ArgValue, Bounds, ExportName, ExportRef, ExportSpec, RollbackSpec, StepId, WorkflowSpec,
-    WorkflowStep,
+    ArgValue, Bounds, ExportName, ExportRef, ExportSpec, RollbackSpec, StepId,
+    ValidatedWorkflowSpec, WorkflowSpec, WorkflowStep,
 };

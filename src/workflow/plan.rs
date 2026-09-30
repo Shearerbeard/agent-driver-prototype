@@ -23,54 +23,105 @@ use super::error::WorkflowError;
 /// goal names the intent the authorization covers, and the steps name
 /// every tool call it covers. Nothing outside `steps` executes.
 ///
-/// This is the wire shape as well as the validated form's container:
+/// This is the wire shape. It is deliberately unvalidated on its own:
 /// [`WorkflowSpec::validate`] against the discovered tool inventory is
-/// the parse step, and nothing downstream accepts a spec that has not
-/// passed it.
+/// the parse step, and it is also the *only* constructor of
+/// [`ValidatedWorkflowSpec`] — the type the digest, the render, and the
+/// executor accept. Nothing downstream takes a bare `WorkflowSpec`, so
+/// an unvetted instance cannot be approved (panel finding 1, both
+/// seats).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct WorkflowSpec {
     /// What this workflow is for; rendered to the approver verbatim.
     pub goal: String,
-    /// The steps, in declaration order. Declaration order is load
-    /// bearing: a step's dependencies must be declared earlier in this
-    /// list (see [`ForwardDependency`]).
+    /// The steps, in declaration order. Declaration order carries the
+    /// ordering rule: a step's dependencies must be declared earlier in
+    /// this list (see [`ForwardDependency`]).
     ///
-    /// [`ForwardDependency`]: super::WorkflowError::ForwardDependency
+    /// [`ForwardDependency`]: WorkflowError::ForwardDependency
     pub steps: Vec<WorkflowStep>,
 }
 
+/// A workflow that passed [`WorkflowSpec::validate`].
+///
+/// Business rule: approval authorizes exactly what validation vetted
+/// (K3 findings 1 and 2 both reduce to this). The wrapper is the type
+/// witness: `validate` is its only constructor, so a digest, a render,
+/// or an execution reaches only a spec whose ids, ordering, references,
+/// tool names, and argument schemas were all checked.
+///
+/// Serializes identically to the [`WorkflowSpec`] it wraps (same bytes,
+/// same field order), so the approval digest contract is unchanged.
+///
+/// Forbidden invalid state: construction from anything but `validate`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ValidatedWorkflowSpec(WorkflowSpec);
+
+impl ValidatedWorkflowSpec {
+    /// The validated workflow's spec.
+    pub fn spec(&self) -> &WorkflowSpec {
+        &self.0
+    }
+
+    /// Consume the wrapper, yielding the validated spec.
+    pub fn into_spec(self) -> WorkflowSpec {
+        self.0
+    }
+}
+
+impl Serialize for ValidatedWorkflowSpec {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        self.0.serialize(serializer)
+    }
+}
+
 impl WorkflowSpec {
-    /// Validate this spec against the discovered tool inventory.
+    /// Validate this spec against the discovered tool inventory,
+    /// yielding the capability type everything downstream requires.
     ///
     /// The rules, in the order they run, each failing with its own
     /// variant of [`WorkflowError`]:
     ///
+    /// 0. the goal is non-empty and there is at least one step (panel
+    ///    ruling on R3: an unnamed intent or a no-op authorization is
+    ///    not a meaningful proposal, and the capability type must not
+    ///    be able to wrap one);
     /// 1. step ids are unique;
     /// 2. every dependency names a step declared *earlier* — which
     ///    subsumes acyclicity, since a cycle needs a back-edge to a
     ///    later or equal position;
-    /// 3. every `$from` reference in step args names a declared export
-    ///    of a step in that step's dependencies-closure; a step's own
-    ///    rollback may additionally reference the owning step's own
-    ///    exports;
+    /// 3. every `$from` reference in an argument tree names a declared
+    ///    export of a step in that step's dependencies-closure; a
+    ///    step's own rollback may additionally reference the owning
+    ///    step's own exports;
     /// 4. every tool name — step tools and rollback tools — exists in
     ///    the discovered inventory;
-    /// 5. every step's literal arguments satisfy the discovered tool's
+    /// 5. every literal argument node satisfies the discovered tool's
     ///    `inputSchema` (K3 finding 2: the approver never authorizes a
-    ///    schema-invalid instance).
+    ///    schema-invalid instance). Step args and rollback args both:
+    ///    reference nodes are structural here (they resolve at apply
+    ///    time), literals are checked (panel finding: rollback literals
+    ///    are as knowable at propose time as step literals).
     ///
     /// # Errors
     ///
     /// Returns the first rule the spec breaks; the caller still holds
     /// the spec, and in W2 every rejection reaches the model as a tool
     /// observation it can revise against.
-    pub fn validate(&self, tools: &[SidecarTool]) -> Result<(), WorkflowError> {
+    pub fn validate(self, tools: &[SidecarTool]) -> Result<ValidatedWorkflowSpec, WorkflowError> {
+        self.validate_shape()?;
         self.validate_unique_ids()?;
         self.validate_dependencies()?;
         self.validate_references()?;
         self.validate_tool_inventory(tools)?;
-        self.validate_step_args(tools)?;
-        Ok(())
+        self.validate_argument_schemas(tools)?;
+        Ok(ValidatedWorkflowSpec(self))
+    }
+
+    /// Rule 0: a nameable goal and at least one step.
+    fn validate_shape(&self) -> Result<(), WorkflowError> {
+        todo!()
     }
 
     /// Rule 1: unique step ids.
@@ -90,12 +141,15 @@ impl WorkflowSpec {
     }
 
     /// Rule 4: every named tool, step or rollback, is discovered.
-    fn validate_tool_inventory(&self, _tools: &[SidecarTool]) -> Result<(), WorkflowError> {
+    #[expect(unused_variables, reason = "W1 Layer 1: used when the fill lands")]
+    fn validate_tool_inventory(&self, tools: &[SidecarTool]) -> Result<(), WorkflowError> {
         todo!()
     }
 
-    /// Rule 5: literal step arguments satisfy the tool's inputSchema.
-    fn validate_step_args(&self, _tools: &[SidecarTool]) -> Result<(), WorkflowError> {
+    /// Rule 5: literal argument nodes — step args and rollback args —
+    /// satisfy the named tool's inputSchema.
+    #[expect(unused_variables, reason = "W1 Layer 1: used when the fill lands")]
+    fn validate_argument_schemas(&self, tools: &[SidecarTool]) -> Result<(), WorkflowError> {
         todo!()
     }
 }
@@ -103,6 +157,7 @@ impl WorkflowSpec {
 /// One step of a workflow: a tool call, its arguments, what it exports
 /// of its result, and how to undo it.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct WorkflowStep {
     /// The step's identity, unique within its spec.
     pub id: StepId,
@@ -124,7 +179,13 @@ pub struct WorkflowStep {
     pub args: Value,
     /// Named `$.`-paths over this step's JSON result. Later steps — and
     /// this step's own rollback — may bind to them by name.
-    #[serde(default)]
+    ///
+    /// Deserialized through a duplicate-rejecting map reader: a wire
+    /// object naming one export twice is a rejection, not a silent
+    /// last-wins collapse (panel ruling on R1 — the raw-JSON ingress is
+    /// the only place the duplicate is still visible, and no schema
+    /// downstream of it can express the rule).
+    #[serde(default, with = "exports_map_serde")]
     pub exports: BTreeMap<ExportName, ExportSpec>,
     /// The compensating call run on unwind, or `None` for a read-only
     /// step — rendered to the approver as an honest "nothing to undo",
@@ -136,14 +197,16 @@ pub struct WorkflowStep {
 /// A step's compensating call.
 ///
 /// Business rule: a mutating step declares how to undo itself. The
-/// rollback's `args` may bind `$from` references to earlier steps'
-/// exports, and additionally to the owning step's own exports — the
-/// owning step completed if its rollback runs.
+/// rollback's `args` may bind `$from` references to exports of steps in
+/// the owning step's dependencies-closure, and additionally to the
+/// owning step's own exports — the owning step completed if its
+/// rollback runs.
 ///
 /// Forbidden invalid state: a mutating step with nothing to declare is
 /// represented honestly as `rollback: null` on the step ([`None`]), so
 /// no rollback spec exists that names no tool or undoes nothing.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RollbackSpec {
     /// The compensating tool, as discovered from the sidecar inventory.
     #[serde(with = "tool_name_serde")]
@@ -155,9 +218,12 @@ pub struct RollbackSpec {
 
 /// A workflow step's identity, unique within its spec.
 ///
-/// Forbidden invalid state: an empty id, which names no step and cannot
-/// be depended on or rendered to an approver; [`StepId::parse`]
-/// rejects it.
+/// Forbidden invalid states: an empty or whitespace-only id (the
+/// `SidecarToolName` rule, mirrored), and an id containing `.`, which
+/// the `step.export` reference form reserves as its separator — an id
+/// carrying one could be declared but never referenced unambiguously
+/// (panel finding: the component and reference grammars must agree).
+/// [`StepId::parse`] rejects both.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(try_from = "String", into = "String")]
 pub struct StepId(String);
@@ -167,10 +233,15 @@ impl StepId {
     ///
     /// # Errors
     ///
-    /// Returns [`WorkflowError::EmptyStepId`] for an empty id.
+    /// Returns [`WorkflowError::EmptyStepId`] for an empty or
+    /// whitespace-only id, and [`WorkflowError::MalformedStepId`] for
+    /// one containing the reference separator `.`.
     pub fn parse(id: String) -> Result<Self, WorkflowError> {
-        if id.is_empty() {
+        if id.trim().is_empty() {
             return Err(WorkflowError::EmptyStepId);
+        }
+        if id.contains('.') {
+            return Err(WorkflowError::MalformedStepId(id));
         }
         Ok(Self(id))
     }
@@ -203,8 +274,10 @@ impl From<StepId> for String {
 
 /// An export's name within its step.
 ///
-/// Forbidden invalid state: an empty name, which nothing could bind to;
-/// [`ExportName::parse`] rejects it.
+/// Forbidden invalid states: an empty or whitespace-only name (nothing
+/// could bind to it), and a name containing `.` — the same separator
+/// reservation as [`StepId`], so the `step.export` reference grammar
+/// stays unambiguous. [`ExportName::parse`] rejects both.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(try_from = "String", into = "String")]
 pub struct ExportName(String);
@@ -214,10 +287,15 @@ impl ExportName {
     ///
     /// # Errors
     ///
-    /// Returns [`WorkflowError::EmptyExportName`] for an empty name.
+    /// Returns [`WorkflowError::EmptyExportName`] for an empty or
+    /// whitespace-only name, and [`WorkflowError::MalformedExportName`]
+    /// for one containing the reference separator `.`.
     pub fn parse(name: String) -> Result<Self, WorkflowError> {
-        if name.is_empty() {
+        if name.trim().is_empty() {
             return Err(WorkflowError::EmptyExportName);
+        }
+        if name.contains('.') {
+            return Err(WorkflowError::MalformedExportName(name));
         }
         Ok(Self(name))
     }
@@ -281,7 +359,8 @@ impl ExportSpec {
     /// Returns [`WorkflowError::MalformedResultPath`] for anything
     /// outside the subset: a missing leading `$.`, an empty key, an
     /// empty or non-numeric index, a stray `[` or `]`, a trailing dot.
-    pub fn parse(_path: &str) -> Result<Self, WorkflowError> {
+    #[expect(unused_variables, reason = "W1 Layer 1: used when the fill lands")]
+    pub fn parse(path: &str) -> Result<Self, WorkflowError> {
         todo!()
     }
 
@@ -348,7 +427,8 @@ impl ExportRef {
     ///
     /// Returns [`WorkflowError::MalformedExportRef`] unless the string
     /// is exactly two non-empty halves around exactly one dot.
-    pub fn parse(_text: &str) -> Result<Self, WorkflowError> {
+    #[expect(unused_variables, reason = "W1 Layer 1: used when the fill lands")]
+    pub fn parse(text: &str) -> Result<Self, WorkflowError> {
         todo!()
     }
 
@@ -390,17 +470,17 @@ impl<'de> Deserialize<'de> for ExportRef {
 /// violation on step N's resolve is a step-N failure and unwinds like
 /// any other.
 ///
-/// Forbidden invalid state: a bound that constrains nothing (neither
-/// `min` nor `max`), which only mimics the reference-with-bounds wire
-/// shape; [`Bounds::new`] rejects it.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+/// One-sided bounds are legal (panel ruling, R2): a `min`-only or
+/// `max`-only envelope is a real constraint. Forbidden invalid state: a
+/// bound that constrains nothing (neither `min` nor `max`), which only
+/// mimics the bounded-reference wire shape; [`Bounds::new`] rejects it,
+/// and construction is gated exactly like [`StepId`]: private fields,
+/// and serde routed through `new`, so no path bypasses the rejection
+/// (panel finding 2, both seats).
+#[derive(Clone, Debug, PartialEq)]
 pub struct Bounds {
-    /// The inclusive lower bound.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub min: Option<Number>,
-    /// The inclusive upper bound.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub max: Option<Number>,
+    min: Option<Number>,
+    max: Option<Number>,
 }
 
 impl Bounds {
@@ -410,7 +490,32 @@ impl Bounds {
     ///
     /// Returns [`WorkflowError::EmptyBounds`] when both halves are
     /// `None`.
-    pub fn new(_min: Option<Number>, _max: Option<Number>) -> Result<Self, WorkflowError> {
+    #[expect(unused_variables, reason = "W1 Layer 1: used when the fill lands")]
+    pub fn new(min: Option<Number>, max: Option<Number>) -> Result<Self, WorkflowError> {
+        todo!()
+    }
+
+    /// The inclusive lower bound, when declared.
+    pub fn min(&self) -> Option<&Number> {
+        self.min.as_ref()
+    }
+
+    /// The inclusive upper bound, when declared.
+    pub fn max(&self) -> Option<&Number> {
+        self.max.as_ref()
+    }
+}
+
+impl Serialize for Bounds {
+    #[expect(unused_variables, reason = "W1 Layer 1: used when the fill lands")]
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        todo!()
+    }
+}
+
+impl<'de> Deserialize<'de> for Bounds {
+    #[expect(unused_variables, reason = "W1 Layer 1: used when the fill lands")]
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         todo!()
     }
 }
@@ -421,13 +526,17 @@ impl Bounds {
 /// tests):
 ///
 /// - `{"$from": "step.export"}` is [`ArgValue::Reference`];
-/// - `{"$from": "step.export", "min": 1, "max": 20}` is
-///   [`ArgValue::BoundedReference`];
-/// - anything else is [`ArgValue::Literal`] — and a literal that
-///   contains a nested `$from` object is rejected by [`ArgValue::parse`]
-///   rather than silently kept as an opaque literal, because a dropped
-///   reference resolves to nothing at apply time and the failure would
-///   surface three cards later as a missing path.
+/// - `{"$from": "step.export", "min": 1}`, `{"$from": "step.export",
+///   "max": 20}`, or both together are [`ArgValue::BoundedReference`] —
+///   one-sided bounds are legal (panel ruling, R2);
+/// - anything else is [`ArgValue::Literal`].
+///
+/// References bind inline anywhere in the argument tree (panel ruling
+/// on R5): a reference object is recognized as the value of any object
+/// key and as any array element, at any depth, and the classification
+/// walk visits every such position — so a literal is reference-free by
+/// construction, not by trust, and a malformed `$from` shape at any
+/// depth is a rejection rather than a silently swallowed node.
 ///
 /// This classifies nodes; the argument *tree* stays a raw [`Value`]
 /// end-to-end, because both consumers need the wire shape — the
@@ -438,9 +547,10 @@ impl Bounds {
 pub enum ArgValue {
     /// A reference-free JSON node.
     Literal(Value),
-    /// A reference to an earlier step's export.
+    /// A reference to an export of a step in the dependencies-closure.
     Reference { from: ExportRef },
-    /// A reference with resolve-time numeric bounds.
+    /// A reference with resolve-time numeric bounds; either side may be
+    /// declared alone, never both absent.
     BoundedReference { from: ExportRef, bounds: Bounds },
 }
 
@@ -449,23 +559,26 @@ impl ArgValue {
     ///
     /// # Errors
     ///
-    /// Returns [`WorkflowError::MalformedArgNode`] for the half-specified
-    /// reference shapes a silent parse would truncate (a `$from` object
-    /// carrying a stray `min` without a `max`, or extra keys beside a
-    /// well-formed reference).
-    pub fn parse(_node: &Value) -> Result<Self, WorkflowError> {
+    /// Returns [`WorkflowError::MalformedArgNode`] for the shapes that
+    /// are neither literal nor well-formed reference: a `$from` whose
+    /// value is not a `step.export` string, keys beside
+    /// `$from`/`min`/`max`, or `min`/`max` values that are not numbers.
+    #[expect(unused_variables, reason = "W1 Layer 1: used when the fill lands")]
+    pub fn parse(node: &Value) -> Result<Self, WorkflowError> {
         todo!()
     }
 }
 
 impl Serialize for ArgValue {
-    fn serialize<S: Serializer>(&self, _serializer: S) -> Result<S::Ok, S::Error> {
+    #[expect(unused_variables, reason = "W1 Layer 1: used when the fill lands")]
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         todo!()
     }
 }
 
 impl<'de> Deserialize<'de> for ArgValue {
-    fn deserialize<D: Deserializer<'de>>(_deserializer: D) -> Result<Self, D::Error> {
+    #[expect(unused_variables, reason = "W1 Layer 1: used when the fill lands")]
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         todo!()
     }
 }
@@ -492,5 +605,34 @@ mod tool_name_serde {
     ) -> Result<SidecarToolName, D::Error> {
         let text = String::deserialize(deserializer)?;
         SidecarToolName::new(&text).map_err(D::Error::custom)
+    }
+}
+
+/// Duplicate-rejecting serde for a step's `exports` map (panel ruling
+/// on R1: the raw-JSON ingress is the only place a duplicate export
+/// name is still visible; a plain `BTreeMap` deserialization collapses
+/// it last-wins, and no schema downstream of the parse can express key
+/// uniqueness).
+///
+/// Serializes as the plain map (the validated form cannot hold a
+/// duplicate, so serialization needs no guard); deserialization reads
+/// the raw map entries and rejects a repeated name with
+/// [`WorkflowError::DuplicateExportName`] before any collapse can
+/// happen.
+mod exports_map_serde {
+    use super::*;
+
+    pub fn serialize<S: Serializer>(
+        exports: &BTreeMap<ExportName, ExportSpec>,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
+        exports.serialize(serializer)
+    }
+
+    #[expect(unused_variables, reason = "W1 Layer 1: used when the fill lands")]
+    pub fn deserialize<'de, D: Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<BTreeMap<ExportName, ExportSpec>, D::Error> {
+        todo!()
     }
 }
