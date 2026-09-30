@@ -1,10 +1,10 @@
 ---
 id: W2
 title: propose_workflow through the factory - coordinator tools land, propose-only
-status: backlog
+status: in-progress
 depends: [W1]
 serialize-with: []
-lineage: none
+lineage: isolated-branch
 executor: smart
 gates: "S -> A -> U -> U"
 user-gates: [code-review, proposal-quality]
@@ -64,12 +64,47 @@ hold_secs required-when-enabled). Nothing else; stop and report instead.
   W5 lags; re-run against the ops tools once W5 lands. Evidence filed
   here.
 
+## Gate checklist
+
+- [ ] Gate S: `cargo fmt --check`, `cargo clippy --all-targets
+      --locked`, `cargo test --locked` green in the worktree;
+      tool-truth tests pass mounted AND unmounted; unmounted goldens
+      byte-identical over the range; scope exactly the seven files the
+      Scope section names.
+- [ ] Gate A: fresh cross-family review (code-review role) of the full
+      commit range against the acceptance criteria.
+- [ ] Gate U (code-review): board owner presents the review packet and
+      STOPS.
+- [ ] Gate U (proposal-quality): the stage-1 loop, user-ruled - run
+      the world-based scenarios against this surface and iterate on
+      proposal quality until Mike is satisfied; each round's evidence
+      linked from this card. May loop any number of rounds.
+
 ## Branch
 
-`card/w2` off `main` when pulled (after W1 merges); merges after its
-second Gate U.
+`card/w2` off `integration/workflow` when pulled (2026-09-29, at
+`eb9a67b`) - off main in the minted text, corrected at pull per
+Mike's evaluation ruling: while the approach is under evaluation the
+coordinator-tools line builds on the integration branch. Lands
+on `integration/workflow` after its second Gate U. Worktree:
+`../agent-driver-prototype-w2`.
 
 ## Log
 
 - 2026-09-29 Minted backlog behind W1. S114 merge dependency cleared
   (PR #14, `4ee22bc`). Board owner.
+- 2026-09-29 Pulled in-progress. W1 done -> this card promoted ready
+  and pulled in the same turn. Worktree `../agent-driver-prototype-w2`
+  on `card/w2` off `integration/workflow` at `eb9a67b` - NOT off
+  main; Mike's 2026-09-29 evaluation ruling keeps the line on the
+  integration branch, so this card's W1 dependency resolves against
+  integration/workflow, where the workflow types landed. Frontmatter
+  fixes at pull, logged per PROCESS: `lineage` corrected `none` ->
+  `isolated-branch` (the Branch section always named a card branch;
+  same mint drift W1 carried); the missing `## Gate checklist`
+  section added (S, A, and both user gates, one box each). Routing
+  note for the executor turns: authors rust-write (Kimi family) and
+  rust-fill (GLM), so the Gate A reviewer must be GPT family -
+  in-harness `rust-reviewer` if its lane is live at the gate, else
+  the codex fallback under fresh approval (the W1 conditional
+  approval was consumed by W1's Gate A). Board owner.

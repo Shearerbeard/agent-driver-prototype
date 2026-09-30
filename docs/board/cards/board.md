@@ -13,12 +13,12 @@ kanban-plugin: board
 	Depends: none. Gates: S -> A -> U(code-review) @ S. Executor: smart.
 
 ## In Progress
+- [ ] **W2** [propose_workflow through the factory - coordinator tools land, propose-only](w2-propose-workflow-factory-seam.md)
+	Depends: W1. Gates: S -> A -> U -> U @ S. Executor: smart.
 
 ## In Review
 
 ## Backlog
-- [ ] **W2** [propose_workflow through the factory - coordinator tools land, propose-only](w2-propose-workflow-factory-seam.md)
-	Depends: W1. Gates: S -> A -> U -> U. Executor: smart.
 - [ ] **W3** [Deterministic workflow executor - resolve, apply, unwind, residual reporting](w3-workflow-executor.md)
 	Depends: W2. Gates: S -> A. Executor: smart.
 - [ ] **W4** [Sync approval wire - notify POST, status poll, blocking hold](w4-sync-approval-wire.md)

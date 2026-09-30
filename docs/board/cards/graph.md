@@ -13,7 +13,7 @@ flowchart TD
   classDef inreview fill:#d6bcfa,color:#1a202c;
   classDef done fill:#c6f6d5,color:#1a202c;
   W1["W1 Workflow type skeleton - spec, bi…"]:::done
-  W2["W2 propose_workflow through the fact…"]:::backlog
+  W2["W2 propose_workflow through the fact…"]:::inprogress
   W3["W3 Deterministic workflow executor -…"]:::backlog
   W4["W4 Sync approval wire - notify POST,…"]:::backlog
   W5["W5 Mock-mcp ops surface - three reme…"]:::ready
