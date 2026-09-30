@@ -8,7 +8,7 @@ lineage: isolated-branch
 executor: smart
 gates: "S -> A -> U(code-review) -> U(type-surface)"
 user-gates: [code-review, type-surface]
-commit-range: b66f982..14b2272
+commit-range: b66f982^..14b2272
 ---
 
 # W1: Workflow type skeleton - spec, bindings, validation, $.-path subset
@@ -63,9 +63,12 @@ need anything else, stop and report instead.
 
 ## Design record
 
-The card's typed-holes design record lands with the skeleton as
-`src/workflow/DESIGN.md` (the "Type relationships" heading included, so
-`boardkit review-packet` can lift it).
+The card's typed-holes design record:
+[the card/w1 worktree copy](../../../../agent-driver-prototype-w1/src/workflow/DESIGN.md)
+until merge. At the done turn this link flips to the in-repo record
+(`src/workflow/DESIGN.md` on main) before the worktree is removed, so
+boardkit check never sees a dangling target. The record carries the
+"Type relationships" heading, so `boardkit review-packet` can lift it.
 
 ## Gate checklist
 
@@ -175,3 +178,16 @@ stays on `main` and holds the board).
   on the codex fallback under Mike's conditional pre-approval (granted
   this session for exactly this failure; kimi CLI retired from this
   run per his routing ruling). Board owner.
+- 2026-09-29 Design-record section fixed for the packet: it named the
+  record in inline code only, and review-packet requires a
+  card-relative markdown link that resolves from the cards directory.
+  Linked to the card/w1 worktree copy (the exact reviewed bytes) with
+  the merge-time re-point to the in-repo path recorded in the section;
+  at the done turn the link flips before the worktree is removed, so
+  boardkit check never sees a dangling target. Board owner.
+- 2026-09-29 commit-range corrected b66f982..14b2272 ->
+  b66f982^..14b2272: the two-dot range excluded the Layer-1 skeleton
+  commit b66f982 itself (the excluded-first-commit trap boardkit's
+  warning names), which would have sent Gate A a packet missing the
+  type surface's foundation. Packet regenerated over all six commits.
+  Board owner.
