@@ -24,9 +24,10 @@
 //! continuation surface is covered by its template and its decision-point
 //! list.
 //!
-//! The coordinator templates name the registered four everywhere; these
-//! assertions pin that state, and the `planning_loop_prompt.md` control
-//! assertions hold throughout.
+//! The coordinator templates name the registered tools everywhere (four
+//! unmounted; five with `propose_workflow` when `[workflow]` is enabled);
+//! these assertions pin that state, and the `planning_loop_prompt.md`
+//! control assertions hold throughout.
 
 use std::collections::{BTreeSet, HashMap};
 

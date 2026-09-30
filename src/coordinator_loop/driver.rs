@@ -458,8 +458,9 @@ impl CoordinatorLoop {
     /// Run the loop over one user query.
     ///
     /// The opening message is the rendered loop-shaped planning wrapper,
-    /// which names the four tools this loop registers (`create_plan`,
-    /// `execute`, `inspect_run`, `respond`) rather than the bounded
+    /// which names the tools this loop registers (`create_plan`,
+    /// `execute`, `inspect_run`, `respond`, plus `propose_workflow`
+    /// when the shim mounts it) rather than the bounded
     /// router's three. Prior conversation (`history`) renders into that
     /// wrapper ahead of the query when present; everything after the
     /// wrapper is ordinary conversation history: tool calls and their
