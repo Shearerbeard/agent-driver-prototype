@@ -22,7 +22,6 @@ use super::plan::{ArgValue, Bounds, ValidatedWorkflowSpec, WorkflowStep};
 /// Deterministic: the same spec renders to the same string. Steps render
 /// in declaration order, exports in name order (the `BTreeMap`), and
 /// literal object keys in serde_json's sorted order.
-#[cfg_attr(not(test), expect(dead_code, reason = "the fill's tool body calls it"))]
 pub fn render_digest(validated: &ValidatedWorkflowSpec) -> String {
     let spec = validated.spec();
     let mut digest = format!("Workflow proposal: {}\n", spec.goal);
