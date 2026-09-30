@@ -14,7 +14,7 @@ kanban-plugin: board
 
 ## In Progress
 - [ ] **W1** [Workflow type skeleton - spec, bindings, validation, $.-path subset](w1-workflow-type-skeleton.md)
-	Depends: none. Gates: S -> A -> U(code-review) -> U(type-surface) @ S. Executor: smart.
+	Depends: none. Gates: S -> A -> U(code-review) -> U(type-surface) @ A. Executor: smart.
 
 ## In Review
 

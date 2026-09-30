@@ -68,13 +68,16 @@ The card's typed-holes design record lands with the skeleton as
 
 ## Gate checklist
 
-- [ ] Gate S: unit tests for every validation rule (unique ids;
+- [x] Gate S: unit tests for every validation rule (unique ids;
       acyclic, earlier-declared `dependencies`; `$from` names a declared
       export in the dependencies-closure; rollback self-reference rule;
       tool-name and step-args checks against the discovered
       `inputSchema`s) plus `$.a.b[0]` path round-trips; `cargo fmt
       --check`, `cargo clippy --all-targets --locked`, `cargo test
-      --locked` green at the declared MSRV.
+      --locked` green at the declared MSRV. (Passed 2026-09-29: 427
+      tests / 0 failed repo-wide, 52 in the module; board owner re-ran
+      every command itself; typed-holes design panel also passed round
+      2.)
 - [ ] Gate A: fresh cross-family review (code-review role) of the full
       commit range against the acceptance criteria.
 - [ ] Gate U (code-review): board owner presents the review packet and
@@ -143,3 +146,13 @@ stays on `main` and holds the board).
   commit 950c138; deterministic checks green, vale clean. Layer 1 is
   closed: the typed-holes design panel gate between skeleton and fill
   has passed. Board owner.
+- 2026-09-29 Layer 2 landed: spec corpus red on arrival (dc8418d; 51
+  tests, 46 red on todo!()), then the fill via two rust-fill
+  dispatches (plan.rs 17 bodies, schema.rs 2) plus board-owner
+  integration (one borrow fix, three clippy cleans, two rulings over
+  the fill's flagged guesses: open-world properties, `$from` as the
+  reference discriminator - both recorded in DESIGN.md). Fill commit
+  14b2272. Full gate green: fmt --check, clippy zero warnings, cargo
+  test --locked 427 passed / 0 failed (52 in the module), vale clean.
+  Acceptance criteria of the card met; Gate S ticked this turn. Board
+  owner.
