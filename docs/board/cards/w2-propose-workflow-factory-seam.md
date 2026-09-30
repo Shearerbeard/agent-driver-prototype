@@ -1,13 +1,14 @@
 ---
 id: W2
 title: propose_workflow through the factory - coordinator tools land, propose-only
-status: in-progress
+status: in-review
 depends: [W1]
 serialize-with: []
 lineage: isolated-branch
 executor: smart
 gates: "S -> A -> U -> U"
 user-gates: [code-review, proposal-quality]
+commit-range: eb9a67b..76f6103
 ---
 
 # W2: propose_workflow through the factory - coordinator tools land, propose-only
@@ -66,11 +67,17 @@ hold_secs required-when-enabled). Nothing else; stop and report instead.
 
 ## Gate checklist
 
-- [ ] Gate S: `cargo fmt --check`, `cargo clippy --all-targets
+- [x] Gate S: `cargo fmt --check`, `cargo clippy --all-targets
       --locked`, `cargo test --locked` green in the worktree;
       tool-truth tests pass mounted AND unmounted; unmounted goldens
       byte-identical over the range; scope exactly the seven files the
-      Scope section names.
+      Scope section names. (Passed 2026-09-30: suite green at 443
+      tests, fmt and clippy clean; mounted tool-truth name-tests plus
+      the new five-tool golden, unmounted goldens untouched over the
+      range - git status on the snapshot dir showed exactly the one
+      new file; scope verified exact over eb9a67b..76f6103: the
+      card's seven files plus the ruled seam files. Board owner
+      re-ran every command itself after each fill.)
 - [ ] Gate A: fresh cross-family review (code-review role) of the full
       commit range against the acceptance criteria.
 - [ ] Gate U (code-review): board owner presents the review packet and
@@ -178,3 +185,22 @@ on `integration/workflow` after its second Gate U. Worktree:
   pQYEnbE skeleton, ses_f0e16bd3effe770QjTpLHalnzK rework); its shell
   stays permission-denied in the subagent sandbox, so the board owner
   ran all cargo gates. Board owner.
+- 2026-09-30 Layer 2 complete, Gate S ticked this turn, card
+  in-review. Fills landed as three commits: render_digest body plus
+  digest tests (bfa7f12, rust-fill ses_f0e06c5ebffeJX6cHS8dcOxWKw),
+  the execute body with propose-only observations and four inline
+  tests including the offline-rig happy path (cb20091, rust-fill
+  ses_f0b7afad2ffevAC7eYrEnlpQwd - retry after one aborted dispatch
+  that wrote nothing, harness interruption not a pin failure), and
+  the mounted rendering golden pinning the five-tool frame
+  (76f6103, rust-fill ses_f0b5fe376ffefis4ImDXpMncie - its sandbox
+  shell was fully blocked, so the board owner generated the snapshot
+  and ran its verification sequence). Acceptance verified by the
+  board owner: suite green at 443 tests, fmt clean, clippy zero
+  warnings, unmounted goldens byte-identical (exactly one new
+  snapshot), mounted rendering named by the new golden, scope exact
+  over the range. commit-range eb9a67b..76f6103 (four Card: W2
+  commits, skeleton through golden). Packet next; Gate A on the
+  manual codex route under the standing approval (the in-harness GPT
+  reviewer lane failed its read probe twice post-restore - the openai
+  provider route, not the pin). Board owner.

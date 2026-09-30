@@ -22,7 +22,7 @@ flowchart TD
     W13["W13 Full RCA baseline against the pro…"]:::backlog
   end
   W1["W1 Workflow type skeleton - spec, bi…"]:::done
-  W2["W2 propose_workflow through the fact…"]:::inprogress
+  W2["W2 propose_workflow through the fact…"]:::inreview
   W3["W3 Deterministic workflow executor -…"]:::backlog
   W4["W4 Sync approval wire - notify POST,…"]:::backlog
   W5["W5 Mock-mcp ops surface - three reme…"]:::ready
