@@ -14,6 +14,11 @@ Board: agent-driver-prototype (`boardkit.toml`, id prefix W). New `jev` lane,
 parallel to the workflow-execution track (W1-W6) and the CLI-drivability
 tail (S-cards). This plan does not touch those tracks.
 
+Finding this from scratch: `scripts/verify-planning-trail.sh` (repo root)
+walks the discovery chain a cold reader would follow - AGENTS.md to the
+board registry to the `jev` lane cards to this note and its close
+evidence - and fails loud on any broken link.
+
 ---
 
 ## Decisions locked (user, 2026-09-29)

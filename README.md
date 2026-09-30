@@ -174,6 +174,13 @@ rather than scrubbed so the design records stay traceable to the
 process that produced them; where a reference names in-flight work, it
 marks work-in-progress, not a settled decision.
 
+For anyone with repository access, this repo's own planning trail IS
+committed under `docs/board/` (cards, process documents, plans, close
+evidence), and its discoverability is machine-checked:
+`scripts/verify-planning-trail.sh` walks the chain a cold reader would
+follow - entry file to board registry to workstream lane to plan - and
+fails loud on any broken link.
+
 ## License
 
 Licensed under either of the Apache License, Version 2.0

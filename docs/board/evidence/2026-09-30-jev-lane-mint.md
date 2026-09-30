@@ -24,7 +24,11 @@ pointers) and was unchanged - the graded surface held.
   W7-W13 minted; reciprocal serialize-with edits on S107
   (identity header forwarding) and S104 (config parity), preserving
   S103-S104; views regenerated; `boardkit check` = 18 cards valid.
-- Commit `bb26db7` carries the lane mint.
+- Commit `bb26db7` carries the lane mint. Later the same day: the planning
+  trail gained a machine-checked verifier (`scripts/verify-planning-trail.sh`,
+  28 checks green at filing: entry chain, board validity, lane visibility,
+  card-to-plan and card-to-evidence link resolution) so a cold contributor
+  can prove discoverability from the repo root; README points at it.
 
 ## Standing user gate recorded this session
 
