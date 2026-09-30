@@ -12,7 +12,7 @@ flowchart TD
   classDef inprogress fill:#fbd38d,color:#1a202c;
   classDef inreview fill:#d6bcfa,color:#1a202c;
   classDef done fill:#c6f6d5,color:#1a202c;
-  W1["W1 Workflow type skeleton - spec, bi…"]:::inprogress
+  W1["W1 Workflow type skeleton - spec, bi…"]:::inreview
   W2["W2 propose_workflow through the fact…"]:::backlog
   W3["W3 Deterministic workflow executor -…"]:::backlog
   W4["W4 Sync approval wire - notify POST,…"]:::backlog

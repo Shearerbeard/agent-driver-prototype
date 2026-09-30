@@ -13,10 +13,10 @@ kanban-plugin: board
 	Depends: none. Gates: S -> A -> U(code-review) @ S. Executor: smart.
 
 ## In Progress
-- [ ] **W1** [Workflow type skeleton - spec, bindings, validation, $.-path subset](w1-workflow-type-skeleton.md)
-	Depends: none. Gates: S -> A -> U(code-review) -> U(type-surface) @ A. Executor: smart.
 
 ## In Review
+- [ ] **W1** [Workflow type skeleton - spec, bindings, validation, $.-path subset](w1-workflow-type-skeleton.md)
+	Depends: none. Gates: S -> A -> U(code-review) -> U(type-surface) @ A. Executor: smart.
 
 ## Backlog
 - [ ] **W2** [propose_workflow through the factory - coordinator tools land, propose-only](w2-propose-workflow-factory-seam.md)

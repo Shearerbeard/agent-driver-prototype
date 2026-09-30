@@ -1,13 +1,14 @@
 ---
 id: W1
 title: Workflow type skeleton - spec, bindings, validation, $.-path subset
-status: in-progress
+status: in-review
 depends: []
 serialize-with: []
 lineage: isolated-branch
 executor: smart
 gates: "S -> A -> U(code-review) -> U(type-surface)"
 user-gates: [code-review, type-surface]
+commit-range: b66f982..14b2272
 ---
 
 # W1: Workflow type skeleton - spec, bindings, validation, $.-path subset
@@ -165,3 +166,12 @@ stays on `main` and holds the board).
   committed at 14b2272 (range b66f982..14b2272 for the packet), views
   current, no deferred gates. Worktree ../agent-driver-prototype-w1
   stays until merge. Board owner.
+- 2026-09-29 In-review: commit-range set to b66f982..14b2272 (all six
+  Card: W1 commits on card/w1, skeleton through fill). Pre-vet this
+  session, one contract-shaped read probe per lane: frontier-reviewer,
+  rust-write, rust-fill, and general lanes PASS (nonce read back);
+  rust-reviewer failed twice with an empty harness error while all four
+  sibling lanes dispatched - GPT lane ruled unreachable, so Gate A runs
+  on the codex fallback under Mike's conditional pre-approval (granted
+  this session for exactly this failure; kimi CLI retired from this
+  run per his routing ruling). Board owner.
