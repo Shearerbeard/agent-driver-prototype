@@ -8,7 +8,11 @@ cards_dir = "docs/board/cards"
 # only if the W3/W4/W5 lanes need it.
 wip = 2
 id_prefix = "W"
-sentinel_ids = ["MILESTONE"]
+# S103-S110 are the prototype-scoped cards re-minted from the tb board
+# 2026-09-29 (single source of truth for this repo). They keep their S
+# ids so cross-references and the CLI-drivability lineage stay legible;
+# new prototype cards mint under the W prefix.
+sentinel_ids = ["MILESTONE", "S103", "S104", "S105", "S107", "S110"]
 base_branch = "main"
 
 [review]
@@ -19,12 +23,13 @@ output_dir = "docs/board/reviews"
 # It is deliberately NOT the aura product board and not the tb S-card
 # stack, so a collaborator can pull workflow cards without either context.
 [charter]
-owns = "the workflow-proposal mechanism in agent-driver-prototype: propose/approve/apply with rollback and argument binding (cards W1-W6)"
-not = "aura product implementation (the governance workstream owns the AURA Workflows direction), agent-driver-rs crate internals, the tb S-card stack, mock-mcp-service internals beyond W5's ops surface"
+owns = "all work scoped to agent-driver-prototype: the workflow-proposal mechanism (W1-W6) and the re-minted CLI-drivability tail (S103, S104, S105, S107, S110)"
+not = "aura product implementation (the governance workstream owns the AURA Workflows direction), agent-driver-rs crate internals (the agent-driver-rs-adr board owns those), terminalbench-aura rig-scoped cards (the tb board keeps those), mock-mcp-service internals beyond W5's ops surface"
 
 [charter.route]
-tb = "coordinator/executor/adapter work on the S-card stack: the tb board in terminalbench-aura"
+tb = "terminalbench-aura rig-scoped cards and the done-card history of the S series: the tb board in terminalbench-aura (the five open prototype-scoped cards moved here 2026-09-29)"
 governance = "the AURA Workflows direction and its open decisions: workstreams/governance.md in aura-session-docs (surface, never edit; garden process)"
+adr = "agent-driver-rs crate internals incl. adr/A18 (S110's pull gate): the agent-driver-rs-adr board in aura-session-docs"
 
 [contract]
 version = 2

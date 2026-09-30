@@ -6,10 +6,11 @@ Ready requires every entry in Depends to be done; the session
 running the board promotes eligible cards (PROCESS.md,
 Delegation protocol).
 
-CHARTER - owns: the workflow-proposal mechanism in agent-driver-prototype: propose/approve/apply with rollback and argument binding (cards W1-W6)
-Not here: aura product implementation (the governance workstream owns the AURA Workflows direction), agent-driver-rs crate internals, the tb S-card stack, mock-mcp-service internals beyond W5's ops surface
+CHARTER - owns: all work scoped to agent-driver-prototype: the workflow-proposal mechanism (W1-W6) and the re-minted CLI-drivability tail (S103, S104, S105, S107, S110)
+Not here: aura product implementation (the governance workstream owns the AURA Workflows direction), agent-driver-rs crate internals (the agent-driver-rs-adr board owns those), terminalbench-aura rig-scoped cards (the tb board keeps those), mock-mcp-service internals beyond W5's ops surface
+Route adr -> agent-driver-rs crate internals incl. adr/A18 (S110's pull gate): the agent-driver-rs-adr board in aura-session-docs
 Route governance -> the AURA Workflows direction and its open decisions: workstreams/governance.md in aura-session-docs (surface, never edit; garden process)
-Route tb -> coordinator/executor/adapter work on the S-card stack: the tb board in terminalbench-aura
+Route tb -> terminalbench-aura rig-scoped cards and the done-card history of the S series: the tb board in terminalbench-aura (the five open prototype-scoped cards moved here 2026-09-29)
 Admission test: where does the diff land.
 
 | ID | Title | Status | Depends | Executor | Gates |
@@ -20,3 +21,8 @@ Admission test: where does the diff land.
 | [W4](w4-sync-approval-wire.md) | Sync approval wire - notify POST, status poll, blocking hold | backlog | W2 | smart | S -> A -> U |
 | [W5](w5-mock-mcp-ops-surface.md) | Mock-mcp ops surface - three remediation tools, per-session healing, ground truth | ready | - | smart | S -> A @ S |
 | [W6](w6-end-to-end-demo.md) | End-to-end demo - investigate, propose, approve, apply, heal, unwind | backlog | W2, W3, W4, W5 | any | S -> A -> M -> T |
+| [S103](s103-coordinator-mcp-filter.md) | Coordinator MCP access filtered by [agent].mcp_filter | ready | - | smart | S -> A -> U(code-review) @ S |
+| [S104](s104-mezmo-orchestrated-config-parity.md) | Mezmo-orchestrated config parity - [agent.llm] from TOML, one warning per unimplemented section | backlog | - | smart | S -> A -> M -> U(mezmo-config) |
+| [S105](s105-main-drift-catch-up.md) | Main-drift catch-up shortlist (inventory-gated) | backlog | - | smart | S -> A -> U(code-review) |
+| [S107](s107-identity-header-capture.md) | Identity header forwarding to MCP (headers_from_request) and session id from the request | backlog | - | smart | S -> A -> U(code-review) |
+| [S110](s110-collapse-mcp-client.md) | Collapse the prototype mcp_client onto the agent-driver-rs MCP client | backlog | - | smart | S -> A -> U(code-review) |

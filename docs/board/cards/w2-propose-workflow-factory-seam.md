@@ -45,8 +45,9 @@ hold_secs required-when-enabled). Nothing else; stop and report instead.
    exact silent divergence S114 exists to prevent.
 3. Unmounted rendering byte-identical (existing goldens unchanged);
    mounted rendering named by new goldens.
-4. S103 interaction (tb board, coordinator-mcp-filter): composes through
-   the same seam; whichever lands second re-words the derived claims once.
+4. S103 interaction (now local - re-minted 2026-09-29): the coordinator
+   MCP filter composes through the same factory seam; whichever lands
+   second re-words the derived tool claims once (S114 invariant).
 
 ## Acceptance
 

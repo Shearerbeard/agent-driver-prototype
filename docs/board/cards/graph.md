@@ -18,6 +18,11 @@ flowchart TD
   W4["W4 Sync approval wire - notify POST,…"]:::backlog
   W5["W5 Mock-mcp ops surface - three reme…"]:::ready
   W6["W6 End-to-end demo - investigate, pr…"]:::backlog
+  S103["S103 Coordinator MCP access filtered b…"]:::ready
+  S104["S104 Mezmo-orchestrated config parity …"]:::backlog
+  S105["S105 Main-drift catch-up shortlist (in…"]:::backlog
+  S107["S107 Identity header forwarding to MCP…"]:::backlog
+  S110["S110 Collapse the prototype mcp_client…"]:::backlog
   W1 --> W2
   W2 --> W3
   W3 -.- W4
@@ -26,4 +31,5 @@ flowchart TD
   W3 --> W6
   W4 --> W6
   W5 --> W6
+  S103 -.- S104
 ```

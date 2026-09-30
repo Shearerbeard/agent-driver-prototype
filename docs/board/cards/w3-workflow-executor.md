@@ -23,11 +23,12 @@ The model-out-of-the-loop apply path. Context:
 the minimal `src/workflow/mod.rs` re-exports. Nothing else; stop and
 report instead.
 
-Cross-board coupling (tb board): tb/S110 (collapse-mcp-client) deletes
-`src/mcp_client/` outright when the crate's rmcp unifies - this card's
-apply path rides `SidecarClient::call_tool`, so whichever lands second
-migrates the executor's client seam. Record the interaction here if S110
-lands first.
+Cross-board coupling: [S110](s110-collapse-mcp-client.md) (now local -
+re-minted 2026-09-29) deletes `src/mcp_client/` outright when the
+library's rmcp unifies (gated on adr/A18, backlog) - this card's apply
+path rides `SidecarClient::call_tool`, so whichever lands second
+migrates the executor's client seam. The tiebreak is recorded on
+S110's card.
 
 ## Deliverable
 
