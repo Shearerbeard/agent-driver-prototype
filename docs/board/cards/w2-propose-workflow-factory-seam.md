@@ -108,3 +108,13 @@ on `integration/workflow` after its second Gate U. Worktree:
   in-harness `rust-reviewer` if its lane is live at the gate, else
   the codex fallback under fresh approval (the W1 conditional
   approval was consumed by W1's Gate A). Board owner.
+- 2026-09-29 Dispatch brief generated at contract digest 2fcae134d75b
+  (matches doctor; boardkit dispatch-brief W2, saved at
+  .review/w2-brief.md as regenerable working material). All routes
+  resolved: executor (opencode-executor), code-review
+  (opencode-reviewer, fallback codex-reviewer - the fallback is the
+  live lane this session, the in-harness GPT reviewer having failed
+  its pre-vet), prose-review (kimi-frontier, fallback codex-reviewer;
+  W2 is a code card, so its Gate A routes to code-review). Executor
+  dispatches have not started; the brief regenerates at each dispatch
+  per the staleness rule. Board owner.
