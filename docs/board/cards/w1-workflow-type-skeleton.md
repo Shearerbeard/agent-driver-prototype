@@ -1,13 +1,13 @@
 ---
 id: W1
 title: Workflow type skeleton - spec, bindings, validation, $.-path subset
-status: ready
+status: in-progress
 depends: []
 serialize-with: []
-lineage: none
+lineage: isolated-branch
 executor: smart
-gates: "S -> A -> U"
-user-gates: [type-surface]
+gates: "S -> A -> U(code-review) -> U(type-surface)"
+user-gates: [code-review, type-surface]
 ---
 
 # W1: Workflow type skeleton - spec, bindings, validation, $.-path subset
@@ -41,7 +41,7 @@ need anything else, stop and report instead.
    `$from` reference / reference with `min`/`max` bounds).
 2. Validation: unique ids; `dependencies` acyclic and
    earlier-declared; every `$from` names a declared export of a step in
-   the dependencies-closure (a step's own rollback may additionally
+   the dependencies-closure (a step's own rollback may also
    reference the owning step's own exports); tool names AND step `args`
    validate against the discovered tools' `inputSchema`s (K3 finding 2 -
    the approver never authorizes a schema-invalid instance).
@@ -66,11 +66,39 @@ The card's typed-holes design record lands with the skeleton as
 `src/workflow/DESIGN.md` (the "Type relationships" heading included, so
 `boardkit review-packet` can lift it).
 
+## Gate checklist
+
+- [ ] Gate S: unit tests for every validation rule (unique ids;
+      acyclic, earlier-declared `dependencies`; `$from` names a declared
+      export in the dependencies-closure; rollback self-reference rule;
+      tool-name and step-args checks against the discovered
+      `inputSchema`s) plus `$.a.b[0]` path round-trips; `cargo fmt
+      --check`, `cargo clippy --all-targets --locked`, `cargo test
+      --locked` green at the declared MSRV.
+- [ ] Gate A: fresh cross-family review (code-review role) of the full
+      commit range against the acceptance criteria.
+- [ ] Gate U (code-review): board owner presents the review packet and
+      STOPS.
+- [ ] Gate U (type-surface): board owner presents the type surface and
+      its ADR-relevant rulings (field naming, bounds semantics), STOPS.
+
 ## Branch
 
-`card/w1` off `main` when pulled; merges after its Gate U.
+`card/w1` off `main` when pulled; merges after its Gate U. Worktree:
+`../agent-driver-prototype-w1` (sibling of the primary checkout, which
+stays on `main` and holds the board).
 
 ## Log
 
 - 2026-09-29 Minted ready from the K3-vetted plan; opening wave with W5.
   Board owner.
+- 2026-09-29 Pulled in-progress: worktree `../agent-driver-prototype-w1`
+  on `card/w1` off `main` at `7f114c0`. Board owner.
+- 2026-09-29 Frontmatter fixes at pull, logged per PROCESS: `lineage`
+  corrected `none` -> `isolated-branch` (the card's Branch section
+  always named `card/w1`; `isolated-branch` makes `boardkit check`
+  enforce `commit-range` at in-review; all W/S cards minted with
+  `lineage: none` carry the same mint drift, left for a later hygiene
+  pass); standing U(code-review) inserted (every code card carries it
+  after Gate A; W2/S103 already had it) and the missing Gate checklist
+  section added. Board owner.
