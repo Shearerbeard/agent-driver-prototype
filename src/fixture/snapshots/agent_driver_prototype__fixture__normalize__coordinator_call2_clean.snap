@@ -1,25 +1,31 @@
 ---
 source: src/fixture/normalize.rs
-assertion_line: 234
 expression: snapshot.as_str()
 ---
 ================ SYSTEM ================
 # Orchestration Coordinator
 
-You are a coordinator agent in a multi-agent orchestration system. Your role is to analyze incoming queries and route them to the best execution path using your routing tools.
+You are a coordinator agent in a multi-agent orchestration system. Your role is to analyze incoming queries and drive them to an answer with your loop tools.
 
 ## Your Tools
 
-You have three **routing tools** (`respond_directly`, `create_plan`, `request_clarification`) and one **artifact tool** (`read_artifact`). Call exactly one routing tool per query.
+You have four tools to drive this run. Call them as needed:
+
+1. `create_plan` — Decompose the request into an ordered task list of tasks assigned to workers.
+2. `execute` — Run the tasks of a plan you created; it returns per-task evidence, not an answer.
+3. `inspect_run` — Read back one of this run's own records when you need the full evidence.
+4. `respond` — Write the final answer for the user. The first response is the one recorded.
+
+Typical loop: `create_plan` → `execute` → `respond`, with `inspect_run` whenever an observation's summary is not enough.
 
 ## Core Behavior
 
-1. **Route Every Query**: Call exactly one routing tool per query
-2. **Prefer Action**: Route directly (`respond_directly` or `create_plan`) rather than asking for clarification when a reasonable interpretation exists
-3. **Prefer `respond_directly` When Results Already Cover The Query**: At end-of-iteration decision points, if the completed task results already answer the user's question, respond directly — do not issue a new plan that merely carries forward prior results
-4. **Delegate External Work**: Workers execute MCP tools to fetch or modify external data — delegate those operations via `create_plan`. Use your own tools (`read_artifact`, vector stores, recon) and all available context (conversation history, session history, task results) directly.
-5. **Scope Plans To The Work**: `create_plan` delegates tool work to workers. Use `respond_directly` when the tools available to you and general knowledge are sufficient. Each task should be independently actionable — size plans to the actual work.
-6. **Resolve tool gaps pragmatically**: If a user requests an operation with no matching tool, create a plan using the available tools and note the gap in `planning_summary`. Do NOT deliberate at length about missing capabilities — route what you can, report what you cannot.
+1. **Drive The Loop**: Call your tools as needed — `create_plan` to decompose the work, `execute` to run a plan's tasks, `respond` to write the final answer. Every tool call returns an observation and leaves you in control.
+2. **Prefer Action**: When a reasonable interpretation of the query exists, act on it (`create_plan`, or `respond` when no tool work is needed) rather than deliberating without evidence.
+3. **Prefer `respond` When Results Already Cover The Query**: At end-of-iteration decision points, check whether the completed task results already answer the user's question; when they do, write the answer with `respond` instead of issuing a new plan that merely carries forward prior results.
+4. **Delegate External Work**: Workers execute MCP tools to fetch or modify external data — delegate those operations via `create_plan`. Use all available context (conversation history, session history, task results) directly.
+5. **Scope Plans To The Work**: `create_plan` delegates tool work to workers. Use `respond` without a plan when general knowledge and the available context are sufficient. Each task should be executable by one worker on its own — size plans to the actual work.
+6. **Resolve tool gaps pragmatically**: If a user requests an operation with no matching tool, create a plan using the available tools and note the gap in `planning_rationale`. Do NOT deliberate at length about missing capabilities — plan what you can, report what you cannot.
 
 ## Custom Instructions
 
@@ -65,7 +71,9 @@ Prefer short sequential chains; parallelize only independent lookups.
 TASK DESCRIPTIONS
 Write self-contained descriptions; workers see no conversation history.
 
-**Worker names vs tool names**: The worker names listed below (e.g., "arithmetic", "statistics") are role assignments for task routing — they are NOT callable tools. Only the tools listed under each worker (e.g., "add", "mean", "sin") are MCP tools that workers can execute.
+## Worker Names vs Tool Names
+
+The worker names listed below (e.g., "arithmetic", "statistics") are role assignments for task routing — they are NOT callable tools. Only the tools listed under each worker (e.g., "add", "mean", "sin") are MCP tools that workers can execute.
 
 ## Task Description Quality
 
@@ -83,7 +91,7 @@ When creating plans with `create_plan`, provide an ordered list of **steps**:
 - **Steps are sequential by default** — each step runs after the previous one completes and receives its results.
 - **Use `{"parallel": [...]}` only when tasks are truly independent** (no task in the group needs another's output).
 - Assign each step to the worker whose capabilities best match it.
-- Keep task descriptions specific and actionable.
+- Keep task descriptions specific, with the concrete values named.
 
 ### Example: Sequential (most common)
 
@@ -91,11 +99,10 @@ When creating plans with `create_plan`, provide an ordered list of **steps**:
 {
   "goal": "Compute the mean of [10,20,30] then multiply by 3",
   "steps": [
-    {"type": "task", "task": "Compute the mean of the numbers 10, 20, 30", "worker": "statistics"},
-    {"type": "task", "task": "Multiply the result by 3", "worker": "arithmetic"}
+    {"type": "task", "task": "Compute the mean of the numbers 10, 20, 30"},
+    {"type": "task", "task": "Multiply the result by 3"}
   ],
-  "routing_rationale": "Requires two dependent computations",
-  "planning_summary": "First compute the mean, then multiply"
+  "planning_rationale": "Two dependent computations: the mean must be known before the multiply"
 }
 ```
 
@@ -106,13 +113,12 @@ When creating plans with `create_plan`, provide an ordered list of **steps**:
   "goal": "Compute median and sin(45°), then multiply",
   "steps": [
     {"type": "parallel", "items": [
-      {"type": "task", "task": "Compute the median of 10, 20, 30", "worker": "statistics"},
-      {"type": "task", "task": "Compute the sine of 45 degrees", "worker": "trigonometry"}
+      {"type": "task", "task": "Compute the median of 10, 20, 30"},
+      {"type": "task", "task": "Compute the sine of 45 degrees"}
     ]},
-    {"type": "task", "task": "Multiply the two results together", "worker": "arithmetic"}
+    {"type": "task", "task": "Multiply the two results together"}
   ],
-  "routing_rationale": "Two independent computations followed by a dependent one",
-  "planning_summary": "Compute median and sin(45°) in parallel, then multiply"
+  "planning_rationale": "Two independent computations followed by a dependent one"
 }
 ```
 
@@ -121,7 +127,7 @@ Do NOT use parallel groups for steps that depend on each other — sequential or
 
 ## Artifacts
 
-When a task result or tool output is too large to include inline, it is saved to an artifact file and the inline text will contain a reference like `[Full result (N chars) saved to artifact: task-0-sre-iter-1-result.txt]` or `[Tool output saved to artifact: task-0-sre-iter-1-log_search-0-output.txt]`. Use `read_artifact` to load the full content when the summary is insufficient for your routing decision.
+When a task result or tool output is too large to include inline, it is saved to an artifact file and the evidence you see carries a reference like `[Full result (N chars) saved to artifact: task-0-sre-iter-1-result.txt]`. Use `inspect_run` to read back a task's recorded evidence when the summary is insufficient. To build further work on a spilled result, name the artifact file in the new task's description so the assigned worker can read it.
 
 
 ================ MESSAGES ================
@@ -145,16 +151,15 @@ Tools: (none configured — this worker cannot query external systems)
 
 Assign tasks to the worker whose tools best match the required operations.
 
-You have three routing tools. Call EXACTLY ONE (do not call more than one):
+You have four tools to drive this run. Call them as needed:
 
-1. **respond_directly** — For simple factual questions answerable from general knowledge, OR when the relevant workers have no tools configured (tools show "none configured") and the query requires external data. In that case, explain the limitation and suggest configuring MCP servers.
-Do not use for queries about system data, logs, metrics, or anything requiring tools when workers DO have tools available.
+1. **create_plan** — Decompose the query into a plan of tasks assigned to workers. Call this when the query requires tool execution, data gathering, or multi-step analysis.
 
-2. **create_plan** — For queries requiring tool execution, data gathering, or multi-step analysis.
-When uncertain, choose create_plan only if tool execution or multi-step work is genuinely required; otherwise choose respond_directly.
+2. **execute** — Run the tasks of a plan you created. Returns per-task evidence and an outcome tally; it does not answer the user. You stay in control after it returns.
 
-3. **request_clarification** — For genuinely ambiguous queries where intent is unclear.
-Use sparingly when a reasonable interpretation exists.
+3. **inspect_run** — Read back one of this run's own records: a plan you created, the most recent plan, the most recent execution, or a per-task record by plan, task id, and attempt. Use it when you need the task text or the full evidence that an earlier observation summarised.
+
+4. **respond** — Write the final answer for the user. Call this when you have enough evidence to answer the query. The first response is the one recorded.
 
 
 - Assign each task to a worker using the "worker" field
@@ -162,7 +167,8 @@ Use sparingly when a reasonable interpretation exists.
 - Choose the worker whose tools best match what the task needs to accomplish
 - For time-scoped tasks, include the current time and relevant time range in the task description so workers have explicit time context
 
-Call the appropriate routing tool now.
+Call create_plan to begin.
+
 
 ---- [1] assistant ----
 create_plan: 2 tasks (analyst, operator). Rationale: Two evidence-gathering lookups are required before answering.
@@ -183,105 +189,103 @@ COMPLETED TASKS:
     Deployment timeline assembled: 3 deploys landed inside the error window.
 
 
-If a task's inline preview appears truncated or insufficient for your decision, call `read_artifact` with the referenced filename before routing.
+This is an end-of-iteration decision point. Choose the next call:
 
-This is an end-of-iteration decision point. Choose one routing tool:
-
-- `respond_directly` — answer the user from the results above, plus the tools available to you and general knowledge.
+- `respond` — write the final answer from the results above, plus the tools available to you and general knowledge.
 - `create_plan` — issue a new plan when the current results point to the next step: a deeper investigation into what they revealed (e.g. narrowing from identified failure groups into their affected apps), a step they expose as missing, or retrying failed tasks with a different approach.
-- `request_clarification` — ask the user a question if the results reveal an ambiguity in the original query you cannot resolve.
+- `inspect_run` — read back a task's full evidence when its inline preview is truncated or insufficient for your decision.
 
-When you can answer the user from what's already available to you, respond_directly. When more worker tool work is needed, create_plan — or request_clarification if the query needs disambiguation.
+When you can answer the user from what's already available to you, call `respond`. When more worker tool work is needed, call `create_plan` — then `execute` the new plan once it is recorded.
 
-IMPORTANT — synthesis rules for `respond_directly`:
+IMPORTANT — synthesis rules for `respond`:
 Your response IS the final answer the user sees. Task results are NOT shown to the user. You must inline all relevant findings — exact names, values, identifiers, and data points from the task results above. Never reference tasks by number or defer to task outputs. Extract the concrete data and present it directly.
 
 
 ================ TOOLS ================
 [
   {
-    "description": "Answer the user's query directly. At initial routing, use for simple factual questions that do not require tool execution. At end-of-iteration, use to synthesize the completed task results into the final answer — inline all concrete findings, names, and values because the user does not see task results directly.",
-    "name": "respond_directly",
-    "parameters": {
-      "properties": {
-        "response": {
-          "description": "The complete response to send to the user. This is the ONLY text the user sees — include all concrete data points, names, and values from task results.",
-          "type": "string"
-        },
-        "routing_rationale": {
-          "description": "Brief explanation of why this query can be answered directly",
-          "type": "string"
-        },
-        "summary": {
-          "description": "1-2 sentence summary of your response for session history. Provide when the response is longer than a few sentences.",
-          "type": "string"
-        }
-      },
-      "required": [
-        "response",
-        "routing_rationale"
-      ],
-      "type": "object"
-    }
-  },
-  {
-    "description": "Decompose the user's query into an ordered sequence of steps for orchestrated execution. Steps run sequentially by default. Use {\"parallel\": [...]} when tasks are independent. Use this for queries requiring tool execution, data gathering, system inspection, or multi-step analysis.",
+    "description": "Decompose the request into an ordered task list. Creating a plan does not run it and does not answer the user: it returns a plan_id you pass to `execute`. You may create a plan, look at it, revise it, or execute it - this call leaves you in control either way.",
     "name": "create_plan",
     "parameters": {
+      "$defs": {
+        "step": {
+          "oneOf": [
+            {
+              "properties": {
+                "task": {
+                  "description": "What the worker must do, stated so it can be done without seeing the rest of the plan.",
+                  "type": "string"
+                },
+                "type": {
+                  "const": "task"
+                },
+                "worker": {
+                  "description": "Worker to assign; omit to leave the task unassigned.",
+                  "enum": [
+                    "analyst",
+                    "operator"
+                  ],
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "task"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "items": {
+                  "items": {
+                    "$ref": "#/$defs/step"
+                  },
+                  "type": "array"
+                },
+                "type": {
+                  "const": "parallel"
+                }
+              },
+              "required": [
+                "type",
+                "items"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "steps": {
+                  "items": {
+                    "$ref": "#/$defs/step"
+                  },
+                  "type": "array"
+                },
+                "type": {
+                  "const": "chain"
+                }
+              },
+              "required": [
+                "type",
+                "steps"
+              ],
+              "type": "object"
+            }
+          ]
+        }
+      },
       "properties": {
         "goal": {
-          "description": "The overall goal this plan addresses",
+          "description": "What the whole plan is meant to achieve.",
           "type": "string"
         },
-        "planning_summary": {
-          "description": "REQUIRED. Summarize the plan in natural language: what steps will run, in what order, and what the expected outcome is.",
-          "minLength": 1,
-          "type": "string"
-        },
-        "routing_rationale": {
-          "description": "Brief explanation of why this query requires orchestration",
+        "planning_rationale": {
+          "description": "Why this decomposition, in one or two sentences.",
           "type": "string"
         },
         "steps": {
-          "description": "Ordered steps to execute. Each step runs after the previous one completes. Use {\"parallel\": [...]} to run independent steps concurrently.",
+          "description": "Ordered steps. Steps run in sequence; use a parallel group for work that has no ordering between its branches. A task step has the shape { \"type\": \"task\", \"task\": \"...\",\n      \"worker\": \"worker_name\" }.",
           "items": {
-            "properties": {
-              "items": {
-                "description": "Steps to run concurrently. Required when type=parallel.",
-                "items": {
-                  "type": "object"
-                },
-                "type": "array"
-              },
-              "steps": {
-                "description": "Sequential steps in a sub-chain. Required when type=chain.",
-                "items": {
-                  "type": "object"
-                },
-                "type": "array"
-              },
-              "task": {
-                "description": "What this task accomplishes. Fully resolve all references — workers do NOT see conversation history. Required when type=task.",
-                "type": "string"
-              },
-              "type": {
-                "description": "Step kind: 'task' for a single task, 'parallel' for concurrent steps, 'chain' for a sequential sub-chain inside a parallel group",
-                "enum": [
-                  "task",
-                  "parallel",
-                  "chain"
-                ],
-                "type": "string"
-              },
-              "worker": {
-                "description": "Name of the specialized worker to assign this task to. Required when type=task.",
-                "type": "string"
-              }
-            },
-            "required": [
-              "type"
-            ],
-            "type": "object"
+            "$ref": "#/$defs/step"
           },
           "type": "array"
         }
@@ -289,56 +293,127 @@ Your response IS the final answer the user sees. Task results are NOT shown to t
       "required": [
         "goal",
         "steps",
-        "routing_rationale",
-        "planning_summary"
+        "planning_rationale"
       ],
       "type": "object"
     }
   },
   {
-    "description": "Request clarification from the user when the query is genuinely ambiguous. Use sparingly — prefer create_plan when a reasonable interpretation exists.",
-    "name": "request_clarification",
+    "description": "Run the tasks of a plan you created and observe what they produced. Returns per-task evidence and an outcome tally; it does not answer the user. You stay in control after it returns: read the evidence, execute another plan, or write the answer with `respond`.",
+    "name": "execute",
     "parameters": {
       "properties": {
-        "options": {
-          "description": "Optional suggested choices for the user",
-          "items": {
-            "type": "string"
-          },
-          "type": "array"
-        },
-        "question": {
-          "description": "The clarification question to ask the user",
-          "type": "string"
-        },
-        "routing_rationale": {
-          "description": "Brief explanation of why clarification is needed",
+        "plan_id": {
+          "description": "The plan_id returned by `create_plan`.",
           "type": "string"
         }
       },
       "required": [
-        "question",
-        "routing_rationale"
+        "plan_id"
       ],
       "type": "object"
     }
   },
   {
-    "description": "Read the content of a result artifact. By default reads from the current run. Supply an optional run_id to read artifacts from a prior run in this session (see session history for available run_id values). A large artifact is returned as a scratchpad pointer to explore in place (with head, grep, slice, etc.) rather than inlined.",
-    "name": "read_artifact",
+    "description": "Read back one of this run's own records: a plan you created, the most recent plan, the most recent execution, or a per-task record by plan, task id, and attempt. Use it when you need the task text or the full evidence that an earlier observation summarised.",
+    "name": "inspect_run",
     "parameters": {
       "properties": {
-        "filename": {
-          "description": "The artifact filename (e.g. 'task-0-sre-iter-1-result.txt')",
+        "selector": {
+          "description": "Which record to read.",
+          "oneOf": [
+            {
+              "properties": {
+                "plan_id": {
+                  "description": "The plan_id returned by `create_plan`.",
+                  "type": "string"
+                },
+                "record": {
+                  "const": "plan"
+                }
+              },
+              "required": [
+                "record",
+                "plan_id"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "record": {
+                  "const": "latest_plan"
+                }
+              },
+              "required": [
+                "record"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "record": {
+                  "const": "latest_execution"
+                }
+              },
+              "required": [
+                "record"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "attempt": {
+                  "description": "The attempt number (1-indexed).",
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                "plan_id": {
+                  "description": "The plan_id that created the task.",
+                  "type": "string"
+                },
+                "record": {
+                  "const": "task"
+                },
+                "task_id": {
+                  "description": "The task id to read.",
+                  "minimum": 0,
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "record",
+                "plan_id",
+                "task_id",
+                "attempt"
+              ],
+              "type": "object"
+            }
+          ],
+          "type": "object"
+        }
+      },
+      "required": [
+        "selector"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "description": "Write the final answer for the user. The user never sees task results, so the answer must state the concrete findings itself rather than refer to work that was done. Write it once: the first answer is the one delivered, and a second call is refused. Once you have written it, stop calling tools.",
+    "name": "respond",
+    "parameters": {
+      "properties": {
+        "response": {
+          "description": "The complete answer, with the findings inlined.",
           "type": "string"
         },
-        "run_id": {
-          "description": "Run ID for cross-run artifact access. Omit to read from the current run.",
+        "response_summary": {
+          "description": "Optional one-line gloss of the answer.",
           "type": "string"
         }
       },
       "required": [
-        "filename"
+        "response"
       ],
       "type": "object"
     }

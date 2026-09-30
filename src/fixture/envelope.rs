@@ -9,10 +9,13 @@
 
 use std::collections::HashMap;
 
+use agent_driver_rs::tool::ToolDefinition as PinToolDefinition;
+
 use crate::bounding::ToolListLimit;
 use crate::config::OrchestrationConfig;
 use crate::config_builders::build_vector_store_context;
 use crate::config_builders::{build_coordinator_preamble, build_worker_preamble};
+use crate::coordinator_loop::{WorkerRoster, WorkerSections};
 use crate::message::{Message, ToolDefinition};
 use crate::persistence::ToolTraceEntry;
 use crate::producers::{
@@ -24,12 +27,15 @@ use crate::templates::{
 };
 use crate::types::{IterationContext, Plan, StructuredTaskOutput};
 
-use super::helpers::{SCRATCHPAD_PREAMBLE, build_session_context, render_skill_catalog};
+use super::helpers::{
+    SCRATCHPAD_PREAMBLE, build_session_context, render_coordinator_skill_catalog,
+    render_skill_catalog,
+};
 use super::scenario::FailedResultFixture;
 use super::scenario::{
-    CoordinatorCall, CoordinatorScenario, FixtureError, HistoryTools, IterationFixture,
-    PreambleFixture, ReconTools, ScratchpadWiring, TaskOutcome, WorkerFrameFixture,
-    WorkerPreambleAppends, WorkerPreambleFixture, WorkerScenario,
+    CoordinatorCall, CoordinatorScenario, FixtureError, IterationFixture, PreambleFixture,
+    ScratchpadWiring, TaskOutcome, WorkerFrameFixture, WorkerPreambleAppends,
+    WorkerPreambleFixture, WorkerScenario,
 };
 use super::tool_definitions;
 
@@ -39,16 +45,14 @@ pub(crate) use crate::message::RequestEnvelope;
 /// Compose the coordinator system preamble for a [`PreambleFixture`].
 pub(crate) fn compose_coordinator_preamble(fixture: &PreambleFixture) -> String {
     crate::corpus_configuration::assert_corpus_configuration();
-    let mut preamble = build_coordinator_preamble(
-        &fixture.playbook,
-        fixture.tools.recon == ReconTools::Included,
-        fixture.tools.history == HistoryTools::Included,
-    );
-    if let Some(catalog) = render_skill_catalog(&fixture.skills) {
+    // The recon/history flags are inert on the coordinator path: the
+    // registered surface is the factory's four regardless of the retired
+    // router configuration. Vector stores configured for the coordinator
+    // append nothing — the vector-search tools are worker-side
+    // registrations, so the coordinator path never claims them.
+    let mut preamble = build_coordinator_preamble(&fixture.playbook, false, false);
+    if let Some(catalog) = render_coordinator_skill_catalog(&fixture.skills) {
         preamble.push_str(&catalog);
-    }
-    if !fixture.vector_stores.is_empty() {
-        preamble.push_str(&build_vector_store_context(&fixture.vector_stores));
     }
     if let Some(session) = &fixture.session_history {
         preamble.push('\n');
@@ -202,7 +206,7 @@ pub(crate) fn coordinator_envelope(
         }
     }
 
-    let tools = coordinator_tool_definitions(scenario)?;
+    let tools = coordinator_tools(scenario);
     Ok(RequestEnvelope {
         system,
         messages,
@@ -278,35 +282,44 @@ fn append_shared_worker_sections(preamble: &mut String, appends: &WorkerPreamble
     }
 }
 
-/// The coordinator's in-repo tool definitions in production registration order
-/// (recon, routing, read_artifact, history, skills).
-fn coordinator_tool_definitions(
-    scenario: &CoordinatorScenario,
-) -> Result<Vec<ToolDefinition>, FixtureError> {
-    let mut tools = Vec::new();
-    if scenario.preamble().tools.recon == ReconTools::Included {
-        tools.push(tool_definitions::list_tools_definition());
-        tools.push(tool_definitions::inspect_tool_params_definition());
+/// The coordinator's attached tool definitions: the shared factory's
+/// definitions in production registration order, projected onto the
+/// fixture's wire-mirror type.
+///
+/// The envelope cannot attach the pin's definitions directly — production
+/// uses `agent_driver_rs::tool::ToolDefinition`, the envelope uses
+/// `crate::message::ToolDefinition` (a wire-mirror type) — so the
+/// projection is explicit ([`mirror_definition`]) and the tool-truth suite
+/// derives the same projection independently to pin the equality.
+fn coordinator_tools(scenario: &CoordinatorScenario) -> Vec<ToolDefinition> {
+    let config = scenario.roster().config();
+    let roster = WorkerRoster::from_config(
+        config,
+        ToolListLimit::new(config.max_tools_per_worker),
+        scenario.roster().vector_catalog(),
+        // The corpus is MCP-less: the same empty inventory the planning
+        // wrapper's worker sections resolve against.
+        &ToolInventory::empty(),
+    )
+    .expect("corpus roster configs parse into worker sections");
+    let sections = WorkerSections::from_roster(roster);
+    crate::coordinator_loop::coordinator_tool_definitions(&sections)
+        .iter()
+        .map(mirror_definition)
+        .collect()
+}
+
+/// Project a native tool definition onto the fixture's wire-mirror type.
+///
+/// The mirror carries exactly the three wire fields (name, description,
+/// schema); the native `source` provenance field has no mirror counterpart
+/// and is deliberately dropped.
+fn mirror_definition(definition: &PinToolDefinition) -> ToolDefinition {
+    ToolDefinition {
+        name: definition.name.as_str().to_owned(),
+        description: definition.description.clone(),
+        parameters: definition.input_schema.to_value(),
     }
-
-    tools.push(tool_definitions::respond_directly_definition());
-    tools.push(tool_definitions::create_plan_definition());
-    tools.push(tool_definitions::request_clarification_definition());
-
-    tools.push(tool_definitions::read_artifact_definition());
-
-    if scenario.preamble().tools.history == HistoryTools::Included {
-        tools.push(tool_definitions::list_prior_runs_definition());
-    }
-
-    if !scenario.preamble().skills.is_empty() {
-        tools.push(tool_definitions::load_skill_definition(
-            &scenario.preamble().skills,
-        ));
-        tools.push(tool_definitions::read_skill_file_definition());
-    }
-
-    Ok(tools)
 }
 
 /// The worker's in-repo tool definitions in production registration order

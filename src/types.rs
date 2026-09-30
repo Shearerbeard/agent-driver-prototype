@@ -1275,12 +1275,15 @@ mod tests {
         assert!(prompt.contains("AREAS NEEDING ATTENTION:"));
         assert!(prompt.contains("- Missing root cause"));
         assert!(prompt.contains("- No remediation steps"));
-        // Routing tool block must be present
-        assert!(prompt.contains("respond_directly"));
+        // Decision-point block names only registered tools
+        assert!(prompt.contains("`respond`"));
         assert!(prompt.contains("create_plan"));
-        assert!(prompt.contains("request_clarification"));
-        // The artifact-read directive is integral to the template
-        assert!(prompt.contains("read_artifact"));
+        assert!(prompt.contains("inspect_run"));
+        // The retired router vocabulary is gone from the decision point
+        assert!(!prompt.contains("respond_directly"));
+        assert!(!prompt.contains("request_clarification"));
+        assert!(!prompt.contains("read_artifact"));
+        assert!(!prompt.contains("routing tool"));
     }
 
     #[test]
@@ -1390,7 +1393,9 @@ mod tests {
     fn test_continuation_prompt_preserves_artifact_footer() {
         // Regression guard: when a result contains the artifact footer
         // appended by maybe_create_artifact, the truncation must preserve
-        // the footer so the coordinator can call read_artifact.
+        // the footer so the artifact filename stays available for follow-up
+        // task descriptions (a worker reads the artifact; the coordinator
+        // has no artifact tool).
         let mut plan = Plan::new("Test artifact footer");
         let mut task = Task::new(0, "Big result", "Produce output");
         // 600 'x' chars + the artifact footer (past 500-byte budget)
