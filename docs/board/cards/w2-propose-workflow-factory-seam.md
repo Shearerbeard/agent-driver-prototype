@@ -8,7 +8,7 @@ lineage: isolated-branch
 executor: smart
 gates: "S -> A -> U -> U"
 user-gates: [code-review, proposal-quality]
-commit-range: eb9a67b..76f6103
+commit-range: eb9a67b..39c06c1
 ---
 
 # W2: propose_workflow through the factory - coordinator tools land, propose-only
@@ -204,3 +204,49 @@ on `integration/workflow` after its second Gate U. Worktree:
   manual codex route under the standing approval (the in-harness GPT
   reviewer lane failed its read probe twice post-restore - the openai
   provider route, not the pin). Board owner.
+- 2026-09-30 Gate A round 1 FAIL (1 BLOCKING, 0 MINOR), fixed and
+  re-ranged. Reviewer: manual codex route (gpt-5.6-sol; session
+  01a0f4b1-8cfb-7143-8e6e-3d75aba839f4; 116,203 tokens) under the
+  standing approval - the in-harness GPT lane stayed dead after the
+  pin restore. Author lanes: rust-write (Kimi) + rust-fill (GLM) +
+  board-owner integration (GLM); invariant holds. Finding 1
+  (BLOCKING): live registration bypassed the factory seam -
+  CoordinatorLoop::new hand-built its tool vector while the factory
+  fed only the claims paths, and the mounted tool-truth tests
+  hand-inserted the expected name, so registration and claims could
+  diverge silently (the exact S114 failure; driver.rs:386,
+  tool_truth_tests.rs:668/:686). DISPOSITION: ACCEPTED and fixed by
+  the board owner in e8ea925 - the pairs functions take the
+  registered names, the driver derives them from the tools the
+  session actually holds (read off the registered instances in
+  registration order), the summary registry fails loud on an
+  unregistered name, and the mounted tests derive their expectation
+  from the mounted factory list. Unmounted rendering byte-identical
+  through the rework (snapshots untouched); suite green at 443, fmt
+  and clippy clean. Checks the reviewer ran: full read of card/
+  packet/diff/current files; rg over factory, prompt, registration,
+  config, and mutation call sites; range/snapshot/worktree
+  verification; fmt --check passed; clippy/test/boardkit UNVERIFIED
+  in its read-only sandbox (board owner re-ran: green).
+  commit-range extends eb9a67b..76f6103 -> eb9a67b..39c06c1 (fix
+  e8ea925 + Gate D doc sweep 39c06c1); packet regenerates for the
+  round-2 re-review per the fix-commit duty. Board owner.
+- 2026-09-30 Gate D drift audit (general lane, DeepSeek, session
+  ses_f0b4e32e5ffeWnlMSJIqRrotfu): 16 findings - anchors and every
+  Gate S evidence claim (443 tests, one new snapshot, fmt/clippy,
+  branch, range, trailers) CONFIRMED exactly; 7 drift items.
+  Dispositions: six doc fixes landed in 39c06c1 (tool-truth module
+  header, driver run() doc, three coordinator_loop/DESIGN.md
+  unconditional-four claims, README coordinator-loop description and
+  --config enumeration now naming [workflow], ShimState field list
+  names workflow); the seventh - the Layer-1 scope ruling did not
+  name src/workflow/mod.rs (the module-root plumbing for tool.rs and
+  render.rs) - is amended here: the ruled seam surface includes it.
+  Two pre-existing README vale errors (ExplainerHeadings, MicDrop at
+  lines 43/45, present at HEAD~1) logged as out-of-diff, not fixed.
+  Also flagged, left as logged divergence: planning_prompt.md retains
+  a hardcoded four-tool claim reachable only by the unmounted fixture
+  path (its only caller), not by mounted runs; retiring that legacy
+  wrapper is future work beyond this card. Report at
+  .review/w2-gateD/ (gitignored; this log is the durable record).
+  Board owner.
