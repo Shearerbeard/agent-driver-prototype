@@ -135,3 +135,20 @@ on `integration/workflow` after its second Gate U. Worktree:
   restart). Execution begins: rust-write dispatched for the tool +
   seam skeleton, rust-fill for fill units, per the generated brief.
   Board owner.
+- 2026-09-30 Layer-1 skeleton delivered by rust-write (session
+  ses_f0e449989ffesnNtc4upQYEnbE), UNCOMMITTED in the w2 worktree
+  pending board-owner integration. Executor could not run cargo (its
+  sandbox lacked shell permission in the worktree - the session
+  driver then added the worktrees to the harness external-directory
+  allowlist; restart pending). Board owner's first check found one
+  compile error (Tool trait not in scope at the driver registration
+  site, driver.rs:393) plus one warning - to fix at integration.
+  Scope note owed a ruling: the seam required five files beyond the
+  card's seven (coordinator_loop/driver.rs, coordinator_loop/mod.rs,
+  templates.rs, bin/server.rs, plus description alignments in three
+  existing tool files) because the named files cannot compile in
+  isolation; the board owner's ruling (accept as the minimal
+  compiling seam, byte-identical goldens as the acceptance guard)
+  lands with the Layer-1 commit. Stray .agy-mcp/ directory in the
+  worktree from the executor's transport attempt - remove at
+  integration. Board owner.
