@@ -35,7 +35,7 @@ use agent_driver_prototype::coordinator_loop::{
     ChatHistory, ChatTurn, ChatTurnRole, CoordinatorLoop, CoordinatorLoopConfig,
     CoordinatorLoopError, CoordinatorOutcome, CreatePlanArgs, ExecutionObservation, FinalResponse,
     InterruptionReason, LoopBudget, OutcomeCounts, PlanExecutor, PlanId, PlanObservation, RunStore,
-    TaskObservation, TerminalSlot, WorkerRoster, WorkerSections,
+    TaskObservation, TerminalSlot, WorkerRoster, WorkerSections, coordinator_tool_names,
     coordinator_tool_planning_loop_pairs,
 };
 use agent_driver_prototype::dag_executor::{DagExecutor, WorkerLoopConfig, WorkerToolMount};
@@ -1171,7 +1171,9 @@ fn from_roster_with_no_workers_renders_empty_sections() {
 #[test]
 fn planning_loop_message_through_from_roster() {
     let sections = test_sections();
-    let tools = render_planning_loop_tools_section(&coordinator_tool_planning_loop_pairs(None));
+    let tools = render_planning_loop_tools_section(&coordinator_tool_planning_loop_pairs(
+        &coordinator_tool_names(),
+    ));
     let message = render_planning_loop_prompt(&PlanningLoopVars {
         timestamp: "2026-07-27T12:00:00Z",
         chat_history: "",
@@ -1192,7 +1194,9 @@ fn planning_loop_message_through_from_roster() {
 #[test]
 fn planning_loop_message_folds_history_once_in_order() {
     let sections = test_sections();
-    let tools = render_planning_loop_tools_section(&coordinator_tool_planning_loop_pairs(None));
+    let tools = render_planning_loop_tools_section(&coordinator_tool_planning_loop_pairs(
+        &coordinator_tool_names(),
+    ));
     let history = ChatHistory::new(vec![
         ChatTurn {
             role: ChatTurnRole::User,
@@ -1254,7 +1258,9 @@ fn single_turn_history_renders_away() {
     assert_eq!(ChatHistory::new(vec![]).render_block(), "");
 
     let sections = test_sections();
-    let tools = render_planning_loop_tools_section(&coordinator_tool_planning_loop_pairs(None));
+    let tools = render_planning_loop_tools_section(&coordinator_tool_planning_loop_pairs(
+        &coordinator_tool_names(),
+    ));
     let single_turn = render_planning_loop_prompt(&PlanningLoopVars {
         timestamp: "2026-09-03T12:00:00Z",
         chat_history: "",

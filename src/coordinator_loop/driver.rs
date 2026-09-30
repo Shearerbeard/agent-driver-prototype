@@ -4,7 +4,6 @@
 use std::sync::Arc;
 
 use agent_driver_rs::agent::{AgentEvent, AgentLoop, AgentLoopConfig, AgentObserver};
-use agent_driver_rs::tool::Tool;
 use agent_driver_rs::{DynTool, ModelId, Provider, Session, SessionBuilder, SystemPrompt};
 use async_trait::async_trait;
 use tokio_util::sync::CancellationToken;
@@ -388,11 +387,15 @@ impl CoordinatorLoop {
             tools.push(Arc::clone(propose_workflow) as DynTool);
         }
 
-        let workflow_definition = config
-            .propose_workflow
-            .as_ref()
-            .map(|tool| tool.definition());
-        let planning_loop_pairs = coordinator_tool_planning_loop_pairs(workflow_definition);
+        // Claims derive from the registration itself: the names the model is
+        // told about are the names of the tools the session actually holds,
+        // read off the registered instances in registration order. Nothing
+        // appends to the claims independently of this list (S114).
+        let registered_names: Vec<&str> = tools
+            .iter()
+            .map(|tool| tool.definition().name.as_str())
+            .collect();
+        let planning_loop_pairs = coordinator_tool_planning_loop_pairs(&registered_names);
         let coordinator_tools_section = render_planning_loop_tools_section(&planning_loop_pairs);
 
         let session = SessionBuilder::new()

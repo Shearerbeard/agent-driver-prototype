@@ -20,7 +20,8 @@ use crate::config_builders::{
 };
 use crate::coordinator_loop::{
     WorkerRoster, WorkerSections, coordinator_tool_definitions,
-    coordinator_tool_definitions_with_workflow, coordinator_tool_planning_loop_pairs,
+    coordinator_tool_definitions_with_workflow, coordinator_tool_names,
+    coordinator_tool_planning_loop_pairs,
 };
 use crate::message::{Message, ToolDefinition};
 use crate::persistence::ToolTraceEntry;
@@ -60,12 +61,11 @@ pub(crate) fn compose_coordinator_preamble(fixture: &PreambleFixture) -> String 
     // workflow definition extends the factory to five; without one the
     // preamble is byte-identical to the pre-W2 golden.
     let mut preamble = match fixture.workflow_definition.as_ref() {
-        Some(definition) => build_coordinator_preamble_with_workflow(
-            &fixture.playbook,
-            false,
-            false,
-            Some(definition),
-        ),
+        Some(definition) => {
+            let mut registered = coordinator_tool_names();
+            registered.push(definition.name.as_str());
+            build_coordinator_preamble_with_workflow(&fixture.playbook, false, false, &registered)
+        }
         None => build_coordinator_preamble(&fixture.playbook, false, false),
     };
     if let Some(catalog) = render_coordinator_skill_catalog(&fixture.skills) {
@@ -195,7 +195,9 @@ pub(crate) fn coordinator_envelope(
     let planning_wrapper = match scenario.preamble().workflow_definition.as_ref() {
         Some(definition) => {
             let timestamp = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
-            let pairs = coordinator_tool_planning_loop_pairs(Some(definition));
+            let mut registered = coordinator_tool_names();
+            registered.push(definition.name.as_str());
+            let pairs = coordinator_tool_planning_loop_pairs(&registered);
             render_planning_loop_prompt(&PlanningLoopVars {
                 timestamp: &timestamp,
                 chat_history: "",

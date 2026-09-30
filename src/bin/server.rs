@@ -42,7 +42,9 @@ use agent_driver_prototype::config::OrchestrationConfig;
 use agent_driver_prototype::config_builders::{
     build_coordinator_preamble_with_workflow, build_worker_preamble,
 };
-use agent_driver_prototype::coordinator_loop::{LoopBudget, WorkerRoster, WorkerSections};
+use agent_driver_prototype::coordinator_loop::{
+    LoopBudget, WorkerRoster, WorkerSections, coordinator_tool_names,
+};
 use agent_driver_prototype::dag_executor::WorkerLoopConfig;
 use agent_driver_prototype::mcp_client::SidecarClient;
 use agent_driver_prototype::producers::{ToolInventory, resolve_worker_tools};
@@ -50,7 +52,6 @@ use agent_driver_prototype::shim_config::{McpTransport, load_shim_config};
 use agent_driver_prototype::sse_shim::{
     LiveRequests, OtelConfig, OtelGuard, ShimCliArgs, ShimError, ShimPort, ShimState, ShutdownAbort,
 };
-use agent_driver_prototype::workflow::ProposeWorkflowTool;
 
 use agent_driver_rs::config::ProviderConfig;
 use agent_driver_rs::provider::{AnthropicProvider, BedrockProvider, OpenAiProvider};
@@ -168,15 +169,15 @@ async fn build_state(args: &ShimCliArgs) -> Result<ShimState, ShimError> {
     // `propose_workflow`, so the preamble claims the same surface the loop
     // registers.
     let agent_system_prompt = config.agent.system_prompt.unwrap_or_default();
-    let workflow_definition = config
-        .workflow
-        .enabled
-        .then(ProposeWorkflowTool::definition);
+    let mut registered = coordinator_tool_names();
+    if config.workflow.enabled {
+        registered.push("propose_workflow");
+    }
     let coordinator_prompt = SystemPrompt::new(build_coordinator_preamble_with_workflow(
         &agent_system_prompt,
         false,
         false,
-        workflow_definition.as_ref(),
+        &registered,
     ));
 
     // Worker sections from the typed roster, resolved against what the

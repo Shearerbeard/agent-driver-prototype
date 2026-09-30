@@ -103,46 +103,64 @@ pub fn coordinator_tool_definitions_with_workflow(
     definitions
 }
 
+/// The registered names of the base four, in registration order - the
+/// unmounted claims source for callers without a live registration list.
+pub fn coordinator_tool_names() -> Vec<&'static str> {
+    COORDINATOR_TOOL_SPECS
+        .iter()
+        .map(|spec| spec.name)
+        .collect()
+}
+
 /// Preamble-style (short) summary pairs for the coordinator preamble tools
 /// section.
 ///
-/// The factory is the single source for both names and summaries: the same
-/// place the definitions come from, so nothing is stated twice.
-pub fn coordinator_tool_preamble_pairs<'a>(
-    workflow: Option<&'a ToolDefinition>,
-) -> Vec<(&'a str, &'a str)> {
-    let mut pairs: Vec<(&'a str, &'a str)> = COORDINATOR_TOOL_SPECS
+/// The registered names are the source: callers pass the names of the tools
+/// a run actually registers (the driver derives them from its registered
+/// instances), and the summary registry is keyed by those names. A name
+/// with no summary fails loud rather than silently omitting a registered
+/// tool from the claims - the exact divergence S114 exists to prevent.
+pub fn coordinator_tool_preamble_pairs<'a>(registered: &[&'a str]) -> Vec<(&'a str, &'static str)> {
+    registered
         .iter()
-        .map(|spec| (spec.name, spec.preamble_summary))
-        .collect();
-    if let Some(definition) = workflow {
-        pairs.push((
-            definition.name.as_str(),
-            crate::workflow::ProposeWorkflowTool::PREAMBLE_SUMMARY,
-        ));
-    }
-    pairs
+        .map(|name| (*name, preamble_summary_for(name)))
+        .collect()
 }
 
 /// Planning-loop-style (longer) summary pairs for the loop planning wrapper's
-/// tools section.
-///
-/// The factory is the single source for both names and summaries: the same
-/// place the definitions come from, so nothing is stated twice.
+/// tools section, derived from the registered names exactly as the preamble
+/// pairs are.
 pub fn coordinator_tool_planning_loop_pairs<'a>(
-    workflow: Option<&'a ToolDefinition>,
-) -> Vec<(&'a str, &'a str)> {
-    let mut pairs: Vec<(&'a str, &'a str)> = COORDINATOR_TOOL_SPECS
+    registered: &[&'a str],
+) -> Vec<(&'a str, &'static str)> {
+    registered
         .iter()
-        .map(|spec| (spec.name, spec.planning_loop_summary))
-        .collect();
-    if let Some(definition) = workflow {
-        pairs.push((
-            definition.name.as_str(),
-            crate::workflow::ProposeWorkflowTool::PLANNING_LOOP_SUMMARY,
-        ));
+        .map(|name| (*name, planning_loop_summary_for(name)))
+        .collect()
+}
+
+fn preamble_summary_for(name: &str) -> &'static str {
+    if name == "propose_workflow" {
+        return crate::workflow::ProposeWorkflowTool::PREAMBLE_SUMMARY;
     }
-    pairs
+    COORDINATOR_TOOL_SPECS
+        .iter()
+        .find(|spec| spec.name == name)
+        .map(|spec| spec.preamble_summary)
+        .unwrap_or_else(|| panic!("no preamble summary registered for coordinator tool {name}"))
+}
+
+fn planning_loop_summary_for(name: &str) -> &'static str {
+    if name == "propose_workflow" {
+        return crate::workflow::ProposeWorkflowTool::PLANNING_LOOP_SUMMARY;
+    }
+    COORDINATOR_TOOL_SPECS
+        .iter()
+        .find(|spec| spec.name == name)
+        .map(|spec| spec.planning_loop_summary)
+        .unwrap_or_else(|| {
+            panic!("no planning-loop summary registered for coordinator tool {name}")
+        })
 }
 
 /// Build a native tool definition from this module's literals.

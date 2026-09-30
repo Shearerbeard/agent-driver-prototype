@@ -43,6 +43,7 @@ use crate::config_builders::{
 use crate::context::PinnedGoal;
 use crate::coordinator_loop::{
     CreatePlanArgs, WorkerRoster, WorkerSections, coordinator_tool_definitions,
+    coordinator_tool_definitions_with_workflow, coordinator_tool_names,
     coordinator_tool_planning_loop_pairs,
 };
 use crate::fixture::{
@@ -644,7 +645,7 @@ fn planning_wrapper_names_the_registered_tools() {
 #[test]
 fn planning_loop_wrapper_names_the_registered_tools() {
     let sections = worker_sections_for(&coordinator_scenarios()[0]);
-    let pairs = coordinator_tool_planning_loop_pairs(None);
+    let pairs = coordinator_tool_planning_loop_pairs(&coordinator_tool_names());
     let coordinator_tools = render_planning_loop_tools_section(&pairs);
     let wrapper = render_planning_loop_prompt(&PlanningLoopVars {
         timestamp: "inert-timestamp",
@@ -665,15 +666,22 @@ fn planning_loop_wrapper_names_the_registered_tools() {
 fn mounted_preamble_tools_section_names_the_registered_tools() {
     let sections = worker_sections_for(&coordinator_scenarios()[0]);
     let workflow_definition = ProposeWorkflowTool::definition();
-    let mut expected = factory_names(&sections);
-    expected.insert("propose_workflow".to_owned());
-    let preamble =
-        build_coordinator_preamble_with_workflow("", false, false, Some(&workflow_definition));
+    // The expected names come from the mounted factory list itself, not a
+    // hand-built set: this test fails if the factory and the rendered claims
+    // ever diverge (the S114 invariant).
+    let expected: BTreeSet<String> =
+        coordinator_tool_definitions_with_workflow(&sections, Some(&workflow_definition))
+            .iter()
+            .map(|definition| definition.name.as_str().to_owned())
+            .collect();
+    let mut registered = coordinator_tool_names();
+    registered.push(workflow_definition.name.as_str());
+    let preamble = build_coordinator_preamble_with_workflow("", false, false, &registered);
     let tools_section = section_between(&preamble, "## Your Tools", "## Core Behavior");
     assert_eq!(
         backticked_tokens(tools_section),
         expected,
-        "mounted preamble tools section must name the workflow tool too"
+        "mounted preamble tools section must name exactly the registered tools"
     );
 }
 
@@ -681,10 +689,17 @@ fn mounted_preamble_tools_section_names_the_registered_tools() {
 fn mounted_planning_loop_wrapper_names_the_registered_tools() {
     let sections = worker_sections_for(&coordinator_scenarios()[0]);
     let workflow_definition = ProposeWorkflowTool::definition();
-    let pairs = coordinator_tool_planning_loop_pairs(Some(&workflow_definition));
+    // Expected names derive from the mounted factory list, not a hand-built
+    // set: registration and claims must name the same tools (S114).
+    let expected: BTreeSet<String> =
+        coordinator_tool_definitions_with_workflow(&sections, Some(&workflow_definition))
+            .iter()
+            .map(|definition| definition.name.as_str().to_owned())
+            .collect();
+    let mut registered = coordinator_tool_names();
+    registered.push(workflow_definition.name.as_str());
+    let pairs = coordinator_tool_planning_loop_pairs(&registered);
     let coordinator_tools = render_planning_loop_tools_section(&pairs);
-    let mut expected = factory_names(&sections);
-    expected.insert("propose_workflow".to_owned());
     let wrapper = render_planning_loop_prompt(&PlanningLoopVars {
         timestamp: "inert-timestamp",
         chat_history: "",
@@ -696,7 +711,7 @@ fn mounted_planning_loop_wrapper_names_the_registered_tools() {
     assert_eq!(
         numbered_tool_names(&wrapper),
         expected,
-        "mounted loop planning wrapper tools list must name the workflow tool too"
+        "mounted loop planning wrapper tools list must name exactly the registered tools"
     );
 }
 

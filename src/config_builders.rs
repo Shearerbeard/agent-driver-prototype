@@ -6,10 +6,8 @@
 //! `env_flags` escape-hatch toggle: coordinator/worker preamble building and
 //! vector-store context strings.
 
-use agent_driver_rs::tool::ToolDefinition;
-
 use crate::config::VectorStoreConfig;
-use crate::coordinator_loop::coordinator_tool_preamble_pairs;
+use crate::coordinator_loop::{coordinator_tool_names, coordinator_tool_preamble_pairs};
 
 // ============================================================================
 // Vector Store Context Helpers
@@ -143,7 +141,7 @@ pub fn build_coordinator_preamble(
         agent_system_prompt,
         include_recon_tools,
         include_history_tools,
-        None,
+        &coordinator_tool_names(),
     )
 }
 
@@ -152,16 +150,17 @@ pub fn build_coordinator_preamble(
 ///
 /// When `workflow` is `None` the tools section renders the four core
 /// coordinator tools and is byte-identical to the pre-W2 golden. When
-/// `workflow` is `Some`, the factory appends it and the count/list follow.
+/// `registered` names the tools this run registers; the factory derives the
+/// count/list from them.
 pub fn build_coordinator_preamble_with_workflow(
     agent_system_prompt: &str,
     include_recon_tools: bool,
     include_history_tools: bool,
-    workflow: Option<&ToolDefinition>,
+    registered: &[&str],
 ) -> String {
     let _ = (include_recon_tools, include_history_tools);
 
-    let pairs = coordinator_tool_preamble_pairs(workflow);
+    let pairs = coordinator_tool_preamble_pairs(registered);
     let tools_section = render_coordinator_tools_section(&pairs);
 
     let preamble =
