@@ -118,3 +118,12 @@ on `integration/workflow` after its second Gate U. Worktree:
   W2 is a code card, so its Gate A routes to code-review). Executor
   dispatches have not started; the brief regenerates at each dispatch
   per the staleness rule. Board owner.
+- 2026-09-29 Session close: orientation canary PASS 4/4 against the
+  pre-computed key (general lane, cross-family; key, verbatim
+  answers, grade, cost record, and worktree accounting at
+  [the close evidence](../evidence/2026-09-29-w1-gates-session-close.md)).
+  Board state: W1 done on integration/workflow, this card
+  in-progress with dispatches unstarted, W5 and S103 ready, no
+  deferred gates, views current, board writes committed. Worktrees:
+  primary (main, board), integration (evaluation checkout),
+  ../agent-driver-prototype-w2 (this card). Board owner.
