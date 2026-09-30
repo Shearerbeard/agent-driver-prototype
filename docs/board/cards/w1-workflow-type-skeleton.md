@@ -1,7 +1,7 @@
 ---
 id: W1
 title: Workflow type skeleton - spec, bindings, validation, $.-path subset
-status: in-review
+status: done
 depends: []
 serialize-with: []
 lineage: isolated-branch
@@ -64,10 +64,10 @@ need anything else, stop and report instead.
 ## Design record
 
 The card's typed-holes design record:
-[the card/w1 worktree copy](../../../../agent-driver-prototype-w1/src/workflow/DESIGN.md)
-until merge. At the done turn this link flips to the in-repo record
-(`src/workflow/DESIGN.md` on main) before the worktree is removed, so
-boardkit check never sees a dangling target. The record carries the
+[the integration worktree copy](../../../../agent-driver-prototype-integration/src/workflow/DESIGN.md),
+where the line lives while under evaluation. The link flips to the
+in-repo path (`src/workflow/DESIGN.md` on main) if and when the
+integration line is ratified into main. The record carries the
 "Type relationships" heading, so `boardkit review-packet` can lift it.
 
 ## Gate checklist
@@ -90,14 +90,20 @@ boardkit check never sees a dangling target. The record carries the
 - [x] Gate U (code-review): board owner presents the review packet and
       STOPS. (Approved 2026-09-29 by Mike in session; packet and gate
       results presented, push deferred to his word.)
-- [ ] Gate U (type-surface): board owner presents the type surface and
+- [x] Gate U (type-surface): board owner presents the type surface and
       its ADR-relevant rulings (field naming, bounds semantics), STOPS.
+      (Approved 2026-09-29 by Mike in session, with the
+      integration-branch landing ruling recorded in the Log.)
 
 ## Branch
 
-`card/w1` off `main` when pulled; merges after its Gate U. Worktree:
-`../agent-driver-prototype-w1` (sibling of the primary checkout, which
-stays on `main` and holds the board).
+`card/w1` off `main` when pulled; landed 2026-09-29 on
+`integration/workflow` (merge `eb9a67b`, merge-commit shape) per
+Mike's evaluation ruling - NOT to main; main is untouched until the
+approach is ratified. The integration worktree
+`../agent-driver-prototype-integration` is the side-use checkout and
+the design record's home while evaluation runs. The card worktree
+`../agent-driver-prototype-w1` was removed at done.
 
 ## Log
 
@@ -261,3 +267,27 @@ stays on `main` and holds the board).
   answered: main stays ahead of origin, unpushed, pending his word;
   it re-surfaces before the PR. Checklist box ticked this turn.
   Board owner.
+- 2026-09-29 Gate U (type-surface) approved by Mike in session, with a
+  landing ruling: the end result stays on an integration branch for
+  side use while he evaluates whether the approach is final - card/w1
+  merges to integration/workflow (merge-commit shape), NOT to main;
+  main stays untouched until ratification. No PR is created for this
+  leg (the ruling replaces the PR-to-main flow for the evaluation
+  phase; the PR happens when and if the line is ratified into main).
+  Surface presented: the eleven public types, rulings R1-R6 with D3
+  naming reconciliation and the 18886ec0 bounds-artifact verification
+  still owed to the ADR, and the W2/W3/W4 consumption seams. Push
+  still unanswered: main remains ahead of origin, unpushed, his call.
+  Checklist box ticked this turn. Board owner.
+- 2026-09-29 Done. card/w1 merged to integration/workflow (eb9a67b,
+  no-ff) per the evaluation ruling; no PR, main untouched.
+  Acceptance verified by the board owner itself on the landing target
+  (worktree ../agent-driver-prototype-integration at eb9a67b): cargo
+  fmt --check clean, clippy --all-targets --locked zero warnings,
+  cargo test --locked 428 passed / 0 failed. Final range
+  b66f982^..3e2b297 (8 commits). Design-record link flipped to the
+  integration worktree copy; the w1 card worktree removed at done.
+  Successor note: W2 pulls next and branches card/w2 off
+  integration/workflow, not main - the coordinator-tools line builds
+  on the integration branch until the approach is ratified. Board
+  owner.
