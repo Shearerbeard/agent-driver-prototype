@@ -123,3 +123,15 @@ stays on `main` and holds the board).
   deadline) per the stall protocol; seat 2 pending - codex needs Mike's
   approval, a single-seat panel is a weakened typed-holes gate. Board
   owner.
+- 2026-09-29 Mike approved one billable codex seat for the panel.
+  Round 1 verdicts: kimi K3 FAIL (3 blocking + 4 minor; transcript
+  .review/w1-panel/kimi-seat.md, resumable session 796c3dda) and codex
+  FAIL (5 blocking + 2 minor; .review/w1-panel/codex-seat.md). Eight
+  blocking findings between the seats, every one dispositioned in
+  src/workflow/DESIGN.md's panel ledger; seat splits ruled by the
+  board owner (R3 reject empty specs, R5 anywhere-in-tree references).
+  Repairs committed e38dd1d + 442a93c on card/w1; fmt/clippy/test
+  green (368 tests), vale clean. Round 2 (disposition verification)
+  dispatched to the K3 seat on the subscription lane; the codex seat's
+  dispositions verified in the same packet and by the board owner,
+  within the one approved codex dispatch. Board owner.
