@@ -127,3 +127,11 @@ on `integration/workflow` after its second Gate U. Worktree:
   deferred gates, views current, board writes committed. Worktrees:
   primary (main, board), integration (evaluation checkout),
   ../agent-driver-prototype-w2 (this card). Board owner.
+- 2026-09-30 Mike's rulings in session, recorded: push approved and
+  done (main 7f114c0..4d9312e to origin; integration/workflow and
+  card/w2 pushed as new branches); the Gate A reviewer lane for this
+  card is manual codex dispatch (fresh approval granted for W2's Gate
+  A rounds - the in-harness GPT reviewer stays unrestored, no
+  restart). Execution begins: rust-write dispatched for the tool +
+  seam skeleton, rust-fill for fill units, per the generated brief.
+  Board owner.
