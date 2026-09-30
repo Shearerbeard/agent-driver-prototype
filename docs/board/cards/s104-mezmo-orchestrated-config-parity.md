@@ -3,7 +3,7 @@ id: S104
 title: Mezmo-orchestrated config parity - [agent.llm] from TOML, one warning per unimplemented section
 status: backlog
 depends: []
-serialize-with: [S103]
+serialize-with: [S103, W9]
 lineage: none
 executor: smart
 gates: "S -> A -> M -> U(mezmo-config)"
@@ -92,6 +92,9 @@ struct); merged after Gate U. Commits follow the S98 standard.
 
 ## Log
 
+- 2026-09-30 serialize-with gained W9 (edge verifier seam - shared
+  `src/shim_config.rs` surface), preserving the existing S103 link, at
+  the jev lane's mint. Board owner.
 - 2026-09-29 Re-minted backlog from the tb board, RESCOPED at remint:
   the bedrock-only premise was stale (S111/S115/S116 landed the
   provider arms, env-driven); the openai-in-build_provider deliverable

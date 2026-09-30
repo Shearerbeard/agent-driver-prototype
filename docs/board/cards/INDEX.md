@@ -6,23 +6,30 @@ Ready requires every entry in Depends to be done; the session
 running the board promotes eligible cards (PROCESS.md,
 Delegation protocol).
 
-CHARTER - owns: all work scoped to agent-driver-prototype: the workflow-proposal mechanism (W1-W6) and the re-minted CLI-drivability tail (S103, S104, S105, S107, S110)
+CHARTER - owns: all work scoped to agent-driver-prototype: the workflow-proposal mechanism (W1-W6), the re-minted CLI-drivability tail (S103, S104, S105, S107, S110), and the JEV edge-verification workstream (W7-W13: edge verifier, typed evidence, RCA eval harness; W7's spike lands in the jev-driver workspace, W8's wrapper and W13/W10's results land in ai-experiments - external-repo, shas logged)
 Not here: aura product implementation (the governance workstream owns the AURA Workflows direction), agent-driver-rs crate internals (the agent-driver-rs-adr board owns those), terminalbench-aura rig-scoped cards (the tb board keeps those), mock-mcp-service internals beyond W5's ops surface
 Route adr -> agent-driver-rs crate internals incl. adr/A18 (S110's pull gate): the agent-driver-rs-adr board in aura-session-docs
 Route governance -> the AURA Workflows direction and its open decisions: workstreams/governance.md in aura-session-docs (surface, never edit; garden process)
 Route tb -> terminalbench-aura rig-scoped cards and the done-card history of the S series: the tb board in terminalbench-aura (the five open prototype-scoped cards moved here 2026-09-29)
 Admission test: where does the diff land.
 
-| ID | Title | Status | Depends | Executor | Gates |
-|---|---|---|---|---|---|
-| [W1](w1-workflow-type-skeleton.md) | Workflow type skeleton - spec, bindings, validation, $.-path subset | done | - | smart | S -> A -> U(code-review) -> U(type-surface) |
-| [W2](w2-propose-workflow-factory-seam.md) | propose_workflow through the factory - coordinator tools land, propose-only | in-progress | W1 | smart | S -> A -> U -> U @ S |
-| [W3](w3-workflow-executor.md) | Deterministic workflow executor - resolve, apply, unwind, residual reporting | backlog | W2 | smart | S -> A |
-| [W4](w4-sync-approval-wire.md) | Sync approval wire - notify POST, status poll, blocking hold | backlog | W2 | smart | S -> A -> U |
-| [W5](w5-mock-mcp-ops-surface.md) | Mock-mcp ops surface - three remediation tools, per-session healing, ground truth | ready | - | smart | S -> A @ S |
-| [W6](w6-end-to-end-demo.md) | End-to-end demo - investigate, propose, approve, apply, heal, unwind | backlog | W2, W3, W4, W5 | any | S -> A -> M -> T |
-| [S103](s103-coordinator-mcp-filter.md) | Coordinator MCP access filtered by [agent].mcp_filter | ready | - | smart | S -> A -> U(code-review) @ S |
-| [S104](s104-mezmo-orchestrated-config-parity.md) | Mezmo-orchestrated config parity - [agent.llm] from TOML, one warning per unimplemented section | backlog | - | smart | S -> A -> M -> U(mezmo-config) |
-| [S105](s105-main-drift-catch-up.md) | Main-drift catch-up shortlist (inventory-gated) | backlog | - | smart | S -> A -> U(code-review) |
-| [S107](s107-identity-header-capture.md) | Identity header forwarding to MCP (headers_from_request) and session id from the request | backlog | - | smart | S -> A -> U(code-review) |
-| [S110](s110-collapse-mcp-client.md) | Collapse the prototype mcp_client onto the agent-driver-rs MCP client | backlog | - | smart | S -> A -> U(code-review) |
+| ID | Title | Lane | Status | Depends | Executor | Gates |
+|---|---|---|---|---|---|---|
+| [W1](w1-workflow-type-skeleton.md) | Workflow type skeleton - spec, bindings, validation, $.-path subset | - | done | - | smart | S -> A -> U(code-review) -> U(type-surface) |
+| [W2](w2-propose-workflow-factory-seam.md) | propose_workflow through the factory - coordinator tools land, propose-only | - | in-progress | W1 | smart | S -> A -> U -> U @ S |
+| [W3](w3-workflow-executor.md) | Deterministic workflow executor - resolve, apply, unwind, residual reporting | - | backlog | W2 | smart | S -> A |
+| [W4](w4-sync-approval-wire.md) | Sync approval wire - notify POST, status poll, blocking hold | - | backlog | W2 | smart | S -> A -> U |
+| [W5](w5-mock-mcp-ops-surface.md) | Mock-mcp ops surface - three remediation tools, per-session healing, ground truth | - | ready | - | smart | S -> A @ S |
+| [W6](w6-end-to-end-demo.md) | End-to-end demo - investigate, propose, approve, apply, heal, unwind | - | backlog | W2, W3, W4, W5 | any | S -> A -> M -> T |
+| [W7](w7-jev-rubric-research-spike.md) | JEV rubric research spike - synthetic edge corpus, sealed rubric, accuracy + latency read | jev | ready | - | smart | S -> A -> D -> U(rubric) @ S |
+| [W8](w8-prototype-rca-harness.md) | Prototype RCA harness - contract-retrofitted config, runner wrapper, single-scenario smoke | jev | ready | - | smart | S -> A -> D -> U(code-review) @ S |
+| [W9](w9-edge-verifier-seam.md) | EdgeVerifier seam + JevEdgeVerifier - observe-only verdict artifacts per submitted edge | jev | backlog | W7 | smart | S -> A -> D -> U(code-review) -> U(type-surface) |
+| [W10](w10-rca-verifier-experiment.md) | RCA verifier experiment - verdict/outcome correlation, score deltas, latency and cost report | jev | backlog | W13, W9 | smart | S -> A -> M -> D -> U(findings) |
+| [W11](w11-typed-evidence-architecture.md) | Typed evidence artifacts + JEV-ranked context assembly - architecture | jev | backlog | W10 | smart | S -> A -> D -> U(architecture) |
+| [W12](w12-edge-gating-policy.md) | Edge gating policy - verifier verdicts affect control flow (deferred; own plan after W10) | jev | backlog | W10 | smart | S -> A -> D -> U(code-review) |
+| [W13](w13-full-rca-baseline.md) | Full RCA baseline against the prototype - 12 scenarios x 3 iters, verifier off | jev | backlog | W8, S107 | smart | S -> A -> M -> D -> U(code-review) |
+| [S103](s103-coordinator-mcp-filter.md) | Coordinator MCP access filtered by [agent].mcp_filter | - | ready | - | smart | S -> A -> U(code-review) @ S |
+| [S104](s104-mezmo-orchestrated-config-parity.md) | Mezmo-orchestrated config parity - [agent.llm] from TOML, one warning per unimplemented section | - | backlog | - | smart | S -> A -> M -> U(mezmo-config) |
+| [S105](s105-main-drift-catch-up.md) | Main-drift catch-up shortlist (inventory-gated) | - | backlog | - | smart | S -> A -> U(code-review) |
+| [S107](s107-identity-header-capture.md) | Identity header forwarding to MCP (headers_from_request) and session id from the request | - | backlog | - | smart | S -> A -> U(code-review) |
+| [S110](s110-collapse-mcp-client.md) | Collapse the prototype mcp_client onto the agent-driver-rs MCP client | - | backlog | - | smart | S -> A -> U(code-review) |

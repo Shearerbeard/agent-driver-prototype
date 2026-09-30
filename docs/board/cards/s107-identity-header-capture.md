@@ -3,7 +3,7 @@ id: S107
 title: Identity header forwarding to MCP (headers_from_request) and session id from the request
 status: backlog
 depends: []
-serialize-with: []
+serialize-with: [W9]
 lineage: none
 executor: smart
 gates: "S -> A -> U(code-review)"
@@ -97,6 +97,9 @@ follow the S98 standard.
 
 ## Log
 
+- 2026-09-30 serialize-with gained W9 (edge verifier seam - shared
+  `src/shim_config.rs` / `src/sse_shim/server.rs` surface) at the jev
+  lane's mint. Board owner.
 - 2026-09-29 Re-minted backlog from the tb board; premise re-verified
   (no header forwarding in src); serialize-with tb/S101 dropped (that
   card is done); depends on tb/S106 (done) - satisfied at remint; the

@@ -4,11 +4,15 @@ kanban-plugin: board
 
 ---
 
-%% CHARTER - owns: all work scoped to agent-driver-prototype: the workflow-proposal mechanism (W1-W6) and the re-minted CLI-drivability tail (S103, S104, S105, S107, S110) / Not here: aura product implementation (the governance workstream owns the AURA Workflows direction), agent-driver-rs crate internals (the agent-driver-rs-adr board owns those), terminalbench-aura rig-scoped cards (the tb board keeps those), mock-mcp-service internals beyond W5's ops surface / Route adr -> agent-driver-rs crate internals incl. adr/A18 (S110's pull gate): the agent-driver-rs-adr board in aura-session-docs / Route governance -> the AURA Workflows direction and its open decisions: workstreams/governance.md in aura-session-docs (surface, never edit; garden process) / Route tb -> terminalbench-aura rig-scoped cards and the done-card history of the S series: the tb board in terminalbench-aura (the five open prototype-scoped cards moved here 2026-09-29) / Admission test: where does the diff land. %%
+%% CHARTER - owns: all work scoped to agent-driver-prototype: the workflow-proposal mechanism (W1-W6), the re-minted CLI-drivability tail (S103, S104, S105, S107, S110), and the JEV edge-verification workstream (W7-W13: edge verifier, typed evidence, RCA eval harness; W7's spike lands in the jev-driver workspace, W8's wrapper and W13/W10's results land in ai-experiments - external-repo, shas logged) / Not here: aura product implementation (the governance workstream owns the AURA Workflows direction), agent-driver-rs crate internals (the agent-driver-rs-adr board owns those), terminalbench-aura rig-scoped cards (the tb board keeps those), mock-mcp-service internals beyond W5's ops surface / Route adr -> agent-driver-rs crate internals incl. adr/A18 (S110's pull gate): the agent-driver-rs-adr board in aura-session-docs / Route governance -> the AURA Workflows direction and its open decisions: workstreams/governance.md in aura-session-docs (surface, never edit; garden process) / Route tb -> terminalbench-aura rig-scoped cards and the done-card history of the S series: the tb board in terminalbench-aura (the five open prototype-scoped cards moved here 2026-09-29) / Admission test: where does the diff land. %%
 
 ## Ready
 - [ ] **W5** [Mock-mcp ops surface - three remediation tools, per-session healing, ground truth](w5-mock-mcp-ops-surface.md)
 	Depends: none. Gates: S -> A @ S. Executor: smart.
+- [ ] **W7** [JEV rubric research spike - synthetic edge corpus, sealed rubric, accuracy + latency read](w7-jev-rubric-research-spike.md)
+	Depends: none. Gates: S -> A -> D -> U(rubric) @ S. Executor: smart. Lane: jev.
+- [ ] **W8** [Prototype RCA harness - contract-retrofitted config, runner wrapper, single-scenario smoke](w8-prototype-rca-harness.md)
+	Depends: none. Gates: S -> A -> D -> U(code-review) @ S. Executor: smart. Lane: jev.
 - [ ] **S103** [Coordinator MCP access filtered by [agent].mcp_filter](s103-coordinator-mcp-filter.md)
 	Depends: none. Gates: S -> A -> U(code-review) @ S. Executor: smart.
 
@@ -25,6 +29,16 @@ kanban-plugin: board
 	Depends: W2. Gates: S -> A -> U. Executor: smart.
 - [ ] **W6** [End-to-end demo - investigate, propose, approve, apply, heal, unwind](w6-end-to-end-demo.md)
 	Depends: W2, W3, W4, W5. Gates: S -> A -> M -> T. Executor: any.
+- [ ] **W9** [EdgeVerifier seam + JevEdgeVerifier - observe-only verdict artifacts per submitted edge](w9-edge-verifier-seam.md)
+	Depends: W7. Gates: S -> A -> D -> U(code-review) -> U(type-surface). Executor: smart. Lane: jev.
+- [ ] **W10** [RCA verifier experiment - verdict/outcome correlation, score deltas, latency and cost report](w10-rca-verifier-experiment.md)
+	Depends: W13, W9. Gates: S -> A -> M -> D -> U(findings). Executor: smart. Lane: jev.
+- [ ] **W11** [Typed evidence artifacts + JEV-ranked context assembly - architecture](w11-typed-evidence-architecture.md)
+	Depends: W10. Gates: S -> A -> D -> U(architecture). Executor: smart. Lane: jev.
+- [ ] **W12** [Edge gating policy - verifier verdicts affect control flow (deferred; own plan after W10)](w12-edge-gating-policy.md)
+	Depends: W10. Gates: S -> A -> D -> U(code-review). Executor: smart. Lane: jev.
+- [ ] **W13** [Full RCA baseline against the prototype - 12 scenarios x 3 iters, verifier off](w13-full-rca-baseline.md)
+	Depends: W8, S107. Gates: S -> A -> M -> D -> U(code-review). Executor: smart. Lane: jev.
 - [ ] **S104** [Mezmo-orchestrated config parity - [agent.llm] from TOML, one warning per unimplemented section](s104-mezmo-orchestrated-config-parity.md)
 	Depends: none. Gates: S -> A -> M -> U(mezmo-config). Executor: smart.
 - [ ] **S105** [Main-drift catch-up shortlist (inventory-gated)](s105-main-drift-catch-up.md)

@@ -12,6 +12,15 @@ flowchart TD
   classDef inprogress fill:#fbd38d,color:#1a202c;
   classDef inreview fill:#d6bcfa,color:#1a202c;
   classDef done fill:#c6f6d5,color:#1a202c;
+  subgraph lane_jev["jev"]
+    W7["W7 JEV rubric research spike - synth…"]:::ready
+    W8["W8 Prototype RCA harness - contract-…"]:::ready
+    W9["W9 EdgeVerifier seam + JevEdgeVerifi…"]:::backlog
+    W10["W10 RCA verifier experiment - verdict…"]:::backlog
+    W11["W11 Typed evidence artifacts + JEV-ra…"]:::backlog
+    W12["W12 Edge gating policy - verifier ver…"]:::backlog
+    W13["W13 Full RCA baseline against the pro…"]:::backlog
+  end
   W1["W1 Workflow type skeleton - spec, bi…"]:::done
   W2["W2 propose_workflow through the fact…"]:::inprogress
   W3["W3 Deterministic workflow executor -…"]:::backlog
@@ -31,5 +40,15 @@ flowchart TD
   W3 --> W6
   W4 --> W6
   W5 --> W6
+  W7 --> W9
+  W13 --> W10
+  W9 --> W10
+  W10 --> W11
+  W10 --> W12
+  W12 -.- W9
+  W8 --> W13
+  S107 --> W13
   S103 -.- S104
+  S104 -.- W9
+  S107 -.- W9
 ```
