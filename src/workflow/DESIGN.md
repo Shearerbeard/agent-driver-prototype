@@ -123,9 +123,11 @@ are *structural* at propose time: they occupy a named property, and
 their bounds, when present, must be numbers, because the value they
 will resolve to does not exist yet. Their *type* is checked at resolve
 time by the W3 executor against the value the referenced export
-actually produced. Rollback arguments are not schema-checked at propose
-time at all (their reference nodes resolve at apply time); the rollback
-tool *name* is inventory-checked like every other named tool.
+actually produced. Argument trees on steps and on rollbacks get the
+same treatment (panel round 1): the literal nodes of both are
+schema-checked at propose time, the reference nodes of both are
+structural, and every named tool, step or rollback, is
+inventory-checked.
 
 ## Residual risks, with the panel's round-1 rulings folded in
 
@@ -210,6 +212,20 @@ Round 2: dispatched to the K3 seat as a disposition-verification round
 over the repaired skeleton; the codex seat's dispositions are verified
 in the same packet and by the board owner (one codex dispatch was
 approved for this panel; round 2 runs on the subscription lane).
+
+**Round 2 result: PASS** (transcript
+`.review/w1-panel/round2/kimi-round2.md`, same resumable session). All
+seven round-1 findings CONFIRMED repaired; no type-surface regressions.
+Three doc-sweep minors it raised, each fixed in the round-2 sweep
+commit:
+
+- R-a: the "Narrowings" paragraph still said rollback args were not
+  schema-checked, contradicting rule 5's rewrite. Fixed to the
+  same-treatment rule.
+- R-b: `validate`'s doc said "the caller still holds the spec," stale
+  once the signature became consuming. Fixed.
+- R-c: `ArgsFailSchema`'s doc said "a step's arguments" where the
+  variant also reports rollback-arg failures. Widened.
 
 ## Failure and rejection paths
 

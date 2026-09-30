@@ -101,7 +101,8 @@ pub enum WorkflowError {
     /// offers.
     #[error("no tool named '{tool}' is discovered; available: {available}")]
     UnknownTool { tool: String, available: String },
-    /// A step's arguments fail the discovered tool's `inputSchema`, so
+    /// A step's arguments, or a step's rollback's arguments, fail the
+    /// discovered tool's `inputSchema`, so
     /// the approver would be authorizing a schema-invalid instance
     /// (K3 finding 2).
     #[error("step '{step}' args do not satisfy the inputSchema of '{tool}': {message}")]

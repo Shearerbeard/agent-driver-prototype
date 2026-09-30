@@ -106,8 +106,9 @@ impl WorkflowSpec {
     ///
     /// # Errors
     ///
-    /// Returns the first rule the spec breaks; the caller still holds
-    /// the spec, and in W2 every rejection reaches the model as a tool
+    /// Returns the first rule the spec breaks. `validate` consumes the
+    /// spec, so on rejection the caller re-parses from the wire JSON it
+    /// still holds; in W2 every rejection reaches the model as a tool
     /// observation it can revise against.
     pub fn validate(self, tools: &[SidecarTool]) -> Result<ValidatedWorkflowSpec, WorkflowError> {
         self.validate_shape()?;
