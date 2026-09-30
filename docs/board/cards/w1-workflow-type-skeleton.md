@@ -156,3 +156,12 @@ stays on `main` and holds the board).
   test --locked 427 passed / 0 failed (52 in the module), vale clean.
   Acceptance criteria of the card met; Gate S ticked this turn. Board
   owner.
+- 2026-09-29 Session close (handoff to a fresh session for Gate A):
+  orientation canary PASS 4/4 against the pre-computed key (general
+  lane, cross-family; evidence with verbatim answers, cost record,
+  and worktree accounting at
+  docs/board/reviews/w1-session-close-2026-09-29.md; handoff prompt at
+  ~/.opencode/plan/w1-handoff.md). Board at a clean boundary: card/w1
+  committed at 14b2272 (range b66f982..14b2272 for the packet), views
+  current, no deferred gates. Worktree ../agent-driver-prototype-w1
+  stays until merge. Board owner.
