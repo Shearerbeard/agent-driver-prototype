@@ -39,7 +39,9 @@ use std::time::Duration;
 use agent_driver_prototype::artifacts::InlineThreshold;
 use agent_driver_prototype::bounding::ToolListLimit;
 use agent_driver_prototype::config::OrchestrationConfig;
-use agent_driver_prototype::config_builders::{build_coordinator_preamble, build_worker_preamble};
+use agent_driver_prototype::config_builders::{
+    build_coordinator_preamble_with_workflow, build_worker_preamble,
+};
 use agent_driver_prototype::coordinator_loop::{LoopBudget, WorkerRoster, WorkerSections};
 use agent_driver_prototype::dag_executor::WorkerLoopConfig;
 use agent_driver_prototype::mcp_client::SidecarClient;
@@ -48,6 +50,7 @@ use agent_driver_prototype::shim_config::{McpTransport, load_shim_config};
 use agent_driver_prototype::sse_shim::{
     LiveRequests, OtelConfig, OtelGuard, ShimCliArgs, ShimError, ShimPort, ShimState, ShutdownAbort,
 };
+use agent_driver_prototype::workflow::ProposeWorkflowTool;
 
 use agent_driver_rs::config::ProviderConfig;
 use agent_driver_rs::provider::{AnthropicProvider, BedrockProvider, OpenAiProvider};
@@ -161,14 +164,19 @@ async fn build_state(args: &ShimCliArgs) -> Result<ShimState, ShimError> {
     let (base_provider, model) = build_provider(provider_config).await?;
 
     // Coordinator preamble from the agent system prompt + the orchestration
-    // framework template. The shim's coordinator registers four tools
-    // (create_plan, execute, inspect_run, respond), so recon and history
-    // tools are both absent.
+    // framework template. When `[workflow]` is enabled, the factory includes
+    // `propose_workflow`, so the preamble claims the same surface the loop
+    // registers.
     let agent_system_prompt = config.agent.system_prompt.unwrap_or_default();
-    let coordinator_prompt = SystemPrompt::new(build_coordinator_preamble(
+    let workflow_definition = config
+        .workflow
+        .enabled
+        .then(ProposeWorkflowTool::definition);
+    let coordinator_prompt = SystemPrompt::new(build_coordinator_preamble_with_workflow(
         &agent_system_prompt,
         false,
         false,
+        workflow_definition.as_ref(),
     ));
 
     // Worker sections from the typed roster, resolved against what the
@@ -248,6 +256,7 @@ async fn build_state(args: &ShimCliArgs) -> Result<ShimState, ShimError> {
         worker_config,
         worker_sections,
         inline_threshold,
+        config.workflow,
         args.config_path().to_path_buf(),
     ))
 }
@@ -990,6 +999,7 @@ mod tests {
             worker_config,
             WorkerSections::none(),
             InlineThreshold::DEFAULT,
+            agent_driver_prototype::shim_config::WorkflowSection::default(),
             PathBuf::from("/tmp/sse-shim-s87-test.toml"),
         ))
     }

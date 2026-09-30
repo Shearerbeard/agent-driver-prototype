@@ -209,6 +209,8 @@ pub struct PlanningLoopVars<'a> {
     pub query: &'a str,
     pub worker_section: &'a str,
     pub worker_guidelines: &'a str,
+    /// Pre-rendered coordinator tool list, derived from the factory.
+    pub coordinator_tools: &'a str,
 }
 
 impl TemplateVars for PlanningLoopVars<'_> {
@@ -219,6 +221,7 @@ impl TemplateVars for PlanningLoopVars<'_> {
             ("QUERY", self.query),
             ("WORKER_SECTION", self.worker_section),
             ("WORKER_GUIDELINES", self.worker_guidelines),
+            ("COORDINATOR_TOOLS", self.coordinator_tools),
         ]
     }
 }
@@ -417,21 +420,23 @@ mod tests {
     #[test]
     fn test_render_preserves_all_planning_markers_in_values() {
         let vars = PlanningLoopVars {
-            timestamp: "time: %%TIMESTAMP%% %%CHAT_HISTORY%% %%QUERY%% %%WORKER_SECTION%% %%WORKER_GUIDELINES%%",
-            chat_history: "history: %%TIMESTAMP%% %%CHAT_HISTORY%% %%QUERY%% %%WORKER_SECTION%% %%WORKER_GUIDELINES%%",
-            query: "query: %%TIMESTAMP%% %%CHAT_HISTORY%% %%QUERY%% %%WORKER_SECTION%% %%WORKER_GUIDELINES%%",
-            worker_section: "roster: %%TIMESTAMP%% %%CHAT_HISTORY%% %%QUERY%% %%WORKER_SECTION%% %%WORKER_GUIDELINES%%",
-            worker_guidelines: "guidance: %%TIMESTAMP%% %%CHAT_HISTORY%% %%QUERY%% %%WORKER_SECTION%% %%WORKER_GUIDELINES%%",
+            timestamp: "time: %%TIMESTAMP%% %%CHAT_HISTORY%% %%QUERY%% %%WORKER_SECTION%% %%WORKER_GUIDELINES%% %%COORDINATOR_TOOLS%%",
+            chat_history: "history: %%TIMESTAMP%% %%CHAT_HISTORY%% %%QUERY%% %%WORKER_SECTION%% %%WORKER_GUIDELINES%% %%COORDINATOR_TOOLS%%",
+            query: "query: %%TIMESTAMP%% %%CHAT_HISTORY%% %%QUERY%% %%WORKER_SECTION%% %%WORKER_GUIDELINES%% %%COORDINATOR_TOOLS%%",
+            worker_section: "roster: %%TIMESTAMP%% %%CHAT_HISTORY%% %%QUERY%% %%WORKER_SECTION%% %%WORKER_GUIDELINES%% %%COORDINATOR_TOOLS%%",
+            worker_guidelines: "guidance: %%TIMESTAMP%% %%CHAT_HISTORY%% %%QUERY%% %%WORKER_SECTION%% %%WORKER_GUIDELINES%% %%COORDINATOR_TOOLS%%",
+            coordinator_tools: "tools: %%TIMESTAMP%% %%CHAT_HISTORY%% %%QUERY%% %%WORKER_SECTION%% %%WORKER_GUIDELINES%% %%COORDINATOR_TOOLS%%",
         };
 
         assert_eq!(
-            vars.render("%%TIMESTAMP%%\n%%CHAT_HISTORY%%\n%%QUERY%%\n%%WORKER_SECTION%%\n%%WORKER_GUIDELINES%%"),
+            vars.render("%%TIMESTAMP%%\n%%CHAT_HISTORY%%\n%%QUERY%%\n%%WORKER_SECTION%%\n%%WORKER_GUIDELINES%%\n%%COORDINATOR_TOOLS%%"),
             concat!(
-                "time: %%TIMESTAMP%% %%CHAT_HISTORY%% %%QUERY%% %%WORKER_SECTION%% %%WORKER_GUIDELINES%%\n",
-                "history: %%TIMESTAMP%% %%CHAT_HISTORY%% %%QUERY%% %%WORKER_SECTION%% %%WORKER_GUIDELINES%%\n",
-                "query: %%TIMESTAMP%% %%CHAT_HISTORY%% %%QUERY%% %%WORKER_SECTION%% %%WORKER_GUIDELINES%%\n",
-                "roster: %%TIMESTAMP%% %%CHAT_HISTORY%% %%QUERY%% %%WORKER_SECTION%% %%WORKER_GUIDELINES%%\n",
-                "guidance: %%TIMESTAMP%% %%CHAT_HISTORY%% %%QUERY%% %%WORKER_SECTION%% %%WORKER_GUIDELINES%%",
+                "time: %%TIMESTAMP%% %%CHAT_HISTORY%% %%QUERY%% %%WORKER_SECTION%% %%WORKER_GUIDELINES%% %%COORDINATOR_TOOLS%%\n",
+                "history: %%TIMESTAMP%% %%CHAT_HISTORY%% %%QUERY%% %%WORKER_SECTION%% %%WORKER_GUIDELINES%% %%COORDINATOR_TOOLS%%\n",
+                "query: %%TIMESTAMP%% %%CHAT_HISTORY%% %%QUERY%% %%WORKER_SECTION%% %%WORKER_GUIDELINES%% %%COORDINATOR_TOOLS%%\n",
+                "roster: %%TIMESTAMP%% %%CHAT_HISTORY%% %%QUERY%% %%WORKER_SECTION%% %%WORKER_GUIDELINES%% %%COORDINATOR_TOOLS%%\n",
+                "guidance: %%TIMESTAMP%% %%CHAT_HISTORY%% %%QUERY%% %%WORKER_SECTION%% %%WORKER_GUIDELINES%% %%COORDINATOR_TOOLS%%\n",
+                "tools: %%TIMESTAMP%% %%CHAT_HISTORY%% %%QUERY%% %%WORKER_SECTION%% %%WORKER_GUIDELINES%% %%COORDINATOR_TOOLS%%",
             ),
         );
     }
@@ -444,6 +449,7 @@ mod tests {
             query: "雪",
             worker_section: "roster",
             worker_guidelines: "guidance",
+            coordinator_tools: "",
         };
         for (template, expected) in [
             ("", ""),
@@ -632,6 +638,7 @@ mod tests {
                 query: "",
                 worker_section: "",
                 worker_guidelines: "",
+                coordinator_tools: "",
             },
         )
         .expect("Planning loop template should match PlanningLoopVars");
@@ -836,16 +843,12 @@ mod tests {
             "Planning loop template should contain TIMESTAMP placeholder"
         );
         assert!(
-            PLANNING_LOOP_PROMPT_TEMPLATE.contains("respond"),
-            "Planning loop template should name the respond tool"
+            PLANNING_LOOP_PROMPT_TEMPLATE.contains("%%COORDINATOR_TOOLS%%"),
+            "Planning loop template should derive its tool list from the factory"
         );
         assert!(
-            PLANNING_LOOP_PROMPT_TEMPLATE.contains("execute"),
-            "Planning loop template should name the execute tool"
-        );
-        assert!(
-            PLANNING_LOOP_PROMPT_TEMPLATE.contains("inspect_run"),
-            "Planning loop template should name the inspect_run tool"
+            !PLANNING_LOOP_PROMPT_TEMPLATE.contains("`respond`"),
+            "Planning loop template should not hardcode tool names; the factory derives them"
         );
     }
 

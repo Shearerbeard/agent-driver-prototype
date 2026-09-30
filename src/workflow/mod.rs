@@ -12,10 +12,13 @@
 
 mod error;
 mod plan;
+mod render;
 mod schema;
+mod tool;
 
 pub use error::WorkflowError;
 pub use plan::{
     ArgValue, Bounds, ExportName, ExportRef, ExportSpec, RollbackSpec, StepId,
     ValidatedWorkflowSpec, WorkflowSpec, WorkflowStep,
 };
+pub use tool::ProposeWorkflowTool;

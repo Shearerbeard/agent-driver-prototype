@@ -15,6 +15,14 @@ use super::super::roster::WorkerRoster;
 use super::super::run_store::RunStore;
 use super::{native_definition, observation_result};
 
+/// Short summary rendered in the coordinator preamble's tools section.
+pub const PREAMBLE_SUMMARY: &str =
+    "Decompose the request into an ordered task list of tasks assigned to workers.";
+
+/// Longer summary rendered in the loop planning wrapper's tools section.
+pub const PLANNING_LOOP_SUMMARY: &str = "Decompose the query into a plan of tasks assigned to workers. Call this when the query \
+     requires tool execution, data gathering, or multi-step analysis.";
+
 /// The plan the model proposed, exactly as it arrived.
 ///
 /// This is the wire shape and nothing more: the fields are unvalidated

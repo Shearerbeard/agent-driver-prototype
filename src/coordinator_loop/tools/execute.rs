@@ -13,6 +13,14 @@ use super::super::plan_id::PlanId;
 use super::super::run_store::RunStore;
 use super::{native_definition, observation_result};
 
+/// Short summary rendered in the coordinator preamble's tools section.
+pub const PREAMBLE_SUMMARY: &str =
+    "Run the tasks of a plan you created; it returns per-task evidence, not an answer.";
+
+/// Longer summary rendered in the loop planning wrapper's tools section.
+pub const PLANNING_LOOP_SUMMARY: &str = "Run the tasks of a plan you created. Returns per-task evidence and an outcome tally; it \
+     does not answer the user. You stay in control after it returns.";
+
 /// Which plan to run.
 ///
 /// The handle is required rather than defaulted, because "the latest plan"

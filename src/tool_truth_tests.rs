@@ -36,10 +36,14 @@ use crate::bounding::ToolListLimit;
 use crate::config::{
     OrchestrationConfig, SkillConfig, SkillName, ToolVisibility, VectorStoreConfig, WorkerConfig,
 };
-use crate::config_builders::build_coordinator_preamble;
+use crate::config_builders::{
+    build_coordinator_preamble, build_coordinator_preamble_with_workflow,
+    render_planning_loop_tools_section,
+};
 use crate::context::PinnedGoal;
 use crate::coordinator_loop::{
     CreatePlanArgs, WorkerRoster, WorkerSections, coordinator_tool_definitions,
+    coordinator_tool_planning_loop_pairs,
 };
 use crate::fixture::{
     CoordinatorCall, CoordinatorScenario, PreambleFixture, SessionHistoryFixture,
@@ -57,6 +61,7 @@ use crate::templates::{
     render_planning_prompt,
 };
 use crate::types::{StepInput, TaskStatus};
+use crate::workflow::ProposeWorkflowTool;
 
 // ============================================================================
 // The banned vocabulary (coordinator surfaces only). `load_skill` is a
@@ -637,17 +642,59 @@ fn planning_wrapper_names_the_registered_tools() {
 #[test]
 fn planning_loop_wrapper_names_the_registered_tools() {
     let sections = worker_sections_for(&coordinator_scenarios()[0]);
+    let pairs = coordinator_tool_planning_loop_pairs(None);
+    let coordinator_tools = render_planning_loop_tools_section(&pairs);
     let wrapper = render_planning_loop_prompt(&PlanningLoopVars {
         timestamp: "inert-timestamp",
         chat_history: "",
         query: INERT_QUERY,
         worker_section: "",
         worker_guidelines: "",
+        coordinator_tools: &coordinator_tools,
     });
     assert_eq!(
         numbered_tool_names(&wrapper),
         factory_names(&sections),
         "loop planning wrapper tools list must name exactly the registered tools"
+    );
+}
+
+#[test]
+fn mounted_preamble_tools_section_names_the_registered_tools() {
+    let sections = worker_sections_for(&coordinator_scenarios()[0]);
+    let workflow_definition = ProposeWorkflowTool::definition();
+    let mut expected = factory_names(&sections);
+    expected.insert("propose_workflow".to_owned());
+    let preamble =
+        build_coordinator_preamble_with_workflow("", false, false, Some(&workflow_definition));
+    let tools_section = section_between(&preamble, "## Your Tools", "## Core Behavior");
+    assert_eq!(
+        backticked_tokens(tools_section),
+        expected,
+        "mounted preamble tools section must name the workflow tool too"
+    );
+}
+
+#[test]
+fn mounted_planning_loop_wrapper_names_the_registered_tools() {
+    let sections = worker_sections_for(&coordinator_scenarios()[0]);
+    let workflow_definition = ProposeWorkflowTool::definition();
+    let pairs = coordinator_tool_planning_loop_pairs(Some(&workflow_definition));
+    let coordinator_tools = render_planning_loop_tools_section(&pairs);
+    let mut expected = factory_names(&sections);
+    expected.insert("propose_workflow".to_owned());
+    let wrapper = render_planning_loop_prompt(&PlanningLoopVars {
+        timestamp: "inert-timestamp",
+        chat_history: "",
+        query: INERT_QUERY,
+        worker_section: "",
+        worker_guidelines: "",
+        coordinator_tools: &coordinator_tools,
+    });
+    assert_eq!(
+        numbered_tool_names(&wrapper),
+        expected,
+        "mounted loop planning wrapper tools list must name the workflow tool too"
     );
 }
 
