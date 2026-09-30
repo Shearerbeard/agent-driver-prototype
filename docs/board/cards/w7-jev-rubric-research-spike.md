@@ -15,10 +15,10 @@ lane: jev
 
 Minted 2026-09-30 under the `jev` lane from the JEV edge-verifier plan
 (v3.1; three adversarial review rounds against codex `gpt-6-astra`, plan
-gate closed by user adjudication). The plan is the session record
-(`.review/jev-plan/PLAN.md` is regenerable working material; the canonical
-copy lives in the planning session's plan directory); this card is the
-durable work state. Mechanics: [PROCESS.md](../PROCESS.md). Review routing:
+gate closed by user adjudication). The durable copy of the plan is committed at
+[docs/board/notes/2026-09-30-jev-edge-verifier-plan.md](../notes/2026-09-30-jev-edge-verifier-plan.md)
+(`.review/jev-plan/PLAN.md` is regenerable working material); this card is
+the durable work state. Mechanics: [PROCESS.md](../PROCESS.md). Review routing:
 [REVIEW-TOOLING.md](../REVIEW-TOOLING.md).
 
 Workstream context: the pipeline's only worker-quality signal today is
@@ -84,6 +84,13 @@ Composite with code-side weights plus floor rules (grounding or scope
 - Report markdown with the accuracy table and latency profile committed
   in the spike crate; its sha logged on this card.
 
+## Dispatch note
+
+The driving session needs `.opencode` `external_directory` grants for
+`~/dev/jev-driver` before dispatching any leg of this card (the work lands
+in that repo). See the plan's execution-environment section; a permission
+prompt mid-dispatch is a failed pre-vet, not a surprise to debug.
+
 ## Gate checklist
 
 - [ ] Gate S: `make check`; explicit `cargo test -p edge-spike` /
@@ -99,5 +106,15 @@ Composite with code-side weights plus floor rules (grounding or scope
 
 ## Log
 
+- 2026-09-30 STANDING GATE: dispatch of any leg of this card waits on the
+  user's review of the proposal artifact
+  (`.review/jev-plan/jev-edge-verifier-proposal.html`, derived from the
+  committed plan). User approval precedes implementation. Board owner.
+- 2026-09-30 Session-close evidence filed:
+  [2026-09-30-jev-lane-mint.md](../evidence/2026-09-30-jev-lane-mint.md)
+  (canary PASS 4/4, pickup-drill gap found and fixed). Board owner.
+- 2026-09-30 Dispatch note added (`.opencode` external_directory grant
+  for `~/dev/jev-driver`) so a fresh session doesn't discover it at the
+  gate. Board owner.
 - 2026-09-30 Minted ready under the jev lane (plan v3.1, user-adjudicated
   plan gate). Board owner.

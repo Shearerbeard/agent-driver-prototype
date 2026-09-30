@@ -14,8 +14,9 @@ lane: jev
 # W8: Prototype RCA harness - contract-retrofitted config, runner wrapper, single-scenario smoke
 
 Minted 2026-09-30 under the `jev` lane from the JEV edge-verifier plan
-(v3.1, user-adjudicated). Plan is the session record
-(`.review/jev-plan/PLAN.md`); this card is the durable work state.
+(v3.1, user-adjudicated). The durable copy of the plan is committed at
+[docs/board/notes/2026-09-30-jev-edge-verifier-plan.md](../notes/2026-09-30-jev-edge-verifier-plan.md);
+this card is the durable work state.
 Mechanics: [PROCESS.md](../PROCESS.md). Review routing:
 [REVIEW-TOOLING.md](../REVIEW-TOOLING.md).
 
@@ -75,6 +76,14 @@ smoke does not.
 - ai-experiments conventions honored; the wrapper fails loud on missing
   env/binary.
 
+## Dispatch note
+
+The driving session needs `.opencode` `external_directory` grants for
+`~/workspace/ai-experiments` (including its gitignored `rca-results-*`
+directories) before dispatching any leg of this card. See the plan's
+execution-environment section; a permission prompt mid-dispatch is a
+failed pre-vet, not a surprise to debug.
+
 ## Gate checklist
 
 - [ ] Gate S: mock `/healthz` up; shim `/health` up; smoke completes;
@@ -89,5 +98,15 @@ smoke does not.
 
 ## Log
 
+- 2026-09-30 STANDING GATE: dispatch of any leg of this card waits on the
+  user's review of the proposal artifact
+  (`.review/jev-plan/jev-edge-verifier-proposal.html`, derived from the
+  committed plan). User approval precedes implementation. Board owner.
+- 2026-09-30 Session-close evidence filed:
+  [2026-09-30-jev-lane-mint.md](../evidence/2026-09-30-jev-lane-mint.md)
+  (canary PASS 4/4, pickup-drill gap found and fixed). Board owner.
+- 2026-09-30 Dispatch note added (`.opencode` external_directory grant
+  for `~/workspace/ai-experiments`) so a fresh session doesn't discover
+  it at the gate. Board owner.
 - 2026-09-30 Minted ready under the jev lane (plan v3.1, user-adjudicated
   plan gate). Board owner.

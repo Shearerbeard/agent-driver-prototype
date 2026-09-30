@@ -14,7 +14,10 @@ lane: jev
 # W12: Edge gating policy - verifier verdicts affect control flow
 
 Minted 2026-09-30 under the `jev` lane from the JEV edge-verifier plan
-(v3.1, user-adjudicated), for DAG completeness only. This wave carries no
+(v3.1, user-adjudicated), for DAG completeness only. The durable copy of
+the plan is committed at
+[docs/board/notes/2026-09-30-jev-edge-verifier-plan.md](../notes/2026-09-30-jev-edge-verifier-plan.md).
+This wave carries no
 implementation stage for this card: it is planned from W10's (RCA
 verifier experiment) report as its own card cycle (round-1 review finding
 17 - the card stays backlog until that plan exists). Mechanics:

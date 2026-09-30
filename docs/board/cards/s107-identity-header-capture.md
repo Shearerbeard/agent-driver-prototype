@@ -97,6 +97,11 @@ follow the S98 standard.
 
 ## Log
 
+- 2026-09-30 This card is on the jev lane's critical path: W13 (full RCA
+  baseline) depends on it because the stock RCA runner's scenario array
+  is unconditional and needs `x-mock-scenario` forwarding. Pull is
+  sequenced after the jev wave's W7/W8 legs, per the committed plan.
+  Board owner.
 - 2026-09-30 serialize-with gained W9 (edge verifier seam - shared
   `src/shim_config.rs` / `src/sse_shim/server.rs` surface) at the jev
   lane's mint. Board owner.

@@ -14,8 +14,9 @@ lane: jev
 # W11: Typed evidence artifacts + JEV-ranked context assembly - architecture
 
 Minted 2026-09-30 under the `jev` lane from the JEV edge-verifier plan
-(v3.1, user-adjudicated). Plan is the session record
-(`.review/jev-plan/PLAN.md`); this card is the durable work state.
+(v3.1, user-adjudicated). The durable copy of the plan is committed at
+[docs/board/notes/2026-09-30-jev-edge-verifier-plan.md](../notes/2026-09-30-jev-edge-verifier-plan.md);
+this card is the durable work state.
 Mechanics: [PROCESS.md](../PROCESS.md). Review routing:
 [REVIEW-TOOLING.md](../REVIEW-TOOLING.md).
 
