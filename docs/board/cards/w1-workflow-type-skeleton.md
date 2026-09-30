@@ -8,7 +8,7 @@ lineage: isolated-branch
 executor: smart
 gates: "S -> A -> U(code-review) -> U(type-surface)"
 user-gates: [code-review, type-surface]
-commit-range: b66f982^..14b2272
+commit-range: b66f982^..3e2b297
 ---
 
 # W1: Workflow type skeleton - spec, bindings, validation, $.-path subset
@@ -191,3 +191,45 @@ stays on `main` and holds the board).
   warning names), which would have sent Gate A a packet missing the
   type surface's foundation. Packet regenerated over all six commits.
   Board owner.
+- 2026-09-29 Gate A round 1 FAIL (1 BLOCKING, 0 MINOR), fixed and
+  re-ranged. Reviewer: codex CLI fallback (gpt-5.6-terra, GPT family;
+  session 01a0f0b5-f4ee-7141-8374-f2209d8b1367; 120,006 tokens plus an
+  8,894-token read probe) under Mike's conditional pre-approval, the
+  in-harness rust-reviewer lane having failed its pre-vet twice.
+  Author lane: GLM (board-owner takeover + rust-fill); invariant holds.
+  Finding 1 (BLOCKING): ExportRef::parse tuple-constructed StepId and
+  ExportName, so a whitespace-only half such as " .export" embedded an
+  id the StepId grammar forbids (src/workflow/plan.rs:705).
+  DISPOSITION: ACCEPTED and fixed in 16d2474 - both halves route
+  through StepId::parse/ExportName::parse, rejections map to
+  MalformedExportRef, regression test added (whitespace-only halves);
+  the suite green at 428 tests (the regression test added one over the
+  previous 427), fmt --check and clippy both clean. Checks the reviewer
+  ran:
+  read card/record/packet/diff/sources; git diff --name-only and
+  --check over the range (scope exact, clean); cargo and boardkit
+  UNVERIFIED in its read-only sandbox (board owner re-ran cargo: green).
+  commit-range extends b66f982^..14b2272 -> b66f982^..3e2b297 (fix
+  16d2474 + Gate D doc sweep 3e2b297); packet regenerates over the
+  full range for the round-2 re-review per the fix-commit duty.
+  Board owner.
+- 2026-09-29 Gate D drift audit (general lane, DeepSeek, pre-vetted;
+  30 findings: 6 drift-confirmed, 4 unverifiable, rest consistent -
+  no code-vs-record drift in any public type, error variant, or ruling
+  R1-R5). Dispositions: bindings-table rust-write family cell updated
+  this turn (live pin is Kimi-family; Mike ratified Kimi+GLM writers);
+  record wording drifts fixed in 3e2b297 (vale errors making the
+  "vale clean" claim false, "two" -> three inline suites, transcript
+  paths clarified as living in the board checkout, R4 wildcard listed,
+  ADR reference moved to future tense). Logged divergences, not fixed:
+  boardkit's range warning over board commits on main is the expected
+  shape (board writes are not card code commits); the CLAUDE.md shim
+  parity warning is the deliberate Claude import (boardkit issue 4);
+  historical log lines that say "vale clean" stand as written - the
+  record itself is clean now. UNVERIFIABLE left as is: the 46-of-51
+  red checkpoint figure would need the dc8418d checkout compiled.
+  PROCESS-vs-vale conflict logged: the card's Gate S lines quote
+  acceptance output verbatim as PROCESS requires, which the
+  user-level vale style flags; kept as evidence. Report linked at
+  .review/w1-gateD/ (gitignored working material; this log is the
+  durable record). Board owner.

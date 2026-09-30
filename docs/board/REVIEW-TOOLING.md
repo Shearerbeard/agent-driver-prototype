@@ -74,7 +74,7 @@ example rows show the shape.
 
 | Board owner (harness) | Executor pool | Gate A reviewer | Gate F route | Defers |
 | --- | --- | --- | --- | --- |
-| OpenCode | in-harness pinned subagents: `rust-write` (GLM-5.3, type skeletons), `rust-fill` (GLM-5.3-flash, fill units), `general` (research/multi-step); `python-reviewer`/`python-write` for `.py` legs | in-harness `rust-reviewer` (gpt-5.6-sol-fast) loading `rust-review`; reviewer-differs-from-author holds against the GLM executor pool | `kimi-frontier` route: kimi CLI on K3 (see Tools below); `codex-reviewer` as fallback (billable — ask first) | nothing |
+| OpenCode | in-harness pinned subagents: `rust-write` (Kimi-family per the live pin; Mike ratified Kimi+GLM writers 2026-09-29), `rust-fill` (GLM-5.3-flash, fill units), `general` (research/multi-step); `python-reviewer`/`python-write` for `.py` legs | in-harness `rust-reviewer` (gpt-5.6-sol-fast) loading `rust-review`; reviewer-differs-from-author holds against the GLM executor pool | `kimi-frontier` route: kimi CLI on K3 (see Tools below); `codex-reviewer` as fallback (billable — ask first) | nothing |
 <!-- | codex | codex subagents | per pre-vet; reviewer-differs-from-author invariant applies unchanged | a Claude Code frontier subagent | handoff or log writing, if this repo has one | -->
 <!-- codex is a known-working board-owner harness, deferred here only because
      this repo has not wired it yet. Uncomment and fill in once it is. -->
