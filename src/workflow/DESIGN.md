@@ -87,7 +87,8 @@ string ids where DAG tasks carry positional numeric ones, but the
 meaning is identical: the ids of the steps that must complete first.
 Mike's 2026-09-29 ruling: the prototype's workflow shape uses
 `dependencies` (matching `Task.dependencies` and the 271 `Task` type),
-not the wiki direction doc's `after`; the ADR records which surface
+not the wiki direction doc's `after`; the future ADR is to record
+which surface
 each name belongs to.
 
 ## Visibility and seams
@@ -125,8 +126,8 @@ will resolve to does not exist yet. Their *type* is checked at resolve
 time by the W3 executor against the value the referenced export
 actually produced. Argument trees on steps and on rollbacks get the
 same treatment (panel round 1): the literal nodes of both are
-schema-checked at propose time, the reference nodes of both are
-structural, and every named tool, step or rollback, is
+schema-checked at propose time, and the reference nodes of both are
+structural. Every named tool, step or rollback, is
 inventory-checked.
 
 Two fill-time rulings by the board owner, both over guesses the fill
@@ -142,7 +143,7 @@ lane made from incidental test assertions:
   `$from` must satisfy the reference contract exactly (string
   `step.export` value, optional numeric `min`/`max`, no other keys);
   an object without `$from` is a literal even when it carries `min` or
-  `max`, so a tool with a genuine `min` property stays proposable.
+  `max`, so a tool with a real `min` property stays proposable.
 
 ## Residual risks, with the panel's round-1 rulings folded in
 
@@ -175,7 +176,7 @@ authorization betrays its own name. `validate_shape` rejects both
 (`EmptyGoal`, `EmptySteps`) as rule 0.
 
 **R4 - Key-segment escaping in `to_json_pointer`.** *Confirmed by both
-seats.* The subset excludes `.`, `[`, `]`, `/`, and `~` from key
+seats.* The subset excludes `.`, `[`, `]`, `/`, `~`, and `*` from key
 segments (parse rejects them), so no JSON-pointer escaping (`~0`/`~1`)
 is ever needed. Parse and `to_json_pointer` must move together; the
 round-trip tests pin it, covering `as_path` reconstruction too.
@@ -204,8 +205,9 @@ change. The W4 wire test pins the digest of a fixed spec.
 
 Seats: kimi K3 CLI (session `796c3dda-…`, verdict FAIL, 3 blocking + 4
 minor) and one Mike-approved codex seat (verdict FAIL, 5 blocking + 2
-minor). Transcripts: `.review/w1-panel/{kimi,codex}-seat.md`
-(regenerable working material; this ledger is the durable record).
+minor). Transcripts: `.review/w1-panel/{kimi,codex}-seat.md` in the
+board checkout that holds the board, not this worktree (regenerable
+working material; this ledger is the durable record).
 Author: the board-owner session (GLM family), under the logged
 executor-fallback takeover; both seats cross-family.
 
@@ -268,7 +270,7 @@ nothing here is run-ending.
 
 ## Test record
 
-Layer 2 landed with the fill: 52 tests in the module's two inline
+Layer 2 landed with the fill: 52 tests in the module's three inline
 suites (`plan::tests` for the wire and type contracts,
 `plan::validation_tests` for the six validation rules, `schema::tests`
 for the subset validator), written from the card and the panel rulings
