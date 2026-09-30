@@ -166,23 +166,22 @@ round-trip tests pin it, covering `as_path` reconstruction too.
 **R5 - References bind inline anywhere in the argument tree.** *Seats
 split; board-owner ruling for anywhere-in-tree.* Round 1 read the plan's
 "inline anywhere" as direct-child positions only. That reading buys
-nothing: recognizing a nested reference and rejecting it both require
-the same recursive walk, so the narrow reading adds refusals without
-saving code, and it rules out realistic nested tool arguments (a
-reference as the value of an inner object key, or as an array
-element). The
-classification walk visits every object-value and array-element
-position at any depth; a literal is reference-free by construction,
-not by trust. Widening later stays available if the resolver ever needs
-more.
+nothing. Whether the walk recognizes a nested reference or rejects it,
+the same recursive visit is required, so the narrow reading adds
+refusals without saving any code. Worse, it rules out realistic nested
+tool arguments: a reference as the value of an inner object key, or as
+an array element. The classification walk visits every object-value and
+array-element position at any depth. A literal that survives it is
+reference-free by construction rather than by trust. Widening later
+stays available if the resolver ever needs more.
 
 **R6 - The digest depends on serde field order.** *Confirmed by both
 seats, strengthened.* `serde_json` here has no `preserve_order`
 feature, so `Value` objects serialize with sorted keys and `exports` is
-a `BTreeMap`: the digest is deterministic per build, not merely per
-run. Because proposal and approval share one binary, a field reorder
-across versions cannot break the echo protocol. The W4 wire test pins
-the digest of a fixed spec.
+a `BTreeMap`. The digest is deterministic per build, not merely per
+run. A field reorder across versions changes it, but proposal and
+approval always share one binary, so the echo protocol cannot see the
+change. The W4 wire test pins the digest of a fixed spec.
 
 ## Panel ledger (round 1, 2026-09-29)
 
