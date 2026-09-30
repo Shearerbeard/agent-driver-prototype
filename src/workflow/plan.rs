@@ -673,9 +673,11 @@ impl<'de> Deserialize<'de> for ExportSpec {
 /// `step.export`.
 ///
 /// Forbidden invalid state: a reference that names no step or no export
-/// half (an empty side, or more than one dot); [`ExportRef::parse`]
-/// rejects it. Whether the named step and export are actually declared
-/// is a spec-level rule, checked by
+/// half (an empty side, or more than one dot), or a half the [`StepId`]
+/// or [`ExportName`] grammar rejects (whitespace-only); each half goes
+/// through its own validating constructor, so no invalid half can hide
+/// inside a well-shaped reference. Whether the named step and export
+/// are actually declared is a spec-level rule, checked by
 /// [`WorkflowSpec::validate`](WorkflowSpec::validate), because only the
 /// whole spec knows.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -695,17 +697,16 @@ impl ExportRef {
     /// # Errors
     ///
     /// Returns [`WorkflowError::MalformedExportRef`] unless the string
-    /// is exactly two non-empty halves around exactly one dot.
+    /// is exactly two halves around exactly one dot and each half
+    /// satisfies its own grammar ([`StepId::parse`] rejects empty,
+    /// whitespace-only, and separator-carrying ids; [`ExportName::parse`]
+    /// likewise for names).
     pub fn parse(text: &str) -> Result<Self, WorkflowError> {
         let malformed = || WorkflowError::MalformedExportRef(text.to_owned());
         let (step, export) = text.split_once('.').ok_or_else(malformed)?;
-        if step.is_empty() || export.is_empty() || export.contains('.') {
-            return Err(malformed());
-        }
-        Ok(Self::new(
-            StepId(step.to_owned()),
-            ExportName(export.to_owned()),
-        ))
+        let step = StepId::parse(step.to_owned()).map_err(|_| malformed())?;
+        let export = ExportName::parse(export.to_owned()).map_err(|_| malformed())?;
+        Ok(Self::new(step, export))
     }
 
     /// The referenced step's id.
@@ -1148,6 +1149,26 @@ mod tests {
         for bad in ["state", "a.b.c", ".b", "a.", ""] {
             assert!(ExportRef::parse(bad).is_err(), "accepted {bad}");
         }
+    }
+
+    #[test]
+    fn export_ref_rejects_whitespace_only_halves() {
+        // Gate A round-1 finding: a whitespace-only half passed because
+        // parse constructed the halves directly, bypassing their
+        // grammars. Both halves now route through StepId::parse and
+        // ExportName::parse, and the rejection stays at the reference
+        // level, matching the documented contract.
+        for bad in [" .b", "a. ", " . ", "\t.b", "a.\t"] {
+            assert!(ExportRef::parse(bad).is_err(), "accepted {bad:?}");
+        }
+        assert_eq!(
+            ExportRef::parse(" .b").unwrap_err(),
+            WorkflowError::MalformedExportRef(" .b".to_owned())
+        );
+        assert_eq!(
+            ExportRef::parse("a. ").unwrap_err(),
+            WorkflowError::MalformedExportRef("a. ".to_owned())
+        );
     }
 
     #[test]
