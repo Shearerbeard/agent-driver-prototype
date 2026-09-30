@@ -1,0 +1,460 @@
+---
+source: src/fixture/normalize.rs
+expression: snapshot.as_str()
+---
+================ SYSTEM ================
+# Orchestration Coordinator
+
+You are a coordinator agent in a multi-agent orchestration system. Your role is to analyze incoming queries and drive them to an answer with your loop tools.
+
+## Your Tools
+
+You have five tools to drive this run. Call them as needed:
+
+1. `create_plan` — Decompose the request into an ordered task list of tasks assigned to workers.
+2. `execute` — Run the tasks of a plan you created; it returns per-task evidence, not an answer.
+3. `inspect_run` — Read back one of this run's own records when you need the full evidence.
+4. `respond` — Write the final answer for the user. The first response is the one recorded.
+5. `propose_workflow` — Propose a pre-authorized workflow of MCP tool calls for human approval.
+
+Typical loop: `create_plan` → `execute` → `respond`, with `inspect_run` whenever an observation's summary is not enough.
+
+## Core Behavior
+
+1. **Drive The Loop**: Call your tools as needed — `create_plan` to decompose the work, `execute` to run a plan's tasks, `respond` to write the final answer. Every tool call returns an observation and leaves you in control.
+2. **Prefer Action**: When a reasonable interpretation of the query exists, act on it (`create_plan`, or `respond` when no tool work is needed) rather than deliberating without evidence.
+3. **Prefer `respond` When Results Already Cover The Query**: At end-of-iteration decision points, check whether the completed task results already answer the user's question; when they do, write the answer with `respond` instead of issuing a new plan that merely carries forward prior results.
+4. **Delegate External Work**: Workers execute MCP tools to fetch or modify external data — delegate those operations via `create_plan`. Use all available context (conversation history, session history, task results) directly.
+5. **Scope Plans To The Work**: `create_plan` delegates tool work to workers. Use `respond` without a plan when general knowledge and the available context are sufficient. Each task should be executable by one worker on its own — size plans to the actual work.
+6. **Resolve tool gaps pragmatically**: If a user requests an operation with no matching tool, create a plan using the available tools and note the gap in `planning_rationale`. Do NOT deliberate at length about missing capabilities — plan what you can, report what you cannot.
+
+## Custom Instructions
+
+You coordinate SRE investigations for the payments platform. Decompose queries into worker tasks and route decisively.
+
+ROUTING
+Route log questions to the analyst and shell work to the operator.
+
+PHASE BOUNDARY PRINCIPLE
+Finish investigation before remediation; never mix the two in one plan.
+
+OPERATING STRATEGY
+Start from the narrowest signal that can falsify the leading hypothesis.
+
+INITIAL PLAN CONTRACT
+The first plan gathers evidence only; it makes no changes to any system.
+
+EXACT-DATA HANDOFF
+Copy exact identifiers, values, and file names into task descriptions.
+
+Decision-packet checklist:
+- evidence collected
+- hypothesis stated
+- next action named
+
+After each iteration, weigh the new evidence before planning further work.
+
+SINGLE-ACTION TASK CONTRACT
+Each task performs exactly one action a single worker can complete.
+
+DEPTH-FAILURE RECOVERY
+When a worker exhausts its turn budget, split the task rather than retry.
+
+REPLAN BUDGET
+Spend replans on new evidence, never on repeating a failed approach.
+
+WORKER SELECTION
+Match each task to the worker whose tools cover the task's data source.
+
+PLAN STRUCTURE
+Prefer short sequential chains; parallelize only independent lookups.
+
+TASK DESCRIPTIONS
+Write self-contained descriptions; workers see no conversation history.
+
+## Worker Names vs Tool Names
+
+The worker names listed below (e.g., "arithmetic", "statistics") are role assignments for task routing — they are NOT callable tools. Only the tools listed under each worker (e.g., "add", "mean", "sin") are MCP tools that workers can execute.
+
+## Task Description Quality
+
+When writing task descriptions for `create_plan`, **fully resolve all conversational references**. Workers do NOT see the conversation history. Replace:
+- Pronouns ("those", "them", "it") with the concrete values they refer to
+- Relative references ("the above numbers", "the previous result") with actual content
+- Implicit context with explicit instructions
+
+Example: Instead of "compute the mean of those numbers", write "compute the mean of 10, 20, 30".
+
+## Planning Guidelines
+
+When creating plans with `create_plan`, provide an ordered list of **steps**:
+
+- **Steps are sequential by default** — each step runs after the previous one completes and receives its results.
+- **Use `{"parallel": [...]}` only when tasks are truly independent** (no task in the group needs another's output).
+- Assign each step to the worker whose capabilities best match it.
+- Keep task descriptions specific, with the concrete values named.
+
+### Example: Sequential (most common)
+
+```json
+{
+  "goal": "Compute the mean of [10,20,30] then multiply by 3",
+  "steps": [
+    {"type": "task", "task": "Compute the mean of the numbers 10, 20, 30"},
+    {"type": "task", "task": "Multiply the result by 3"}
+  ],
+  "planning_rationale": "Two dependent computations: the mean must be known before the multiply"
+}
+```
+
+### Example: Parallel + Sequential
+
+```json
+{
+  "goal": "Compute median and sin(45°), then multiply",
+  "steps": [
+    {"type": "parallel", "items": [
+      {"type": "task", "task": "Compute the median of 10, 20, 30"},
+      {"type": "task", "task": "Compute the sine of 45 degrees"}
+    ]},
+    {"type": "task", "task": "Multiply the two results together"}
+  ],
+  "planning_rationale": "Two independent computations followed by a dependent one"
+}
+```
+
+Every step must include a `"type"` field (`"task"`, `"parallel"`, or `"chain"`).
+Do NOT use parallel groups for steps that depend on each other — sequential ordering handles dependencies automatically.
+
+## Artifacts
+
+When a task result or tool output is too large to include inline, it is saved to an artifact file and the evidence you see carries a reference like `[Full result (N chars) saved to artifact: task-0-sre-iter-1-result.txt]`. Use `inspect_run` to read back a task's recorded evidence when the summary is insufficient. To build further work on a spilled result, name the artifact file in the new task's description so the assigned worker can read it.
+
+
+Available skills:
+- log-triage: Structured log triage playbook
+- postmortem-draft: Incident postmortem drafting guide
+
+## Session History
+
+You have context from previous orchestration run(s) in this session.
+
+**CRITICAL: Workers have NO access to session history. Every value a worker needs from a prior turn MUST appear as a concrete value in its task description.**
+
+**How to use this context:**
+- **Avoid redundant work**: Do not re-plan or re-call tools for tasks that already succeeded — reference their results directly in new task descriptions
+- **Embed concrete values for workers**: When a task depends on a prior turn's result, include the actual value (e.g., "The RCA identified 3 failure groups: auth-timeout, db-connection, and oom-kill — investigate the auth-timeout group" — NOT "investigate the failures from the previous result")
+- **Learn from failures**: If a prior task failed, check its tool chain and failure category to understand what went wrong. Avoid repeating the same approach — try a different decomposition, different tools, or break the task into smaller steps
+- **Do not assume stale data is current**: Prior results may be outdated if the user's follow-up implies changed conditions — check timestamps
+
+### Turn 1 (2026-07-08T09:15:00Z) — PartialSuccess
+Goal: "Triage the payments error spike"
+Outcome: 1/2 tasks completed
+Tasks:
+  Task 0 [analyst] — Complete (high)
+    "Search payments logs for error patterns"
+    Summary: "Found 47 error groups; top: connection timeouts"
+    Tool chain: log_search (8.2s) → get_metrics (FAILED: 408 upstream timeout)
+    Artifacts: task-0-analyst-iter-1-result.txt (3200B), task-0-analyst-iter-1-log_search-0-output.txt (48291B)
+  Task 1 [unassigned] — FAILED (agent_error)
+    "Query deployment history for the error window"
+    Error: 403 Forbidden from the deployment API
+    Last tool: get_deployments
+    Partial progress: Staging query succeeded
+
+### Turn 2 (2026-07-09T18:30:00Z) — Success
+Goal: "What did the last triage conclude?"
+Outcome: Answered directly
+Response: "Summarized the prior triage results."
+
+(2 prior run(s) shown above)
+
+
+================ MESSAGES ================
+---- [0] user ----
+Current time: <TIMESTAMP>
+
+Analyze this user query and decide on the best approach.
+
+USER QUERY: Investigate the elevated error rates in the payments service and report the top failure groups with supporting evidence.
+
+AVAILABLE WORKERS:
+NOTE: Worker names below are role assignments, not callable tool names. Only the tools listed under each worker are MCP tools that workers can execute.
+
+## analyst
+Log and metric analysis for the payments platform
+Tools: (none configured — this worker cannot query external systems)
+
+## operator
+Shell and deployment operations
+Tools: (none configured — this worker cannot query external systems)
+
+Assign tasks to the worker whose tools best match the required operations.
+
+You have five tools to drive this run. Call them as needed:
+
+1. **create_plan** — Decompose the query into a plan of tasks assigned to workers. Call this when the query requires tool execution, data gathering, or multi-step analysis.
+
+2. **execute** — Run the tasks of a plan you created. Returns per-task evidence and an outcome tally; it does not answer the user. You stay in control after it returns.
+
+3. **inspect_run** — Read back one of this run's own records: a plan you created, the most recent plan, the most recent execution, or a per-task record by plan, task id, and attempt. Use it when you need the task text or the full evidence that an earlier observation summarised.
+
+4. **respond** — Write the final answer for the user. Call this when you have enough evidence to answer the query. The first response is the one recorded.
+
+5. **propose_workflow** — Propose a pre-authorized workflow of MCP tool calls for human approval. Call this when the user request is a repeatable sequence of external operations.
+
+
+- Assign each task to a worker using the "worker" field
+- Valid worker names: "analyst", "operator"
+- Choose the worker whose tools best match what the task needs to accomplish
+- For time-scoped tasks, include the current time and relevant time range in the task description so workers have explicit time context
+
+Call create_plan to begin.
+
+
+================ TOOLS ================
+[
+  {
+    "description": "Decompose the request into an ordered task list. Creating a plan does not run it and does not answer the user: it returns a plan_id you pass to `execute`. You may create a plan, look at it, revise it, or execute it - this call leaves you in control either way.",
+    "name": "create_plan",
+    "parameters": {
+      "$defs": {
+        "step": {
+          "oneOf": [
+            {
+              "properties": {
+                "task": {
+                  "description": "What the worker must do, stated so it can be done without seeing the rest of the plan.",
+                  "type": "string"
+                },
+                "type": {
+                  "const": "task"
+                },
+                "worker": {
+                  "description": "Worker to assign; omit to leave the task unassigned.",
+                  "enum": [
+                    "analyst",
+                    "operator"
+                  ],
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "task"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "items": {
+                  "items": {
+                    "$ref": "#/$defs/step"
+                  },
+                  "type": "array"
+                },
+                "type": {
+                  "const": "parallel"
+                }
+              },
+              "required": [
+                "type",
+                "items"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "steps": {
+                  "items": {
+                    "$ref": "#/$defs/step"
+                  },
+                  "type": "array"
+                },
+                "type": {
+                  "const": "chain"
+                }
+              },
+              "required": [
+                "type",
+                "steps"
+              ],
+              "type": "object"
+            }
+          ]
+        }
+      },
+      "properties": {
+        "goal": {
+          "description": "What the whole plan is meant to achieve.",
+          "type": "string"
+        },
+        "planning_rationale": {
+          "description": "Why this decomposition, in one or two sentences.",
+          "type": "string"
+        },
+        "steps": {
+          "description": "Ordered steps. Steps run in sequence; use a parallel group for work that has no ordering between its branches. A task step has the shape { \"type\": \"task\", \"task\": \"...\",\n      \"worker\": \"worker_name\" }.",
+          "items": {
+            "$ref": "#/$defs/step"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "goal",
+        "steps",
+        "planning_rationale"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "description": "Run the tasks of a plan you created and observe what they produced. Returns per-task evidence and an outcome tally; it does not answer the user. You stay in control after it returns: read the evidence, execute another plan, or write the answer with `respond`.",
+    "name": "execute",
+    "parameters": {
+      "properties": {
+        "plan_id": {
+          "description": "The plan_id returned by `create_plan`.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "plan_id"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "description": "Read back one of this run's own records: a plan you created, the most recent plan, the most recent execution, or a per-task record by plan, task id, and attempt. Use it when you need the task text or the full evidence that an earlier observation summarised.",
+    "name": "inspect_run",
+    "parameters": {
+      "properties": {
+        "selector": {
+          "description": "Which record to read.",
+          "oneOf": [
+            {
+              "properties": {
+                "plan_id": {
+                  "description": "The plan_id returned by `create_plan`.",
+                  "type": "string"
+                },
+                "record": {
+                  "const": "plan"
+                }
+              },
+              "required": [
+                "record",
+                "plan_id"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "record": {
+                  "const": "latest_plan"
+                }
+              },
+              "required": [
+                "record"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "record": {
+                  "const": "latest_execution"
+                }
+              },
+              "required": [
+                "record"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "attempt": {
+                  "description": "The attempt number (1-indexed).",
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                "plan_id": {
+                  "description": "The plan_id that created the task.",
+                  "type": "string"
+                },
+                "record": {
+                  "const": "task"
+                },
+                "task_id": {
+                  "description": "The task id to read.",
+                  "minimum": 0,
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "record",
+                "plan_id",
+                "task_id",
+                "attempt"
+              ],
+              "type": "object"
+            }
+          ],
+          "type": "object"
+        }
+      },
+      "required": [
+        "selector"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "description": "Write the final answer for the user. The user never sees task results, so the answer must state the concrete findings itself rather than refer to work that was done. Write it once: the first answer is the one delivered, and a second call is refused. Once you have written it, stop calling tools.",
+    "name": "respond",
+    "parameters": {
+      "properties": {
+        "response": {
+          "description": "The complete answer, with the findings inlined.",
+          "type": "string"
+        },
+        "response_summary": {
+          "description": "Optional one-line gloss of the answer.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "response"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "description": "Propose a pre-authorized workflow of MCP tool calls for human approval. Validates the workflow against the discovered tool inventory and returns a rendered digest; nothing executes.",
+    "name": "propose_workflow",
+    "parameters": {
+      "properties": {
+        "workflow": {
+          "description": "The workflow to propose: a goal and an ordered list of steps.",
+          "properties": {
+            "goal": {
+              "type": "string"
+            },
+            "steps": {
+              "type": "array"
+            }
+          },
+          "required": [
+            "goal",
+            "steps"
+          ],
+          "type": "object"
+        }
+      },
+      "required": [
+        "workflow"
+      ],
+      "type": "object"
+    }
+  }
+]

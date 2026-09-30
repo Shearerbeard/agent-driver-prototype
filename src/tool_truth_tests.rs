@@ -148,6 +148,7 @@ fn inert_preamble() -> PreambleFixture {
         skills: Vec::new(),
         vector_stores: Vec::new(),
         session_history: None,
+        workflow_definition: None,
     }
 }
 
@@ -161,6 +162,7 @@ fn isolated_preamble() -> PreambleFixture {
         skills: Vec::new(),
         vector_stores: Vec::new(),
         session_history: None,
+        workflow_definition: None,
     }
 }
 
