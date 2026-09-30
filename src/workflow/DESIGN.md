@@ -129,6 +129,21 @@ schema-checked at propose time, the reference nodes of both are
 structural, and every named tool, step or rollback, is
 inventory-checked.
 
+Two fill-time rulings by the board owner, both over guesses the fill
+lane made from incidental test assertions:
+
+- **Properties are open-world.** An undeclared property the schema
+  does not name is allowed, matching the JSON-Schema default and what
+  the sidecar tool itself would accept; the subset has no
+  `additionalProperties`. Closed-world would reject proposals the tool
+  would have executed happily - pure coordinator friction, measured as
+  noise by W2's stage-1 loop.
+- **`$from` is the reference discriminator.** An object carrying
+  `$from` must satisfy the reference contract exactly (string
+  `step.export` value, optional numeric `min`/`max`, no other keys);
+  an object without `$from` is a literal even when it carries `min` or
+  `max`, so a tool with a genuine `min` property stays proposable.
+
 ## Residual risks, with the panel's round-1 rulings folded in
 
 **R1 - Duplicate export names collapse at the serde boundary.**
@@ -253,8 +268,20 @@ nothing here is run-ending.
 
 ## Test record
 
-Layer 2 lands with the fill: accept/reject unit tests per validation
-rule (including inputSchema rejection and the rollback
-self-reference rule), `$.a.b[0]` round-trips through
-`to_json_pointer` and back through `parse`, and the wire-contract tests
-for `ArgValue`'s custom serde. This section updates when they do.
+Layer 2 landed with the fill: 52 tests in the module's two inline
+suites (`plan::tests` for the wire and type contracts,
+`plan::validation_tests` for the six validation rules, `schema::tests`
+for the subset validator), written from the card and the panel rulings
+before any body was filled and red on arrival over `todo!()` panics
+(46 of 51 red at the checkpoint commit; one test was added and one
+split during fill rulings, netting 52). They cover: the id/export-name
+grammar (empty, whitespace-only, separator); the `$.`-path subset
+(thirteen rejected shapes, pointer conversion, round-trips, lifting
+from a JSON result); the `step.export` reference grammar; `Bounds`
+at-least-one-side with serde routed through `new`; `ArgValue`'s
+three-case classification, one-sided bounds, malformed shapes, and the
+`$from` discriminator; the demo two-step wire shape; unknown-field and
+duplicate-export rejection at the ingress; and rules 0-5 accept/reject
+per variant, including nested and array-element references, rollback
+own-export legality, structural reference nodes under a typed
+property, and eighteen refused schema keywords.

@@ -6,16 +6,18 @@
 //! `serde_json::to_vec(&workflow)` — serde struct field order is
 //! stable, so the field order below is part of the approval contract.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
 use serde::de::Error as _;
+use serde::ser::SerializeMap;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::{Number, Value};
 
 use crate::mcp_client::{SidecarTool, SidecarToolName};
 
 use super::error::WorkflowError;
+use super::schema::{SchemaCheck, validate_instance};
 
 /// A proposed workflow: what it is for, and the steps that achieve it.
 ///
@@ -122,37 +124,235 @@ impl WorkflowSpec {
 
     /// Rule 0: a nameable goal and at least one step.
     fn validate_shape(&self) -> Result<(), WorkflowError> {
-        todo!()
+        if self.goal.trim().is_empty() {
+            return Err(WorkflowError::EmptyGoal);
+        }
+        if self.steps.is_empty() {
+            return Err(WorkflowError::EmptySteps);
+        }
+        Ok(())
     }
 
     /// Rule 1: unique step ids.
     fn validate_unique_ids(&self) -> Result<(), WorkflowError> {
-        todo!()
+        let mut seen = BTreeSet::new();
+        for step in &self.steps {
+            if !seen.insert(step.id.as_str()) {
+                return Err(WorkflowError::DuplicateStepId {
+                    id: step.id.to_string(),
+                });
+            }
+        }
+        Ok(())
     }
 
     /// Rule 2: every dependency is declared earlier than its step.
     fn validate_dependencies(&self) -> Result<(), WorkflowError> {
-        todo!()
+        let positions: BTreeMap<&str, usize> = self
+            .steps
+            .iter()
+            .enumerate()
+            .map(|(position, step)| (step.id.as_str(), position))
+            .collect();
+        for (position, step) in self.steps.iter().enumerate() {
+            for dependency in &step.dependencies {
+                let declared_earlier = positions
+                    .get(dependency.as_str())
+                    .is_some_and(|&earlier| earlier < position);
+                if !declared_earlier {
+                    return Err(WorkflowError::ForwardDependency {
+                        step: step.id.to_string(),
+                        dependency: dependency.to_string(),
+                    });
+                }
+            }
+        }
+        Ok(())
     }
 
     /// Rule 3: references resolve inside the dependencies-closure, and
     /// a rollback may additionally reach its own step's exports.
     fn validate_references(&self) -> Result<(), WorkflowError> {
-        todo!()
+        let steps: BTreeMap<&str, &WorkflowStep> = self
+            .steps
+            .iter()
+            .map(|step| (step.id.as_str(), step))
+            .collect();
+        for step in &self.steps {
+            let closure = dependencies_closure(step, &steps);
+            visit_references(&step.args, step, &closure, &steps, false)?;
+            if let Some(rollback) = &step.rollback {
+                visit_references(&rollback.args, step, &closure, &steps, true)?;
+            }
+        }
+        Ok(())
     }
 
     /// Rule 4: every named tool, step or rollback, is discovered.
-    #[expect(unused_variables, reason = "W1 Layer 1: used when the fill lands")]
     fn validate_tool_inventory(&self, tools: &[SidecarTool]) -> Result<(), WorkflowError> {
-        todo!()
+        for step in &self.steps {
+            discovered_tool(tools, &step.tool)?;
+            if let Some(rollback) = &step.rollback {
+                discovered_tool(tools, &rollback.tool)?;
+            }
+        }
+        Ok(())
     }
 
     /// Rule 5: literal argument nodes — step args and rollback args —
     /// satisfy the named tool's inputSchema.
-    #[expect(unused_variables, reason = "W1 Layer 1: used when the fill lands")]
     fn validate_argument_schemas(&self, tools: &[SidecarTool]) -> Result<(), WorkflowError> {
-        todo!()
+        for step in &self.steps {
+            let tool = discovered_tool(tools, &step.tool)?;
+            check_against_schema(step, tool, &step.args)?;
+            let Some(rollback) = &step.rollback else {
+                continue;
+            };
+            let rollback_tool = discovered_tool(tools, &rollback.tool)?;
+            check_against_schema(step, rollback_tool, &rollback.args)?;
+        }
+        Ok(())
     }
+}
+
+/// The discovered inventory as one comma-space-separated list, for an
+/// `UnknownTool` rejection the model can revise against.
+fn discovered_tool_names(tools: &[SidecarTool]) -> String {
+    tools
+        .iter()
+        .map(|tool| tool.name().as_str())
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// The discovered tool named `name`. Unreachable absence through
+/// `validate` — the inventory rule runs before either caller — but this
+/// is the lookup both rules resolve through, so absence fails loud with
+/// the full available list rather than panicking.
+fn discovered_tool<'a>(
+    tools: &'a [SidecarTool],
+    name: &SidecarToolName,
+) -> Result<&'a SidecarTool, WorkflowError> {
+    tools
+        .iter()
+        .find(|tool| tool.name() == name)
+        .ok_or_else(|| WorkflowError::UnknownTool {
+            tool: name.to_string(),
+            available: discovered_tool_names(tools),
+        })
+}
+
+/// The transitive closure of one step's `dependencies`: the ids of
+/// every step that must have completed before it, reachable through
+/// declared dependencies alone.
+fn dependencies_closure<'a>(
+    step: &'a WorkflowStep,
+    steps: &BTreeMap<&'a str, &'a WorkflowStep>,
+) -> BTreeSet<&'a str> {
+    let mut closure = BTreeSet::new();
+    let mut worklist: Vec<&str> = step.dependencies.iter().map(StepId::as_str).collect();
+    while let Some(id) = worklist.pop() {
+        if !closure.insert(id) {
+            continue;
+        }
+        if let Some(dependency) = steps.get(id) {
+            worklist.extend(dependency.dependencies.iter().map(StepId::as_str));
+        }
+    }
+    closure
+}
+
+/// Walk one argument tree, checking every `$from` reference against the
+/// rule its position carries: a step's references must resolve inside
+/// its dependencies-closure; a rollback's may additionally resolve to
+/// the owning step's own exports. Classification goes through
+/// [`ArgValue::parse`], so a malformed reference shape at any depth
+/// surfaces here as [`WorkflowError::MalformedArgNode`] before any
+/// reference is resolved.
+fn visit_references(
+    node: &Value,
+    step: &WorkflowStep,
+    closure: &BTreeSet<&str>,
+    steps: &BTreeMap<&str, &WorkflowStep>,
+    from_rollback: bool,
+) -> Result<(), WorkflowError> {
+    match ArgValue::parse(node)? {
+        ArgValue::Literal(_) => {
+            match node {
+                Value::Object(entries) => {
+                    for value in entries.values() {
+                        visit_references(value, step, closure, steps, from_rollback)?;
+                    }
+                }
+                Value::Array(items) => {
+                    for item in items {
+                        visit_references(item, step, closure, steps, from_rollback)?;
+                    }
+                }
+                _ => {}
+            }
+            Ok(())
+        }
+        ArgValue::Reference { from } | ArgValue::BoundedReference { from, .. } => {
+            check_reference(&from, step, closure, steps, from_rollback)
+        }
+    }
+}
+
+/// One reference's resolution check, phrased by the error variant its
+/// position carries (step args versus rollback args).
+fn check_reference(
+    from: &ExportRef,
+    step: &WorkflowStep,
+    closure: &BTreeSet<&str>,
+    steps: &BTreeMap<&str, &WorkflowStep>,
+    from_rollback: bool,
+) -> Result<(), WorkflowError> {
+    let target_id = from.step().as_str();
+    let in_closure =
+        closure.contains(target_id) || (from_rollback && target_id == step.id.as_str());
+    let export_declared = steps
+        .get(target_id)
+        .is_some_and(|target| target.exports.contains_key(from.export()));
+    if in_closure && export_declared {
+        return Ok(());
+    }
+    if from_rollback {
+        return Err(WorkflowError::RollbackReferenceOutsideOwner {
+            step: step.id.to_string(),
+            from: from.to_string(),
+        });
+    }
+    Err(WorkflowError::ReferenceOutsideClosure {
+        step: step.id.to_string(),
+        from: from.to_string(),
+    })
+}
+
+/// Rule 5 for one argument tree: the subset validator's verdict on the
+/// tree, mapped onto its `WorkflowError` (an unsupported keyword
+/// indicts the tool's schema, a mismatch indicts the model's
+/// arguments). Properties are open-world (board-owner ruling on the
+/// fill): an undeclared property the schema does not name is allowed,
+/// matching the JSON-Schema default and what the sidecar tool itself
+/// would accept; the subset has no `additionalProperties`.
+fn check_against_schema(
+    step: &WorkflowStep,
+    tool: &SidecarTool,
+    args: &Value,
+) -> Result<(), WorkflowError> {
+    let schema = tool.input_schema();
+    validate_instance(schema, args).map_err(|refusal| match refusal {
+        SchemaCheck::Unsupported { keyword } => WorkflowError::UnsupportedSchemaKeyword {
+            tool: tool.name().to_string(),
+            keyword,
+        },
+        SchemaCheck::Mismatch { message } => WorkflowError::ArgsFailSchema {
+            step: step.id.to_string(),
+            tool: tool.name().to_string(),
+            message,
+        },
+    })
 }
 
 /// One step of a workflow: a tool call, its arguments, what it exports
@@ -341,10 +541,6 @@ pub struct ExportSpec {
 
 /// One segment of an [`ExportSpec`] path.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
-#[expect(
-    dead_code,
-    reason = "W1 Layer 1: constructed when ExportSpec::parse is filled"
-)]
 enum PathSegment {
     /// An object key.
     Key(String),
@@ -360,9 +556,57 @@ impl ExportSpec {
     /// Returns [`WorkflowError::MalformedResultPath`] for anything
     /// outside the subset: a missing leading `$.`, an empty key, an
     /// empty or non-numeric index, a stray `[` or `]`, a trailing dot.
-    #[expect(unused_variables, reason = "W1 Layer 1: used when the fill lands")]
     pub fn parse(path: &str) -> Result<Self, WorkflowError> {
-        todo!()
+        let malformed = || WorkflowError::MalformedResultPath(path.to_owned());
+        let mut rest = path.strip_prefix("$.").ok_or_else(malformed)?;
+        let mut segments = Vec::new();
+        // A key may open a segment only at the start or after a dot;
+        // after a closed bracket the next segment is `.key` or
+        // `[index]`, never a glued bare key.
+        let mut bare_key_allowed = true;
+        while !rest.is_empty() {
+            if let Some(after_bracket) = rest.strip_prefix('[') {
+                let digits_end = after_bracket
+                    .find(|character: char| !character.is_ascii_digit())
+                    .unwrap_or(after_bracket.len());
+                let (digits, after_digits) = after_bracket.split_at(digits_end);
+                let index: usize = digits.parse().map_err(|_| malformed())?;
+                let after_bracket = after_digits.strip_prefix(']').ok_or_else(malformed)?;
+                segments.push(PathSegment::Index(index));
+                rest = after_bracket;
+                bare_key_allowed = false;
+            } else {
+                if !bare_key_allowed {
+                    return Err(malformed());
+                }
+                let key_end = rest.find(['.', '[', ']']).unwrap_or(rest.len());
+                let (key, remainder) = rest.split_at(key_end);
+                if key.is_empty()
+                    || key
+                        .chars()
+                        .any(|character| matches!(character, '/' | '~' | '*'))
+                {
+                    return Err(malformed());
+                }
+                segments.push(PathSegment::Key(key.to_owned()));
+                rest = remainder;
+                if rest.starts_with(']') {
+                    return Err(malformed());
+                }
+            }
+            match rest.strip_prefix('.') {
+                Some("") => return Err(malformed()),
+                Some(after_dot) => {
+                    rest = after_dot;
+                    bare_key_allowed = true;
+                }
+                None => {}
+            }
+        }
+        if segments.is_empty() {
+            return Err(malformed());
+        }
+        Ok(Self { segments })
     }
 
     /// The path's serde_json pointer form: `$.a.b[0]` becomes `/a/b/0`.
@@ -373,12 +617,36 @@ impl ExportSpec {
     /// excludes `/`, `~`, and `.`, so a key segment needs no JSON-pointer
     /// escaping); an index segment renders as its decimal form.
     pub fn to_json_pointer(&self) -> String {
-        todo!()
+        let mut pointer = String::new();
+        for segment in &self.segments {
+            pointer.push('/');
+            match segment {
+                PathSegment::Key(key) => pointer.push_str(key),
+                PathSegment::Index(index) => pointer.push_str(&index.to_string()),
+            }
+        }
+        pointer
     }
 
     /// The path in its declared `$.a.b[0]` form.
     pub fn as_path(&self) -> String {
-        todo!()
+        let mut path = String::from("$.");
+        for (position, segment) in self.segments.iter().enumerate() {
+            match segment {
+                PathSegment::Key(key) => {
+                    if position > 0 {
+                        path.push('.');
+                    }
+                    path.push_str(key);
+                }
+                PathSegment::Index(index) => {
+                    path.push('[');
+                    path.push_str(&index.to_string());
+                    path.push(']');
+                }
+            }
+        }
+        path
     }
 }
 
@@ -428,9 +696,16 @@ impl ExportRef {
     ///
     /// Returns [`WorkflowError::MalformedExportRef`] unless the string
     /// is exactly two non-empty halves around exactly one dot.
-    #[expect(unused_variables, reason = "W1 Layer 1: used when the fill lands")]
     pub fn parse(text: &str) -> Result<Self, WorkflowError> {
-        todo!()
+        let malformed = || WorkflowError::MalformedExportRef(text.to_owned());
+        let (step, export) = text.split_once('.').ok_or_else(malformed)?;
+        if step.is_empty() || export.is_empty() || export.contains('.') {
+            return Err(malformed());
+        }
+        Ok(Self::new(
+            StepId(step.to_owned()),
+            ExportName(export.to_owned()),
+        ))
     }
 
     /// The referenced step's id.
@@ -491,9 +766,11 @@ impl Bounds {
     ///
     /// Returns [`WorkflowError::EmptyBounds`] when both halves are
     /// `None`.
-    #[expect(unused_variables, reason = "W1 Layer 1: used when the fill lands")]
     pub fn new(min: Option<Number>, max: Option<Number>) -> Result<Self, WorkflowError> {
-        todo!()
+        if min.is_none() && max.is_none() {
+            return Err(WorkflowError::EmptyBounds);
+        }
+        Ok(Self { min, max })
     }
 
     /// The inclusive lower bound, when declared.
@@ -508,16 +785,35 @@ impl Bounds {
 }
 
 impl Serialize for Bounds {
-    #[expect(unused_variables, reason = "W1 Layer 1: used when the fill lands")]
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        todo!()
+        let sides = usize::from(self.min.is_some()) + usize::from(self.max.is_some());
+        let mut object = serializer.serialize_map(Some(sides))?;
+        if let Some(min) = self.min.as_ref() {
+            object.serialize_entry("min", min)?;
+        }
+        if let Some(max) = self.max.as_ref() {
+            object.serialize_entry("max", max)?;
+        }
+        object.end()
     }
 }
 
+/// The wire shape of [`Bounds`]: an object carrying optional `min` and
+/// `max` number keys and nothing else. Deserialization routes through
+/// [`Bounds::new`], so the empty envelope — a bound that constrains
+/// nothing — is a rejection at the serde boundary too, not a silently
+/// accepted mimic of the bounded-reference shape.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct BoundsWire {
+    min: Option<Number>,
+    max: Option<Number>,
+}
+
 impl<'de> Deserialize<'de> for Bounds {
-    #[expect(unused_variables, reason = "W1 Layer 1: used when the fill lands")]
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        todo!()
+        let wire = BoundsWire::deserialize(deserializer)?;
+        Bounds::new(wire.min, wire.max).map_err(D::Error::custom)
     }
 }
 
@@ -564,23 +860,74 @@ impl ArgValue {
     /// are neither literal nor well-formed reference: a `$from` whose
     /// value is not a `step.export` string, keys beside
     /// `$from`/`min`/`max`, or `min`/`max` values that are not numbers.
-    #[expect(unused_variables, reason = "W1 Layer 1: used when the fill lands")]
     pub fn parse(node: &Value) -> Result<Self, WorkflowError> {
-        todo!()
+        let Value::Object(entries) = node else {
+            return Ok(Self::Literal(node.clone()));
+        };
+        // `$from` is the discriminator (board-owner ruling on the fill):
+        // an object carrying it is attempting the reference wire shape
+        // and must satisfy it exactly; an object without it is a
+        // literal, even when it carries `min` or `max` — a tool with a
+        // genuine `min` property must stay proposable.
+        let from = match entries.get("$from") {
+            None => return Ok(Self::Literal(node.clone())),
+            Some(Value::String(from)) => from,
+            Some(_) => return Err(WorkflowError::MalformedArgNode(node.to_string())),
+        };
+        let malformed = || WorkflowError::MalformedArgNode(node.to_string());
+        let from = ExportRef::parse(from).map_err(|_| malformed())?;
+        let mut min = None;
+        let mut max = None;
+        for (key, value) in entries {
+            match key.as_str() {
+                "$from" => {}
+                "min" => min = Some(value.as_number().cloned().ok_or_else(malformed)?),
+                "max" => max = Some(value.as_number().cloned().ok_or_else(malformed)?),
+                _ => return Err(malformed()),
+            }
+        }
+        if min.is_none() && max.is_none() {
+            return Ok(Self::Reference { from });
+        }
+        let bounds = Bounds::new(min, max).map_err(|_| malformed())?;
+        Ok(Self::BoundedReference { from, bounds })
     }
 }
 
 impl Serialize for ArgValue {
-    #[expect(unused_variables, reason = "W1 Layer 1: used when the fill lands")]
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        todo!()
+        match self {
+            Self::Literal(value) => value.serialize(serializer),
+            Self::Reference { from } => {
+                let mut object = serializer.serialize_map(Some(1))?;
+                object.serialize_entry("$from", from)?;
+                object.end()
+            }
+            Self::BoundedReference { from, bounds } => {
+                let sides =
+                    1 + usize::from(bounds.min().is_some()) + usize::from(bounds.max().is_some());
+                let mut object = serializer.serialize_map(Some(sides))?;
+                object.serialize_entry("$from", from)?;
+                if let Some(min) = bounds.min() {
+                    object.serialize_entry("min", min)?;
+                }
+                if let Some(max) = bounds.max() {
+                    object.serialize_entry("max", max)?;
+                }
+                object.end()
+            }
+        }
     }
 }
 
 impl<'de> Deserialize<'de> for ArgValue {
-    #[expect(unused_variables, reason = "W1 Layer 1: used when the fill lands")]
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        todo!()
+        // The wire form of every case is exactly the node `parse`
+        // classifies, so deserialization classifies through the same
+        // authority rather than a second copy that could drift: a
+        // malformed reference shape is a rejection here too.
+        let node = Value::deserialize(deserializer)?;
+        Self::parse(&node).map_err(D::Error::custom)
     }
 }
 
@@ -622,6 +969,35 @@ mod tool_name_serde {
 /// happen.
 mod exports_map_serde {
     use super::*;
+    use serde::de::{MapAccess, Visitor};
+
+    /// Reads raw `(String, ExportSpec)` entries: each key goes through
+    /// [`ExportName::parse`], and a repeated name is a
+    /// [`WorkflowError::DuplicateExportName`] rejection — the last-wins
+    /// collapse a plain map reader would perform never happens.
+    struct ExportsMapVisitor;
+
+    impl<'de> Visitor<'de> for ExportsMapVisitor {
+        type Value = BTreeMap<ExportName, ExportSpec>;
+
+        fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+            formatter.write_str("a map of export names to $.-paths")
+        }
+
+        fn visit_map<A: MapAccess<'de>>(self, mut access: A) -> Result<Self::Value, A::Error> {
+            let mut exports = BTreeMap::new();
+            while let Some((key, spec)) = access.next_entry::<String, ExportSpec>()? {
+                let name = ExportName::parse(key).map_err(A::Error::custom)?;
+                if exports.contains_key(&name) {
+                    return Err(A::Error::custom(WorkflowError::DuplicateExportName(
+                        name.into(),
+                    )));
+                }
+                exports.insert(name, spec);
+            }
+            Ok(exports)
+        }
+    }
 
     pub fn serialize<S: Serializer>(
         exports: &BTreeMap<ExportName, ExportSpec>,
@@ -630,11 +1006,10 @@ mod exports_map_serde {
         exports.serialize(serializer)
     }
 
-    #[expect(unused_variables, reason = "W1 Layer 1: used when the fill lands")]
     pub fn deserialize<'de, D: Deserializer<'de>>(
         deserializer: D,
     ) -> Result<BTreeMap<ExportName, ExportSpec>, D::Error> {
-        todo!()
+        deserializer.deserialize_map(ExportsMapVisitor)
     }
 }
 
@@ -849,13 +1224,20 @@ mod tests {
             json!({"$from": 3}),                        // not a string
             json!({"$from": "state.x", "extra": true}), // stray key
             json!({"$from": "state.x", "min": "high"}), // non-numeric bound
-            json!({"min": 1, "max": 2}),                // no $from at all
         ] {
             assert!(
                 ArgValue::parse(&node).is_err(),
                 "accepted malformed reference {node}"
             );
         }
+    }
+
+    #[test]
+    fn an_object_without_from_is_a_literal_even_if_it_carries_bounds_keys() {
+        // `$from` is the discriminator: a tool with a genuine `min`
+        // property stays proposable (board-owner ruling on the fill).
+        let node = json!({"min": 1, "max": 2});
+        assert_eq!(ArgValue::parse(&node), Ok(ArgValue::Literal(node)));
     }
 
     #[test]
@@ -949,7 +1331,7 @@ mod tests {
             }]
         }"#;
         let parsed: Result<WorkflowSpec, _> = serde_json::from_str(raw);
-        let err = parsed.err().expect("duplicate export name accepted");
+        let err = parsed.expect_err("duplicate export name accepted");
         assert!(
             err.to_string().contains("declared twice"),
             "wrong rejection: {err}"
@@ -1249,22 +1631,12 @@ mod validation_tests {
             "replicas": {"$from": "state.replicas", "min": 1, "max": 20},
             "labels": {"source": {"$from": "state.replicas"}, "extras": [1, {"$from": "state.replicas"}]}
         });
-        let err = spec(wire.clone()).validate(&inventory()).unwrap_err();
-        // The nested object/array positions are outside the scale schema's
-        // declared properties, so this specific wire fails rule 5, not
-        // rule 3: the references themselves must be accepted. Use a
-        // permissive schema to prove the depth reading alone.
+        // Nested object positions and array elements carry references
+        // that rule 3 accepts (they are in the closure), rule 5 treats
+        // structurally, and the open-world schema allows (`labels` is
+        // undeclared but not forbidden, per the JSON-Schema default).
         assert!(
-            matches!(err, WorkflowError::ArgsFailSchema { .. }),
-            "depth reading regressed to a rule-3 rejection: {err}"
-        );
-
-        let permissive = vec![
-            tool("ops_get_cluster_state", read_schema()),
-            tool("ops_scale_app", json!({"type": "object"})),
-        ];
-        assert!(
-            spec(wire).validate(&permissive).is_ok(),
+            spec(wire).validate(&inventory()).is_ok(),
             "nested or array-element references were rejected"
         );
     }
