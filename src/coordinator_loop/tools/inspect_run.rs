@@ -10,6 +10,15 @@ use super::super::plan_id::PlanId;
 use super::super::run_store::{Attempt, RunStore};
 use super::{native_definition, observation_result};
 
+/// Short summary rendered in the coordinator preamble's tools section.
+pub const PREAMBLE_SUMMARY: &str =
+    "Read back one of this run's own records when you need the full evidence.";
+
+/// Longer summary rendered in the loop planning wrapper's tools section.
+pub const PLANNING_LOOP_SUMMARY: &str = "Read back one of this run's own records: a plan you created, the most recent plan, the \
+     most recent execution, or a per-task record by plan, task id, and attempt. Use it when \
+     you need the task text or the full evidence that an earlier observation summarised.";
+
 /// Which record to read back.
 ///
 /// Each case names a record the run actually holds, and "the latest plan" is

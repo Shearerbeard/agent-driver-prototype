@@ -18,8 +18,11 @@ Four layers, built in this order:
    machinery touches are mirrored locally (`src/message.rs`) so the
    port stays byte-identical without a rig dependency.
 2. **A coordinator loop** (`src/coordinator_loop/`): one conversation
-   with four tools — `create_plan`, `execute`, `inspect_run`,
-   `respond`. Planning, execution, and inspection are ordinary tool
+   with the registered tools - `create_plan`, `execute`,
+   `inspect_run`, `respond`, plus `propose_workflow` when the
+   `[workflow]` config section enables it (propose-only: validate a
+   pre-authorized workflow and render its digest; nothing applies).
+   Planning, execution, and inspection are ordinary tool
    calls; the run ends when the model stops calling tools or the turn
    budget fires.
 3. **A DAG executor** (`src/dag_executor/`): runs a plan's task tree
@@ -114,8 +117,10 @@ cargo run --bin mcp_probe -- <mcp-url>   # e.g. http://localhost:8000/sse
   `mcp_probe` connects to one, runs the full JSON-RPC sequence,
   and prints the transcript verbatim.
 - `--config` is the orchestration TOML: the worker roster, the
-  planning/turn budgets, the inline spill threshold, and the prompt
-  preambles.
+  planning/turn budgets, the inline spill threshold, the prompt
+  preambles, and the optional `[workflow]` section (`enabled`,
+  `approval_url`, `hold_secs`) that mounts the coordinator's
+  propose-only workflow tool.
 - The model provider comes from `ProviderConfig::from_env()` (the
   `PROVIDER` env var selects the backend). Three backends are wired:
   `PROVIDER=bedrock` with the usual AWS environment

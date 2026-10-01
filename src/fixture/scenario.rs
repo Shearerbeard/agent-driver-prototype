@@ -12,6 +12,8 @@
 //! ([`Plan`], [`FailureSummary`], [`ToolTraceEntry`], [`RunManifest`],
 //! [`OrchestrationConfig`]); they never re-model what those already forbid.
 
+use agent_driver_rs::tool::ToolDefinition as PinToolDefinition;
+
 use crate::config::OrchestrationConfig;
 use crate::config::{SkillConfig, VectorStoreConfig};
 use crate::context::{
@@ -97,6 +99,11 @@ pub(crate) struct PreambleFixture {
     pub(crate) skills: Vec<SkillConfig>,
     pub(crate) vector_stores: Vec<VectorStoreConfig>,
     pub(crate) session_history: Option<SessionHistoryFixture>,
+    /// The mounted `propose_workflow` definition. `None` renders the
+    /// coordinator's four-tool surface; `Some` renders the workflow-mounted
+    /// surface (preamble tools section and planning-loop wrapper name the
+    /// fifth tool, and the envelope attaches the fifth definition).
+    pub(crate) workflow_definition: Option<PinToolDefinition>,
 }
 
 #[derive(Debug, Clone)]

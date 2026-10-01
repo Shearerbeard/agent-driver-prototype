@@ -7,6 +7,7 @@
 //! vector-store context strings.
 
 use crate::config::VectorStoreConfig;
+use crate::coordinator_loop::{coordinator_tool_names, coordinator_tool_preamble_pairs};
 
 // ============================================================================
 // Vector Store Context Helpers
@@ -61,6 +62,64 @@ pub fn build_vector_store_context(stores: &[VectorStoreConfig]) -> String {
 /// pins that sync.
 const TOOL_GAPS_DIRECTIVE: &str = "6. **Resolve tool gaps pragmatically**: If a user requests an operation with no matching tool, create a plan using the available tools and note the gap in `planning_rationale`. Do NOT deliberate at length about missing capabilities — plan what you can, report what you cannot.\n";
 
+/// Render the coordinator tools section from the factory's (name, summary)
+/// pairs.
+///
+/// Count and list are derived from the factory; the rendering is empty when
+/// the factory is empty so callers can conditionalise cleanly.
+pub fn render_coordinator_tools_section(pairs: &[(&str, &str)]) -> String {
+    if pairs.is_empty() {
+        return String::new();
+    }
+    let count = count_word(pairs.len());
+    let mut section = format!("You have {count} tools to drive this run. Call them as needed:\n\n");
+    for (index, (name, summary)) in pairs.iter().enumerate() {
+        section.push_str(&format!("{}. `{}` — {}\n", index + 1, name, summary));
+    }
+    section.push_str(
+        "\nTypical loop: `create_plan` → `execute` → `respond`, with `inspect_run` \
+         whenever an observation's summary is not enough.",
+    );
+    section
+}
+
+/// Render the loop-shaped planning wrapper's numbered tool list from the
+/// factory's (name, summary) pairs.
+///
+/// Empty factory renders as an empty string so the template can collapse
+/// the block when no coordinator tools are registered.
+pub fn render_planning_loop_tools_section(pairs: &[(&str, &str)]) -> String {
+    if pairs.is_empty() {
+        return String::new();
+    }
+    let count = count_word(pairs.len());
+    let mut section = format!("You have {count} tools to drive this run. Call them as needed:\n\n");
+    for (index, (name, summary)) in pairs.iter().enumerate() {
+        if index > 0 {
+            section.push_str("\n\n");
+        }
+        section.push_str(&format!("{}. **{}** — {}", index + 1, name, summary));
+    }
+    section
+}
+
+fn count_word(n: usize) -> String {
+    match n {
+        0 => "zero".to_owned(),
+        1 => "one".to_owned(),
+        2 => "two".to_owned(),
+        3 => "three".to_owned(),
+        4 => "four".to_owned(),
+        5 => "five".to_owned(),
+        6 => "six".to_owned(),
+        7 => "seven".to_owned(),
+        8 => "eight".to_owned(),
+        9 => "nine".to_owned(),
+        10 => "ten".to_owned(),
+        _ => n.to_string(),
+    }
+}
+
 /// Build the coordinator's system prompt by composing the orchestrator
 /// framework template with the user's domain-specific system prompt.
 ///
@@ -71,31 +130,43 @@ const TOOL_GAPS_DIRECTIVE: &str = "6. **Resolve tool gaps pragmatically**: If a 
 ///
 /// The `include_recon_tools` and `include_history_tools` flags are retired
 /// with the bounded router's tool surface: the registered coordinator
-/// surface is `create_plan`, `execute`, `inspect_run` and `respond`
-/// regardless of either flag, so neither affects the rendered preamble.
-/// They remain in the signature until the bounded router retires; S103 is
-/// the next event that re-opens this template.
+/// surface is derived from the factory regardless of either flag, so neither
+/// affects the rendered preamble.
 pub fn build_coordinator_preamble(
     agent_system_prompt: &str,
     include_recon_tools: bool,
     include_history_tools: bool,
 ) -> String {
+    build_coordinator_preamble_with_workflow(
+        agent_system_prompt,
+        include_recon_tools,
+        include_history_tools,
+        &coordinator_tool_names(),
+    )
+}
+
+/// Build the coordinator preamble with an optional `propose_workflow`
+/// definition mounted.
+///
+/// When `workflow` is `None` the tools section renders the four core
+/// coordinator tools and is byte-identical to the pre-W2 golden. When
+/// `registered` names the tools this run registers; the factory derives the
+/// count/list from them.
+pub fn build_coordinator_preamble_with_workflow(
+    agent_system_prompt: &str,
+    include_recon_tools: bool,
+    include_history_tools: bool,
+    registered: &[&str],
+) -> String {
     let _ = (include_recon_tools, include_history_tools);
 
-    let tools_section = "\
-You have four tools to drive this run. Call them as needed:
-
-1. `create_plan` — Decompose the request into an ordered task list of tasks assigned to workers.
-2. `execute` — Run the tasks of a plan you created; it returns per-task evidence, not an answer.
-3. `inspect_run` — Read back one of this run's own records when you need the full evidence.
-4. `respond` — Write the final answer for the user. The first response is the one recorded.
-
-Typical loop: `create_plan` → `execute` → `respond`, with `inspect_run` whenever an observation's summary is not enough.";
+    let pairs = coordinator_tool_preamble_pairs(registered);
+    let tools_section = render_coordinator_tools_section(&pairs);
 
     let preamble =
         super::templates::render_coordinator_preamble(&super::templates::CoordinatorPreambleVars {
             orchestration_system_prompt: agent_system_prompt,
-            tools_section,
+            tools_section: &tools_section,
         });
 
     // AURA_ESCAPE_HATCH=false strips the "Resolve tool gaps" directive for

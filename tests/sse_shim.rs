@@ -32,6 +32,7 @@ use agent_driver_prototype::coordinator_loop::{
 use agent_driver_prototype::dag_executor::WorkerLoopConfig;
 use agent_driver_prototype::mcp_client::SidecarClient;
 use agent_driver_prototype::producers::ToolInventory;
+use agent_driver_prototype::shim_config::WorkflowSection;
 use agent_driver_prototype::sse_shim::{ShimState, router};
 use agent_driver_prototype::types::StepInput;
 
@@ -162,6 +163,7 @@ fn shim_state(provider: Arc<dyn Provider>, artifact_root: PathBuf) -> Arc<ShimSt
         worker_config,
         test_sections(),
         InlineThreshold::DEFAULT,
+        WorkflowSection::default(),
         PathBuf::from("/tmp/sse-shim-integration-test.toml"),
     ))
 }
@@ -617,6 +619,7 @@ fn burn_state(provider: Arc<dyn Provider>, artifact_root: PathBuf) -> Arc<ShimSt
         worker_config,
         test_sections(),
         InlineThreshold::DEFAULT,
+        WorkflowSection::default(),
         PathBuf::from("/tmp/sse-shim-integration-test.toml"),
     ))
 }

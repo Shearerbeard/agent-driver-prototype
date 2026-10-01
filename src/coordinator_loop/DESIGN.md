@@ -120,15 +120,15 @@ which the rendered forms do not expose.
 | `CoordinatorLoop::with_observer` | `pub` | Stays. The substrate takes an owned observer, so the loop forwards to a shared handle the caller keeps |
 | `RunRecords` | private | Internal representation of `RunStore`; never crosses the module boundary |
 | `native_definition`, `observation_result` | private to `tools` | Internal helpers that turn this module's literals into tool definitions and its observations into tool result strings |
-| System prompt | supplied by the caller as `SystemPrompt` | The loop's opening message renders through the loop-shaped planning template (`render_planning_loop_prompt`/`PlanningLoopVars`), which names the four tools this loop registers. See R1 |
+| System prompt | supplied by the caller as `SystemPrompt` | The loop's opening message renders through the loop-shaped planning template (`render_planning_loop_prompt`/`PlanningLoopVars`), which names the tools this loop registers - the four base tools, plus `propose_workflow` when the shim mounts it. See R1 |
 
 ## 3. Residual risks
 
 **R1 - Resolved: the opening message renders through the loop-shaped planning template.**
 The loop's `run` method renders the opening message through
-`render_planning_loop_prompt`/`PlanningLoopVars`, which names the four
-tools the loop registers (`create_plan`, `execute`, `inspect_run`,
-`respond`) instead of the bounded router's three. The loop template's
+`render_planning_loop_prompt`/`PlanningLoopVars`, which names the tools
+the loop registers (`create_plan`, `execute`, `inspect_run`,
+`respond`, plus `propose_workflow` when mounted) instead of the bounded router's three. The loop template's
 rendered output is pinned by the `planning_loop_message` insta snapshot.
 The legacy planning wrapper (`render_planning_prompt`/`PlanningVars`) and
 `build_planning_wrapper` stay; since S114 the wrapper carries the same
@@ -144,9 +144,11 @@ The card names the S71 type, and the ported one retires with
 `CoordinatorTurn` when the bounded router goes.
 
 **R3 - Resolved: every coordinator prompt names the registered surface (S114).**
-`config_builders::build_coordinator_preamble` now names exactly the four
-tools the loop registers, and every coordinator-directed surface derives
-from the same factory: `coordinator_tool_definitions` is the single source
+`config_builders::build_coordinator_preamble` names exactly the tools
+the loop registers, and every coordinator-directed surface derives
+from the same registration: the names the claims render are the names
+of the tools the session holds (W2 closed the last gap - the driver
+derives its claims from its registered instances). `coordinator_tool_definitions` is the single source
 for the names and definitions a coordinator prompt may claim, the live
 driver's tools delegate to it, and the fixture envelope attaches its output
 (projected onto the wire-mirror type) in registration order. The S114

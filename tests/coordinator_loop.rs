@@ -26,6 +26,7 @@ use agent_driver_prototype::bounding::{ErrorPreviewWidth, ToolListLimit};
 use agent_driver_prototype::config::{
     OrchestrationConfig, ToolVisibility, VectorStoreConfig, WorkerConfig,
 };
+use agent_driver_prototype::config_builders::render_planning_loop_tools_section;
 use agent_driver_prototype::context::{
     CorrelationLabel, ErrorPreview, EvidenceEntry, EvidenceText, PinnedGoal, TaskId, WorkerClaim,
     WorkerRole,
@@ -34,7 +35,8 @@ use agent_driver_prototype::coordinator_loop::{
     ChatHistory, ChatTurn, ChatTurnRole, CoordinatorLoop, CoordinatorLoopConfig,
     CoordinatorLoopError, CoordinatorOutcome, CreatePlanArgs, ExecutionObservation, FinalResponse,
     InterruptionReason, LoopBudget, OutcomeCounts, PlanExecutor, PlanId, PlanObservation, RunStore,
-    TaskObservation, TerminalSlot, WorkerRoster, WorkerSections,
+    TaskObservation, TerminalSlot, WorkerRoster, WorkerSections, coordinator_tool_names,
+    coordinator_tool_planning_loop_pairs,
 };
 use agent_driver_prototype::dag_executor::{DagExecutor, WorkerLoopConfig, WorkerToolMount};
 use agent_driver_prototype::mcp_client::SidecarClient;
@@ -192,6 +194,7 @@ async fn coordinator_with_provider(
         executor,
         worker_sections: test_sections(),
         runs,
+        propose_workflow: None,
     })
     .await
     .expect("session builds")
@@ -1168,12 +1171,16 @@ fn from_roster_with_no_workers_renders_empty_sections() {
 #[test]
 fn planning_loop_message_through_from_roster() {
     let sections = test_sections();
+    let tools = render_planning_loop_tools_section(&coordinator_tool_planning_loop_pairs(
+        &coordinator_tool_names(),
+    ));
     let message = render_planning_loop_prompt(&PlanningLoopVars {
         timestamp: "2026-07-27T12:00:00Z",
         chat_history: "",
         query: "Summarise yesterday's error spike",
         worker_section: sections.roster_section(),
         worker_guidelines: sections.guidelines(),
+        coordinator_tools: &tools,
     });
     insta::assert_snapshot!("planning_loop_message", message);
 }
@@ -1187,6 +1194,9 @@ fn planning_loop_message_through_from_roster() {
 #[test]
 fn planning_loop_message_folds_history_once_in_order() {
     let sections = test_sections();
+    let tools = render_planning_loop_tools_section(&coordinator_tool_planning_loop_pairs(
+        &coordinator_tool_names(),
+    ));
     let history = ChatHistory::new(vec![
         ChatTurn {
             role: ChatTurnRole::User,
@@ -1203,6 +1213,7 @@ fn planning_loop_message_folds_history_once_in_order() {
         query: "drill into the checkout failures",
         worker_section: sections.roster_section(),
         worker_guidelines: sections.guidelines(),
+        coordinator_tools: &tools,
     });
 
     assert!(
@@ -1247,12 +1258,16 @@ fn single_turn_history_renders_away() {
     assert_eq!(ChatHistory::new(vec![]).render_block(), "");
 
     let sections = test_sections();
+    let tools = render_planning_loop_tools_section(&coordinator_tool_planning_loop_pairs(
+        &coordinator_tool_names(),
+    ));
     let single_turn = render_planning_loop_prompt(&PlanningLoopVars {
         timestamp: "2026-09-03T12:00:00Z",
         chat_history: "",
         query: "summarise the incident",
         worker_section: sections.roster_section(),
         worker_guidelines: sections.guidelines(),
+        coordinator_tools: &tools,
     });
     assert!(
         !single_turn.contains("CONVERSATION HISTORY"),

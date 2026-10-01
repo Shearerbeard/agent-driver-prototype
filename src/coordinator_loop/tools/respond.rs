@@ -14,6 +14,14 @@ use super::native_definition;
 const ANSWER_RECORDED: &str =
     "Answer recorded. It is what the user will receive. Stop calling tools now.";
 
+/// Short summary rendered in the coordinator preamble's tools section.
+pub const PREAMBLE_SUMMARY: &str =
+    "Write the final answer for the user. The first response is the one recorded.";
+
+/// Longer summary rendered in the loop planning wrapper's tools section.
+pub const PLANNING_LOOP_SUMMARY: &str = "Write the final answer for the user. Call this when you have enough evidence to answer \
+     the query. The first response is the one recorded.";
+
 /// The answer the model wrote, as it arrived.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct RespondArgs {

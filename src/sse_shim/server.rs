@@ -46,6 +46,8 @@ use crate::dag_executor::{
     DagExecutor, DagLifecycleObserver, WorkerLoopConfig, WorkerObserverFactory, WorkerToolMount,
 };
 use crate::mcp_client::{SidecarClient, SidecarTool};
+use crate::shim_config::WorkflowSection;
+use crate::workflow::{ProposeWorkflowTool, workflow_tool_for};
 
 use super::dag_lifecycle::{ShimDagObserver, ShimWorkerObserverFactory};
 use super::error::ShimError;
@@ -159,6 +161,8 @@ pub struct ShimState {
     worker_config: WorkerLoopConfig,
     worker_sections: WorkerSections,
     inline_threshold: InlineThreshold,
+    /// The `[workflow]` config that decides whether `propose_workflow` mounts.
+    workflow: WorkflowSection,
     /// The config file path, retained for diagnostics and re-load.
     config_path: PathBuf,
     /// The coordinator tasks this server has started and not yet seen finish.
@@ -189,6 +193,7 @@ impl ShimState {
         worker_config: WorkerLoopConfig,
         worker_sections: WorkerSections,
         inline_threshold: InlineThreshold,
+        workflow: WorkflowSection,
         config_path: PathBuf,
     ) -> Self {
         Self {
@@ -202,6 +207,7 @@ impl ShimState {
             worker_config,
             worker_sections,
             inline_threshold,
+            workflow,
             config_path,
             live_requests: Arc::new(LiveRequests::default()),
         }
@@ -339,7 +345,13 @@ impl ShimState {
             self.inline_threshold,
             Some(dag_observer),
         );
-        // 10. CoordinatorLoopConfig with the metered provider.
+        // 10. CoordinatorLoopConfig with the metered provider. The
+        //    `propose_workflow` tool mounts through the single decision
+        //    point (`workflow_tool_for`) - the same helper the preamble
+        //    claims derive from, so claims and registration cannot
+        //    disagree; the sidecar client it needs is already in scope.
+        let propose_workflow: Option<Arc<ProposeWorkflowTool>> =
+            workflow_tool_for(&self.workflow, &self.sidecar);
         let loop_config = CoordinatorLoopConfig {
             provider: Arc::clone(&metered),
             model: self.model.clone(),
@@ -348,6 +360,7 @@ impl ShimState {
             executor: Arc::new(executor),
             worker_sections: self.worker_sections.clone(),
             runs,
+            propose_workflow,
         };
         // 11. CoordinatorLoop with the ShimObserver attached, armed with a
         //     child of the request's cancellation token (step 0).
@@ -758,6 +771,7 @@ mod tests {
             worker_config,
             WorkerSections::none(),
             InlineThreshold::DEFAULT,
+            WorkflowSection::default(),
             PathBuf::from("/tmp/sse-shim-test.toml"),
         ))
     }

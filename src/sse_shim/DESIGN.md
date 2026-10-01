@@ -132,6 +132,8 @@ from `crate::producers`; `WorkerLoopConfig`,
 - `worker_config: WorkerLoopConfig` - with the base provider
 - `worker_sections: WorkerSections`
 - `inline_threshold: InlineThreshold`
+- `workflow: WorkflowSection` - the `[workflow]` section; mounts the
+  coordinator's propose-only workflow tool when enabled
 - `config_path: PathBuf`
 
 `build_request` constructs per request:
