@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Coordinator tools - session summary 2026-09-30</title>
+<style>
+  :root { color-scheme: light dark; }
+  body { margin: 0; font: 16px/1.6 -apple-system, "Segoe UI", Roboto, sans-serif; padding: 1rem; max-width: 42rem; margin-inline: auto; }
+  h1 { font-size: 1.35rem; line-height: 1.3; }
+  h2 { font-size: 1.05rem; margin-top: 1.8rem; border-bottom: 1px solid currentColor; padding-bottom: .3rem; opacity: .85; }
+  .meta { opacity: .7; font-size: .85rem; }
+  .card { border: 1px solid #8886; border-radius: .6rem; padding: .8rem 1rem; margin: 1rem 0; }
+  .done h3::before { content: "✅ "; }
+  .gate h3::before { content: "🛑 "; }
+  code, .mono { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: .88em; background: #8883; padding: .1em .35em; border-radius: .3em; }
+  a { color: #4c8dff; }
+  ul { padding-left: 1.2rem; }
+  li { margin: .35rem 0; }
+  .nums { display: flex; flex-wrap: wrap; gap: .6rem; margin: 1rem 0; }
+  .num { border: 1px solid #8886; border-radius: .6rem; padding: .5rem .9rem; text-align: center; flex: 1 1 6rem; }
+  .num b { display: block; font-size: 1.4rem; }
+  .num span { font-size: .75rem; opacity: .75; }
+</style>
+</head>
+<body>
+<h1>Workflow line: W1 landed, W2 at your review</h1>
+<p class="meta">agent-driver-prototype board &middot; session 2026-09-29/30 &middot; board-owner session (GLM), reviewers codex (GPT) &amp; DeepSeek &middot; <a href="https://github.com/Shearbeard/agent-driver-prototype/pull/16">PR #16 is your review surface</a></p>
+
+<div class="nums">
+  <div class="num"><b>2</b><span>cards closed<br>through gates</span></div>
+  <div class="num"><b>443</b><span>tests green<br>fmt + clippy clean</span></div>
+  <div class="num"><b>0</b><span>existing goldens<br>touched</span></div>
+  <div class="num"><b>3</b><span>Gate A rounds<br>on W2</span></div>
+  <div class="num"><b>~432k</b><span>codex tokens<br>(approved)</span></div>
+</div>
+
+<h2>W1 - workflow types: done</h2>
+<div class="card done">
+<ul>
+<li>Gate A found one real hole (<code>ExportRef::parse</code> bypassed the id grammars) - fixed with a regression test, verified in round 2.</li>
+<li>Both user gates approved; drift audit found zero code-vs-record drift across every public type and ruling.</li>
+<li>Landed on <code>integration/workflow</code> per your evaluation ruling - <b>main untouched</b>; acceptance re-run by the board owner on the merge (428 tests then).</li>
+<li>Open for the ADR: the <code>18886ec0</code> bounds artifact paste (yours), and the <code>dependencies</code>-vs-<code>after</code> naming reconciliation.</li>
+</ul>
+</div>
+
+<h2>W2 - propose_workflow: at Gate U (your GH review)</h2>
+<div class="card gate">
+<ul>
+<li>Coordinator's one MCP path per the D6 ruling: validate via the W1 rules, render the human digest, return it. <b>Propose-only - nothing applies.</b></li>
+<li>Gate A earned its keep: two real S114 findings (claims built beside the registration; then two decision points for the mount) - both fixed in-range, round 3 verified <code>workflow_tool_for</code> as the single decision point both the preamble and registration consume.</li>
+<li>Unmounted rendering byte-identical throughout; the mounted five-tool frame pinned by a new golden.</li>
+<li><a href="https://github.com/Shearbeard/agent-driver-prototype/pull/16">Review on GH: PR #16, card/w2 into integration/workflow.</a> After your approval: the proposal-quality loop (stage 1) runs the world scenarios with you.</li>
+</ul>
+</div>
+
+<h2>Ops and board</h2>
+<div class="card">
+<ul>
+<li>The in-harness GPT reviewer lane is down at the provider level (both pin variants) - all Gate A review rode manual codex under your approvals.</li>
+<li>Worktree permissions fixed after executor sandbox failures; restart applied. rust-fill and rust-write lanes healthy.</li>
+<li>A parallel session minted a <b>jev lane</b> (W7-W13, edge verification) onto the board - charter extended, no overlap with the workflow line.</li>
+<li>Everything pushed: <code>main</code>, <code>integration/workflow</code>, <code>card/w2</code>. Canary passed 4/4 at the last close; close evidence linked from the cards.</li>
+<li>Next after W2: W3 (executor) and W4 (approval wire) flip ready; W5 (mock-mcp ops) and S103 (MCP filter) are ready now.</li>
+</ul>
+</div>
+
+<p class="meta">Durable record: the cards and their logs under <code>docs/board/cards/</code>. This page is a summary only.</p>
+</body>
+</html>
