@@ -78,8 +78,12 @@ hold_secs required-when-enabled). Nothing else; stop and report instead.
       new file; scope verified exact over eb9a67b..76f6103: the
       card's seven files plus the ruled seam files. Board owner
       re-ran every command itself after each fill.)
-- [ ] Gate A: fresh cross-family review (code-review role) of the full
-      commit range against the acceptance criteria.
+- [x] Gate A: fresh cross-family review (code-review role) of the full
+      commit range against the acceptance criteria. (Passed 2026-09-30
+      round 3 on the manual codex route: rounds 1-2 FAIL on the
+      registration/claims seam, fixed in e8ea925 and ed6ba03; round 3
+      PASS verifying the single-decision-point repair; ledger in the
+      Log section.)
 - [ ] Gate U (code-review): board owner presents the review packet and
       STOPS.
 - [ ] Gate U (proposal-quality): the stage-1 loop, user-ruled - run
@@ -269,3 +273,19 @@ on `integration/workflow` after its second Gate U. Worktree:
   verifies. Round note: this is fix round 2 of 2 - if round 3 does
   not pass, the board owner writes the PROCESS ruling (continue,
   card, or escalate) rather than another fix round. Board owner.
+- 2026-09-30 Gate A passed (round 3 verification over the extended
+  range eb9a67b..ed6ba03). Same seat family (gpt-5.6-sol; session
+  01a0f4c3-765a-7aa1-a9f7-ae390ee318b8; 61,818 tokens). Disposition
+  verification: round-2 finding CONFIRMED-REPAIRED with evidence -
+  workflow_tool_for is the sole construction decision
+  (workflow/mod.rs:31-38); the preamble path derives the optional
+  name from tool.definition().name, not the flag or a literal
+  (bin/server.rs:175-185); the registration path calls the same
+  helper into CoordinatorLoopConfig (sse_shim/server.rs:348-364);
+  the mounted tests derive both input and expectation from the
+  helper output (tool_truth_tests.rs:669-732). New findings: none.
+  Regressions: none. Scope not expanded. Cargo checks UNVERIFIED in
+  the reviewer sandbox; board owner re-ran green (443 tests).
+  Cumulative Gate A reviewer spend: 237,202 tokens (116,203 + 59,181
+  + 61,818 across three rounds, all under the standing codex
+  approval). Gate A checklist box ticked this turn. Board owner.

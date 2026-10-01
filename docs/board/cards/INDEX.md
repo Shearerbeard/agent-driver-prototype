@@ -16,7 +16,7 @@ Admission test: where does the diff land.
 | ID | Title | Lane | Status | Depends | Executor | Gates |
 |---|---|---|---|---|---|---|
 | [W1](w1-workflow-type-skeleton.md) | Workflow type skeleton - spec, bindings, validation, $.-path subset | - | done | - | smart | S -> A -> U(code-review) -> U(type-surface) |
-| [W2](w2-propose-workflow-factory-seam.md) | propose_workflow through the factory - coordinator tools land, propose-only | - | in-review | W1 | smart | S -> A -> U -> U @ A |
+| [W2](w2-propose-workflow-factory-seam.md) | propose_workflow through the factory - coordinator tools land, propose-only | - | in-review | W1 | smart | S -> A -> U -> U @ U |
 | [W3](w3-workflow-executor.md) | Deterministic workflow executor - resolve, apply, unwind, residual reporting | - | backlog | W2 | smart | S -> A |
 | [W4](w4-sync-approval-wire.md) | Sync approval wire - notify POST, status poll, blocking hold | - | backlog | W2 | smart | S -> A -> U |
 | [W5](w5-mock-mcp-ops-surface.md) | Mock-mcp ops surface - three remediation tools, per-session healing, ground truth | - | ready | - | smart | S -> A @ S |
