@@ -289,3 +289,11 @@ on `integration/workflow` after its second Gate U. Worktree:
   Cumulative Gate A reviewer spend: 237,202 tokens (116,203 + 59,181
   + 61,818 across three rounds, all under the standing codex
   approval). Gate A checklist box ticked this turn. Board owner.
+- 2026-09-30 Gate U (code-review) opened for Mike's own review on
+  GitHub: PR #16 (card/w2 -> integration/workflow, the evaluation
+  ruling's base) presented with the packet, the three-round Gate A
+  ledger, and Gate D dispositions; the checklist box stays unticked
+  until his approval lands (his stated review surface is GH). A
+  deployed web summary of the session's work (mobile-readable) rides
+  the same stop: gist 69e033ad (gh-pages branch pushed; Pages enable
+  needs the UI - the token lacks pages:write). Board owner.
