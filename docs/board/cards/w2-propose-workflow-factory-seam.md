@@ -297,3 +297,15 @@ on `integration/workflow` after its second Gate U. Worktree:
   deployed web summary of the session's work (mobile-readable) rides
   the same stop: gist 69e033ad (gh-pages branch pushed; Pages enable
   needs the UI - the token lacks pages:write). Board owner.
+- 2026-09-30 Session close at the GH-review boundary: orientation
+  canary PASS 4/4 against the pre-computed key (general lane,
+  cross-family; key, answers, grade, cost record, and worktree
+  accounting at
+  [the close evidence](../evidence/2026-09-30-w2-gates-session-close.md)).
+  Board state: W1 done on integration/workflow, this card in-review
+  with Gate U (code-review) open on PR #16, Gate U (proposal-quality)
+  queued, W5/W7/W8/S103 ready, no deferred gates, views current,
+  everything committed and pushed. Worktrees: primary (main, board),
+  integration (evaluation checkout), ../agent-driver-prototype-w2
+  (this card); two stray agy job worktrees removed at close. The next
+  session ticks the Gate U box on Mike's GH approval. Board owner.
