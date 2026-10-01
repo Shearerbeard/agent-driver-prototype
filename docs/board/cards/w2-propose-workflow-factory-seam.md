@@ -8,7 +8,7 @@ lineage: isolated-branch
 executor: smart
 gates: "S -> A -> U -> U"
 user-gates: [code-review, proposal-quality]
-commit-range: eb9a67b..39c06c1
+commit-range: eb9a67b..ed6ba03
 ---
 
 # W2: propose_workflow through the factory - coordinator tools land, propose-only
@@ -250,3 +250,22 @@ on `integration/workflow` after its second Gate U. Worktree:
   wrapper is future work beyond this card. Report at
   .review/w2-gateD/ (gitignored; this log is the durable record).
   Board owner.
+- 2026-09-30 Gate A round 2 FAIL (finding 1 NOT-REPAIRED, narrowed;
+  no new findings, no regressions). Same seat family (gpt-5.6-sol;
+  session 01a0f4bd-c97a-7971-8047-21cb2f7bca9b; 59,181 tokens). The
+  reviewer confirmed the driver path repaired (instance-derived
+  names, loud-fail registry) but found the preamble construction in
+  bin/server.rs still reconstructing registration independently
+  (coordinator_tool_names + a literal append beside the shim's own
+  enabled-check), and the mounted tests rendering from their own
+  vector - two decision points that could disagree. DISPOSITION:
+  ACCEPTED and fixed in ed6ba03 - workflow_tool_for(section,
+  sidecar) is the single decision point; bin/server and
+  ShimState::from_parts both consume it; the preamble names derive
+  from the constructed tool's own definition; the mounted tests
+  mount through the helper and derive input and expectation from its
+  output. Suite green at 443, fmt and clippy clean, snapshots
+  untouched. commit-range extends to eb9a67b..ed6ba03; round 3
+  verifies. Round note: this is fix round 2 of 2 - if round 3 does
+  not pass, the board owner writes the PROCESS ruling (continue,
+  card, or escalate) rather than another fix round. Board owner.
