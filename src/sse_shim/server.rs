@@ -47,7 +47,7 @@ use crate::dag_executor::{
 };
 use crate::mcp_client::{SidecarClient, SidecarTool};
 use crate::shim_config::WorkflowSection;
-use crate::workflow::ProposeWorkflowTool;
+use crate::workflow::{ProposeWorkflowTool, workflow_tool_for};
 
 use super::dag_lifecycle::{ShimDagObserver, ShimWorkerObserverFactory};
 use super::error::ShimError;
@@ -346,13 +346,12 @@ impl ShimState {
             Some(dag_observer),
         );
         // 10. CoordinatorLoopConfig with the metered provider. The
-        //    `propose_workflow` tool mounts only when `[workflow]` is enabled;
-        //    the sidecar client it needs is already in scope.
-        let propose_workflow: Option<Arc<ProposeWorkflowTool>> = if self.workflow.enabled {
-            Some(Arc::new(ProposeWorkflowTool::new(self.sidecar.clone())))
-        } else {
-            None
-        };
+        //    `propose_workflow` tool mounts through the single decision
+        //    point (`workflow_tool_for`) - the same helper the preamble
+        //    claims derive from, so claims and registration cannot
+        //    disagree; the sidecar client it needs is already in scope.
+        let propose_workflow: Option<Arc<ProposeWorkflowTool>> =
+            workflow_tool_for(&self.workflow, &self.sidecar);
         let loop_config = CoordinatorLoopConfig {
             provider: Arc::clone(&metered),
             model: self.model.clone(),

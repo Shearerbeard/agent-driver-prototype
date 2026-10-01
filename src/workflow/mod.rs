@@ -22,3 +22,17 @@ pub use plan::{
     ValidatedWorkflowSpec, WorkflowSpec, WorkflowStep,
 };
 pub use tool::ProposeWorkflowTool;
+
+/// The single decision point for mounting the coordinator's workflow tool:
+/// `[workflow]` enabled means the tool is constructed and registered, and
+/// every surface that claims it (the preamble's tool list, the loop's
+/// registration) derives from this same call, so claims and registration
+/// cannot disagree (S114).
+pub fn workflow_tool_for(
+    section: &crate::shim_config::WorkflowSection,
+    sidecar: &crate::mcp_client::SidecarClient,
+) -> Option<std::sync::Arc<ProposeWorkflowTool>> {
+    section
+        .enabled
+        .then(|| std::sync::Arc::new(ProposeWorkflowTool::new(sidecar.clone())))
+}

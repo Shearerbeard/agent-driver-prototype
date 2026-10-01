@@ -51,6 +51,7 @@ use crate::fixture::{
     CoordinatorCall, CoordinatorScenario, PreambleFixture, SessionHistoryFixture,
     WorkerRosterFixture, coordinator_envelope,
 };
+use crate::mcp_client::SidecarClient;
 use crate::message::ToolDefinition as MirrorToolDefinition;
 use crate::persistence::{
     ArtifactEntry, ArtifactKind, RoutingMode, RunManifest, RunStatus, TaskSummary, ToolOutcome,
@@ -63,7 +64,8 @@ use crate::templates::{
     render_planning_prompt,
 };
 use crate::types::{StepInput, TaskStatus};
-use crate::workflow::ProposeWorkflowTool;
+use crate::workflow::workflow_tool_for;
+use agent_driver_rs::tool::Tool as _;
 
 // ============================================================================
 // The banned vocabulary (coordinator surfaces only). `load_skill` is a
@@ -666,10 +668,18 @@ fn planning_loop_wrapper_names_the_registered_tools() {
 #[test]
 fn mounted_preamble_tools_section_names_the_registered_tools() {
     let sections = worker_sections_for(&coordinator_scenarios()[0]);
-    let workflow_definition = ProposeWorkflowTool::definition();
-    // The expected names come from the mounted factory list itself, not a
-    // hand-built set: this test fails if the factory and the rendered claims
-    // ever diverge (the S114 invariant).
+    // Mount through the single decision point the runtime uses
+    // (`workflow_tool_for`), deriving the rendered input from the
+    // constructed tool's own name and the expectation from the mounted
+    // factory list: this fails if claims and registration ever diverge
+    // (the S114 invariant).
+    let mounted_section = crate::shim_config::WorkflowSection {
+        enabled: true,
+        ..Default::default()
+    };
+    let workflow_tool = workflow_tool_for(&mounted_section, &SidecarClient::disconnected())
+        .expect("enabled section mounts the tool");
+    let workflow_definition = workflow_tool.definition().clone();
     let expected: BTreeSet<String> =
         coordinator_tool_definitions_with_workflow(&sections, Some(&workflow_definition))
             .iter()
@@ -689,9 +699,16 @@ fn mounted_preamble_tools_section_names_the_registered_tools() {
 #[test]
 fn mounted_planning_loop_wrapper_names_the_registered_tools() {
     let sections = worker_sections_for(&coordinator_scenarios()[0]);
-    let workflow_definition = ProposeWorkflowTool::definition();
-    // Expected names derive from the mounted factory list, not a hand-built
-    // set: registration and claims must name the same tools (S114).
+    // Same shape as the preamble test: mount through `workflow_tool_for`,
+    // derive the rendered input from the constructed tool's name and the
+    // expectation from the mounted factory list (S114).
+    let mounted_section = crate::shim_config::WorkflowSection {
+        enabled: true,
+        ..Default::default()
+    };
+    let workflow_tool = workflow_tool_for(&mounted_section, &SidecarClient::disconnected())
+        .expect("enabled section mounts the tool");
+    let workflow_definition = workflow_tool.definition().clone();
     let expected: BTreeSet<String> =
         coordinator_tool_definitions_with_workflow(&sections, Some(&workflow_definition))
             .iter()

@@ -55,6 +55,7 @@ use agent_driver_prototype::sse_shim::{
 
 use agent_driver_rs::config::ProviderConfig;
 use agent_driver_rs::provider::{AnthropicProvider, BedrockProvider, OpenAiProvider};
+use agent_driver_rs::tool::Tool as _;
 use agent_driver_rs::{ModelId, Provider, SystemPrompt};
 use tokio_util::sync::CancellationToken;
 
@@ -167,11 +168,15 @@ async fn build_state(args: &ShimCliArgs) -> Result<ShimState, ShimError> {
     // Coordinator preamble from the agent system prompt + the orchestration
     // framework template. When `[workflow]` is enabled, the factory includes
     // `propose_workflow`, so the preamble claims the same surface the loop
-    // registers.
+    // registers. The claims derive from the constructed tool itself (the
+    // same single decision point the shim's registration consumes), not
+    // from an independent reading of the config flag.
     let agent_system_prompt = config.agent.system_prompt.unwrap_or_default();
+    let workflow_tool =
+        agent_driver_prototype::workflow::workflow_tool_for(&config.workflow, &sidecar);
     let mut registered = coordinator_tool_names();
-    if config.workflow.enabled {
-        registered.push("propose_workflow");
+    if let Some(tool) = workflow_tool.as_ref() {
+        registered.push(tool.definition().name.as_str());
     }
     let coordinator_prompt = SystemPrompt::new(build_coordinator_preamble_with_workflow(
         &agent_system_prompt,
