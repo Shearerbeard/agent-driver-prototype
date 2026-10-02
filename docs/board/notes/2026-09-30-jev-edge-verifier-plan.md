@@ -1,8 +1,12 @@
-# Plan: JEV edge-verifier workstream (v2)
+# Plan: JEV edge-verifier workstream (v3.2)
 
-Date: 2026-09-29 (v1); 2026-09-30 (v2, v3). v2 incorporates adversarial
-review round 1 (FAIL, 14 BLOCKING / 3 MINOR). v3 incorporates the round-2
-re-review (FAIL, 7 re-raised, all applied below). Full ledger at the bottom.
+Date: 2026-09-29 (v1); 2026-09-30 (v2, v3, v3.1); 2026-10-02 (v3.2). v2
+incorporates adversarial review round 1 (FAIL, 14 BLOCKING / 3 MINOR). v3
+incorporates the round-2 re-review (FAIL, 7 re-raised, all applied below);
+v3.1 the round-3 verification fixes. v3.2 incorporates Tony Rogers' outside
+review (PASS-WITH-FIXES; `2026-10-01-jev-edge-verifier-review-trogers.md`
+in this directory, with its measurement script) and the 2026-10-02 user
+design-session rulings. Full ledgers at the bottom.
 
 Author: planner session. Author family: Kimi - driver-declared session fact
 (the harness top-level pin reads `zai-coding-plan/glm-5.3`; the driver states
@@ -33,7 +37,71 @@ evidence - and fails loud on any broken link.
    reviews the proposal artifact
    (`.review/jev-plan/jev-edge-verifier-proposal.html`, derived from this
    plan) before any W7/W8 leg is dispatched. Recorded on both cards' logs
-   as a standing gate.
+   as a standing gate. The gate re-applies to the v3.2 re-render.
+
+## Decisions locked (user, 2026-10-02 session - the v3.2 rulings)
+
+1. **W7 is a capability proof, not calibration.** The experiment answers
+   "can a System One decider detect edge-level drift, and what does one
+   answer cost?" The no-go rule is its primary output. Weights/levels are
+   provisional by construction (finding 2 below).
+2. **LLM-judge control arm in W7**: Kimi K3 on Bedrock (pinned model id
+   `us.moonshotai.kimi-k3`; env-default SSO credential chain - no new
+   plumbing), run over
+   the same corpus, labels, and evidence windows as the Jev rubric,
+   blinded to worker self-confidence identically. The user's orchestration
+   program already failed twice on LLM judges (whole-DAG final eval, then
+   per-worker eval - both died of lossiness at scale); the control arm
+   prices that counter-hypothesis before any prototype code lands. Staged
+   as W7 Leg 2, after the Leg 1 rubric arms.
+3. **Evidence selection is the experimental variable** (Tony's section 1
+   adopted as design default, tested as arms): Arm 1 head-truncated
+   excerpts (v3.1 baseline - verifies Tony's measured failure on our own
+   corpus), Arm 2 claim-indexed windows over the full on-disk capture
+   (the v3.2 default design), Arm 3 flash summarization
+   (deepseek-v4.1-flash via opencode go, the latency tier).
+4. **Retrieve-vs-summarize routing is a deterministic size classifier**:
+   code measures the total projected state size against the budget and
+   selects
+   raw windows or summarization; no model call for a byte-count decision.
+   Async pre-summarization at capture time is deferred to W11, fed by
+   W7's Arm-3 latency numbers.
+5. **Verifier timeout is a large failsafe** (~60s, config `timeout_ms`),
+   not a tuned bound; W7 measures latency vs state size per arm as
+   reported data for the W10 envelope.
+6. **W9 verifies off the DAG critical path** (Tony's section 3 adopted):
+   spawn per submitted edge, join all pending verifications at the end of
+   `execute()`; verdict files still land before the run returns; the
+   task's concurrency slot is never held by a verifier call, so W10's
+   wall-clock delta attributes to the verifier alone.
+7. **jev-driver crates.io release is user-owned and off this wave's
+   critical path.** W9 develops against the path dep; publication is
+   required only at W9's merge/CI boundary. The v3.1 "shipped fact before
+   W9 starts" rule is relaxed to that boundary.
+8. **Review script is a named W7 deliverable** (precedent: Tony's
+   `2026-10-01-jev-edge-verifier-review-measure.py`): one script
+   reproduces every reported W7 number from raw artifacts, and is re-run
+   at W10's gate against the live-run artifacts.
+9. **Teachable architecture diagram** (mermaid: capture -> claim
+   extraction -> size classifier -> selection -> decider -> verdict
+   artifact) lives in this note and in `src/edge_verify/DESIGN.md` at W9,
+   updated at W11, rendered at each user gate. Clean-code constraint: no
+   spike-shaped code welded into the seam - an implementation that scores
+   well but cannot be cleaned for production is a failure, enforced by
+   W9's design panel and Gate A.
+10. **W13 is the foundational measurement, not just the control arm.**
+    The first agent-driver-prototype, model-specific baseline against
+    mock-mcp exists nowhere today. W13's deliverable gains a baseline
+    analysis report carrying the contract watch-list (below), so the
+    contract-bounds question is answered by measurement before any bound
+    is built, and W10's deltas compare against a measured baseline rather
+    than an assumed one.
+11. **Baseline driver model pinned** (2026-10-02): `glm-5.3` from the
+    zai coding plan drives the prototype (coordinator and workers) for
+    W13/W10, endpoint `https://api.z.ai/api/coding/paas/v4` with the
+    OpenAI + reasoning adapter. The judge model for W7 Leg 2 is
+    `us.moonshotai.kimi-k3` on Amazon Bedrock (decision 2). Both pins are
+    concrete ids, recorded in the W13 evidence file and W7 report.
 
 ## Scope
 
@@ -194,6 +262,55 @@ the actual resistance (see footgun mapping).
    verbatim evidence; instructions embedded in tool output; directives aimed
    at the scorer) and reports how far Jev's answers get pulled.
 
+### Footguns added 2026-10-02 (the session's own; must not be lost)
+
+5. **Evidence starvation at the decider** (Tony's section 1): a fixed
+   excerpt budget means the judge sees less the bigger the investigation
+   gets - the hardest edges ground against the least evidence, and
+   truncation manufactures both INSUFFICIENT_EVIDENCE and false
+   fabrication flags. Documented path: full capture on disk, claim-indexed
+   selection (State section above), per-edge state size and truncation
+   flags as required W10 report columns so starvation is visible when it
+   happens rather than silent.
+6. **Lossy evidence chain for judging runs** (session concern): every
+   stage between the mock tool's response and the decider's state can
+   drop information - observer capture, spill threshold, frame admission,
+   claim extraction, selection windows, summarization. The documented
+    path: (a) full tool I/O captured at the observer before any bound
+    applies; (b) the deterministic pre-check runs against the full capture,
+    so FOUND claims that miss the lookup show up as not-found markers.
+    Stated limit (round-2 finding 1): a claim missed by BOTH the
+    extractor and the model produces no marker - extraction recall is
+    measured offline in W7 against the labelled corpus, but live verdicts
+    cannot detect a double miss; the agreement metric is a drift signal,
+    not a guarantee; (c) per-edge state size / truncation flags /
+    INSUFFICIENT_EVIDENCE rates are first-class report columns in W7 and
+    W10 - the cards carrying a verifier; W13 has no verifier, and its
+    watch-list instead audits capture receipt and worker emission
+    (round-1 finding 6); (d) W13's contract watch-list (below) audits what
+    the workers and coordinator actually emitted, so judge-side loss is
+    distinguishable from worker-side contract drift.
+7. **Unbounded coordinator prose** (session concern, code-verified):
+   `create_plan`'s task field is a bare string with no length bound
+   (`src/coordinator_loop/tools/create_plan.rs:104-106`) - nothing
+   mechanical stops the coordinator writing an essay into every task, and
+   `plan_context` then multiplies it into every scorer state. W8's OUTPUT
+   CONTRACT is preamble-level only, unenforced. Documented path: measure
+   first (W13 watch-list records task-description lengths and
+   evidence-shape parse success; a temporary deepseek-flash drift
+   classifier flags what deterministic checks miss, offline over captures,
+   observe-only); bound later if the data justifies it - insertion points
+   named: `src/bounding.rs` (already the single source of truth for every
+   truncate/spill bound) for a task-description cap, W11's typed contracts
+   for structural enforcement. W8's preamble states a soft size target so
+   deviations are measurable against a number.
+8. **Calibration-transfer** (Tony's section 2): rubric weights tuned on
+   aura-captured edges may not transfer to prototype edges (different
+   result shape, frame, and preambles). Documented path: W7 thresholds
+   marked provisional, re-checked at W9's live smoke; W13's baseline
+   captures give prototype edges for the re-check; W10 does not inherit
+   thresholds blind.
+
 ---
 
 ## The edge verifier (priority 1)
@@ -202,29 +319,55 @@ the actual resistance (see footgun mapping).
 
 - Injection: `Option<Arc<dyn EdgeVerifier>>` on `DagExecutor`, mirroring the
   `DagLifecycleObserver` pattern. Verify fires on
-  `WorkerOutcome::Submitted` inside the per-task async block, before
-  `map_outcome` (`src/dag_executor/executor.rs:275-281`). A submission whose
-  spill later fails is still verified - the verdict exists and the task
-  records the bounded spill failure; the two outcomes are orthogonal.
+  `WorkerOutcome::Submitted` (`src/dag_executor/executor.rs:275-281`). **v3.2
+  (Tony's W9 finding, adopted): the verifier call runs OFF the task future**
+  - firing inside the per-task future before `map_outcome` would hold one of
+  the concurrency slots and delay every dependent task by Jev latency, pure
+  cost for an observe-only verifier that also contaminates W10's wall-clock
+  delta with DAG serialization. Instead the executor spawns the
+  verification per submitted edge and joins all pending verifications at
+  the end of `execute()`; verdict files land before the run returns, and
+  DAG SCHEDULING with the verifier on is identical to verifier off - no
+  verifier work occupies a task's concurrency slot or delays a dependent
+  task (round-2 finding 5: scheduling equality is the claim; capture
+  writes, extraction, and summarization still consume shared resources,
+  and that contention is MEASURED via per-edge wall-clock comparison in
+  W10, not claimed away). A
+  submission whose spill later fails is still verified - the verdict
+  exists and the task records the bounded spill failure; the two outcomes
+  are orthogonal.
 - **Goal threading** (review finding 3): `DagExecutor::execute` receives
   only `Plan` + `ToolContext`, and the request's `PinnedGoal` is built in
   `server.rs` after executor construction. W9 reorders: pin the goal first
   (the query is available before `build_request`), pass the verbatim goal
   text into `DagExecutor::new`. Substituting any coordinator-authored
   paraphrase invalidates goal_alignment - the card's acceptance names this.
-- **Tool-evidence capture** (review finding 1): the existing
-  `WorkerObserverFactory` injection point captures a bounded record of tool
-  calls (name, args digest, output excerpt) per task; the executor holds it
-  for the verifier call. This is required, not optional - grounding claims
-  factual support only against captured evidence.
-- **Bounded execution** (review finding 4): the Jev call carries a hard
-  timeout (default 2000ms, config `timeout_ms`; cloud p95 is sub-second) and
-  the task's cancellation token. Every failure mode - timeout, cancellation,
+  Known v1 limitation (Tony's W9 minor): the goal is the LAST user message
+  only; in a multi-turn conversation goal_alignment loses earlier context.
+  Accepted for v1; named on W9's card.
+- **Tool-evidence capture** (review finding 1; v3.2: full capture): the
+  existing `WorkerObserverFactory` injection point records the COMPLETE
+  tool I/O (name, args digest, full output) per task to the run's artifact
+  directory; the executor holds the reference for the verifier call.
+  Nothing is truncated at capture time - every bound applies at selection.
+  This is required, not optional - grounding claims factual support only
+  against captured evidence.
+- **Bounded execution** (review finding 4; **v3.2 ruling: failsafe, not
+  tuned bound**): the WHOLE per-edge verification pipeline (extraction,
+  retrieval, summarization, Jev call(s), fan-out, verdict write) carries
+  a large failsafe timeout (~60s
+  default, config `timeout_ms`) and the run's cancellation token. The v3.1
+  2000ms default was measured on jev-driver's tiny smoke states and would
+  trip routinely at real state sizes (Tony's W9 finding); the failsafe is
+  a never-hang guarantee, and W7 measures latency vs state size per arm as
+  reported data for W10's envelope rather than as a cutoff to tune. Every
+  failure mode - timeout, cancellation,
   exhausted retries, malformed/strictness-rejected response, verdict-write
   failure - produces a typed `VerifierError` verdict record with a reason
   code. In observe-only a verifier error NEVER changes the task outcome; the
-  worker result settles normally. The call occupies the task's concurrency
-  slot for its duration; the timeout bounds the worst case.
+  worker result settles normally. Verifications run off the task future
+  (above) and are joined at the end of `execute()`; the failsafe bounds
+  the join.
 - **Error receipts** (round-2 finding 1): the verdict artifact is the happy
   path. A verdict-write failure instead emits a structured tracing event
   (`edge_verdict_write_failed`) carrying the full verdict JSON - the runner
@@ -255,19 +398,94 @@ the actual resistance (see footgun mapping).
   content hash, per-dimension answers with probabilities/confidence,
   deterministic grounding stats (below), composite, verdict enum, truncation
   flags, latency, token usage, timestamp.
+  **v3.2 loss instrumentation (round-1 finding 5)**: the payload also
+  carries, per edge - capture completeness (tool calls observed vs tool
+  calls recorded, incl. errored calls with dropped bodies); claims
+  extracted (count by class); claims resolved (found_in breakdown incl.
+  not_found); frame-admission stats (ancestors admitted vs omitted); for
+  the summarization path, input chars vs summary chars and the summary
+  model's finish reason; selection stage latencies (extraction,
+  retrieval, summarization, fan-out) beside the Jev call latency. Every
+  diagram arrow carries its measured size.
 
-### State (one JSON object; whole-request budget)
+### State (one JSON object; claim-indexed selection; whole-request budget)
 
-Default whole-request budget 24k chars (config `state_budget_chars`),
-covering EVERY state field plus JSON overhead, with draft allocations tuned
-in W7: goal 2k, plan_step 2k, plan_context 5k, worker_output 7k (head+tail),
-context_provided 4k, tool_evidence with a ≥4k floor. Every truncated field
-carries `truncated: true`. Eviction order when over budget (round-2 finding
-6): tool_evidence excerpts toward their floor, then context_provided's
-transitive entries farthest-first (mirroring the frame's own admission
-rule), then its direct entries, then plan_context siblings, then consumers;
-goal, plan_step, and worker_output's head+tail are pinned and never
-evicted.
+**v3.2: the budget bounds what is SELECTED, not what is captured**
+(Tony's blocking finding; measured basis: across 189 o11y-bench
+trajectories, 66 tasks exceed the whole 24k-char budget on tool output
+alone, 100 have a single tool result over the 4k-char evidence floor -
+see the review note's table). The evidence flow is inverted:
+
+1. **Full capture on disk**: the observer records complete tool I/O per
+   task into the run's artifact directory; nothing is truncated at
+   capture time.
+2. **Deterministic pre-check against the FULL capture** (never a
+   truncated state field): the claim extractor pulls the result's
+   specific claims - named classes: quoted strings, numeric values with
+   units, ids, timestamps, hostnames/paths - and string-matches each
+   against the full capture AND the task's `context_provided` frame
+   (inherited evidence is legitimate support; a not-found marker means
+   absent from both). Hit/miss counts ride the verdict as grounding stats.
+   The extraction spec is a named W7 deliverable. Extraction RECALL is
+   instrumented, not assumed (round-1 finding 2): W7 reports the
+   extractor's per-class hit rate on the labelled corpus against the
+   by-construction labels, and W9's verdict payload carries the extracted
+   claim count plus the model grounding dimension's supported/unsupported
+   spread as a DRIFT SIGNAL. Stated limit (round-3): a claim missed by
+   BOTH the extractor and the model is undetectable in a live verdict -
+   offline recall measurement and the agreement metric bound the risk;
+   they do not detect it per-edge.
+3. **Claim-indexed selection**: each claim gets a bounded window around
+   its hit in the full capture, or an explicit not-found marker. Evidence
+   becomes claim-indexed retrieval, behaving the same on an 11k-char task
+   and a 228k-char task. The single routing predicate sequence (round-3
+   finding 2 - this paragraph is the ONLY routing rule; the budget
+   paragraph below defines constants, not routing):
+
+   - Let R = `state_budget_chars` (default 24k) minus the actual sizes of
+     the hard-capped fixed fields (goal <= 2k, plan_step <= 2k,
+     plan_context <= 5k, worker_output <= 7k head+tail, context_provided
+     <= 4k, each carrying `truncated: true` when capped) minus JSON
+     overhead. R is the evidence budget.
+   - **Step 1 (raw windows)**: project claim windows sized to fit R
+     (windows shrink to fit; per-claim floor ~500 chars, else the claim
+     carries only its `found_in` marker). If R >= the window floor (draft
+     4k), send the state with raw `claim_evidence` windows.
+   - **Step 2 (summarize)**: if R < the window floor, replace projected
+     windows with flash-summarized regions (deepseek-v4.1-flash) sized to
+     fit R, and send.
+   - **Step 3 (fan out)**: reachable only when R is too small for even
+     summary regions (pathological fixed-field pressure, e.g. all caps
+     hit, R < ~1k): the evidence dimensions fan out one Noul per claim,
+     each request carrying the claim text plus one bounded slice; the
+     other four dimensions score once on the fixed fields plus
+     `claim_evidence` as claim texts + `found_in` markers WITHOUT
+     windows. `evidence_presence` maps in code from the per-claim
+     `found_in` distribution and the per-claim P(supported) Nouls
+     aggregate in code to the `evidence_grounding` level (mappings frozen
+     in W7's rubric types). At the plan's price premise a dozen extra
+     calls per edge is noise.
+
+   Every state that reaches the decider fits the budget by construction:
+   the payload's evidence content is built to size R, so there is no
+   evidence eviction (the v3.1 eviction order is deleted) and no
+   post-hoc overflow. "Projected" sizes are pre-sizing estimates computed
+   BEFORE assembly; "final" payload sizes are measured AFTER assembly and
+   ride the verdict - the two never compete, because assembly enforces
+   the projection.
+
+W7 tests all three selection arms (head-truncation baseline,
+claim-indexed windows, flash summarization) over the same corpus so the
+inversion is verified on our data, not adopted on Tony's alone; the W7
+corpus must include at least one edge whose full tool output exceeds the
+whole budget, and reports per-edge state size and truncation rate beside
+accuracy (the v3.1 "budget sweep" open risk is now W7 acceptance).
+
+**Budget constants (v3.2, round-1 finding 4; routing lives above)**:
+whole-request budget default 24k chars (config `state_budget_chars`)
+covering EVERY field plus JSON overhead; fixed-field caps as listed;
+window floor draft 4k; per-claim window floor ~500 chars; fan-out
+threshold R < ~1k. All constants are config, tuned in W7.
 
 ```json
 {
@@ -278,8 +496,10 @@ evicted.
                    "siblings": [{"task": "<other plan step descriptions, verbatim>"}]},
   "worker_output": {"summary": "...", "result": "<head+tail>", "truncated": false},
   "context_provided": "<rendered prior-work frame, truncated flag>",
-  "tool_evidence": [{"tool": "...", "args_digest": "...",
-                     "output": "<excerpt>", "truncated": true}]
+  "claim_evidence": [{"claim": "<extracted claim text>",
+                      "found_in": "tool_capture | context_provided | not_found",
+                      "window": "<bounded window around the hit, or summary region, or null>",
+                      "truncated": false}]
 }
 ```
 
@@ -289,25 +509,29 @@ if Jev never saw it.
 
 ### Sealed rubric v2 (six questions, one request; criteria live in jev-driver derives)
 
-1. `evidence_presence` (Noul): does `tool_evidence` (plus
-   `context_provided`) contain the outputs the result's specific claims
-   rely on? Near-0 ⇒ the verdict reports INSUFFICIENT_EVIDENCE for
-   grounding instead of a score.
+1. `evidence_presence` (Noul): does `claim_evidence` (the selected
+   windows, each with its `found_in` provenance) plus `context_provided`
+   contain the outputs the result's specific claims rely on? Near-0 ⇒ the
+   verdict reports INSUFFICIENT_EVIDENCE for grounding instead of a score.
 2. `task_fidelity` (Score, 5 levels): completeness and precision vs
    `plan_step.task`.
 3. `goal_alignment` (Score, 3 levels): advances `goal` vs locally busy /
    distractor-aligned work.
 4. `evidence_grounding` (Score, 4 levels: supported / mostly / partially /
    unsupported-or-fabricated): are the result's specific values backed by
-   `tool_evidence` and `context_provided`.
+   `claim_evidence` and `context_provided`.
 5. `handoff_integrity` (Noul): the output carries the exact values the
    `plan_context.consumers` tasks need to act without re-deriving them.
 6. `scope_discipline` (Noul): stays inside `plan_step.task`; does not
    perform `plan_context.siblings` work or replay completed ancestors.
 
-Deterministic pre-check in code (citation-check step 1): substrings in
-`result` that look like quoted values are string-matched against
-`tool_evidence`; hit/miss counts ride the verdict as grounding stats. The
+Deterministic pre-check in code (citation-check step 1; v3.2): the claim
+extractor's named classes are string-matched against the FULL on-disk
+capture AND the task's `context_provided` frame (inherited evidence is
+legitimate support - a worker may quote an ancestor's inline evidence
+without making its own tool call; the pre-check treats both capture and
+frame as the lookup corpus, and a not-found marker means absent from
+both). Hit/miss counts ride the verdict as grounding stats. The
 unit of scoring is the task output (per producer); consumer descriptions in
 state are how a producer-level verdict speaks to outgoing handoffs (review
 finding 2's resolution - per-edge fan-out is a W11 consideration, not v1).
@@ -336,33 +560,117 @@ admitted under the existing frame budget and demarcation; workers keep
 `read_artifact`/search - best-shot injection, not the only shot. W11 must
 also design the adversarial-resistance tests (footgun 4) as acceptance
 criteria, not prose claims.
+**v3.2 (Tony's W11 note + ruling 4): W11 takes W9's claim-indexed selection
+experience as a named input.** Typed, addressable artifacts are the
+structural end-state of claim-indexed evidence: the verifier takes artifact
+references plus ranked windows instead of excerpts. The async
+pre-summarization question (summarize at capture time, verifier picks raw
+or summary per the size classifier) is decided here from W7's Arm-3 latency
+numbers, not ahead of them.
+
+---
+
+## Architecture diagram (ruling 9 - kept teachable, updated at W9/W11)
+
+```mermaid
+flowchart LR
+    subgraph capture["Capture (observer, W9 seam)"]
+        T["tool I/O - FULL, on disk<br/>no truncation at capture"]
+        R["worker result<br/>summary + result + no self-confidence"]
+    end
+    subgraph assembly["State assembly (deterministic, in code)"]
+        X["claim extraction<br/>named classes: quoted strings,<br/>values+units, ids, timestamps,<br/>hostnames/paths"]
+        C{"routing: R = budget - fixed - overhead<br/>R >= window floor -> raw<br/>else summarize to R<br/>else fan out per claim (R < ~1k)"}
+        W["claim-indexed windows<br/>+ not-found markers"]
+        S["flash summarization<br/>deepseek-v4.1-flash"]
+    end
+    subgraph decider["Decider (one request per edge)"]
+        J["Jev sealed rubric - 6 questions<br/>evidence_presence / task_fidelity /<br/>goal_alignment / evidence_grounding /<br/>handoff_integrity / scope_discipline"]
+    end
+    subgraph sidecar["Sidecar (observe-only)"]
+        V["verdict artifact<br/>edge-&lt;plan&gt;-exec-&lt;seq&gt;-task-&lt;id&gt;-attempt-&lt;n&gt;<br/>+ grounding stats + truncation flags"]
+    end
+    T --> X --> C
+    C -->|"R >= window floor"| W --> J
+    C -->|"R < window floor"| S --> J
+    C -->|"R < ~1k: fan out, one Noul per claim"| J
+    R --> J
+    J --> V
+```
+
+Key properties the diagram must keep teachable: capture is lossless (every
+bound applies at selection, never at capture); the deterministic pre-check
+reads the full capture; the decider never sees self-confidence; the verdict
+never re-enters any worker's or the coordinator's context; and every arrow
+carries a measured size so lossiness is visible at the stage it happens
+(footguns 5 and 6). The W11 evolution replaces "windows into a capture"
+with "references to typed artifacts" - same shape, addressable evidence.
 
 ---
 
 ## Experiment and eval design
 
-**Phase A (W7, jev-driver workspace `edge-spike/`).**
-Corpus source (review finding 9's resolution): one aura-side RCA run via the
-EXISTING `run-rca-e2e.sh` + vendored binary - that harness works today with
-no dependencies (fallback: W8's smoke capture if it already exists). No card
-depends on another for W7's input.
-Corpus: ≥2 scenarios, ~40 edges. Classes: clean; drifted; fabricated
-specifics; scope violation; lossy handoff; distractor-aligned;
-missing-evidence; legitimate scope overlap; contradictory sources;
-truncation; adversarial injection (imperatives in evidence; scorer-directed
-instructions). Labels by construction. Split: calibration half (tune
-levels/weights), held-out half (report only).
-Quantitative acceptance (proposal; user adjusts at U(rubric)) - on held-out:
-- composite orders clean above every failure class in ≥85% of pairwise
-  comparisons;
-- grounding catches the fabricated class at precision ≥0.9 with clean-case
-  false-flag rate ≤15%;
+
+
+**Phase A (W7, jev-driver workspace `edge-spike/`).** v3.2: reframed as a
+capability proof (ruling 1), run in two staged legs.
+
+*Leg 1 - rubric and selection arms.* Corpus source (review finding 9's
+resolution): one aura-side RCA run via the EXISTING `run-rca-e2e.sh` +
+vendored binary - zero card dependencies (fallback: W8's smoke capture).
+Corpus: >= 2 scenarios, ~40 captured edges, PLUS several labelled
+synthesized variants per captured edge (Tony's W7 finding: ~20 held-out
+edges across 11 failure classes cannot support numeric per-class bars;
+synthesis is cheap because the corpus is by construction). Classes: clean;
+drifted; fabricated specifics; scope violation; lossy handoff;
+distractor-aligned; missing-evidence; legitimate scope overlap;
+contradictory sources; truncation; adversarial injection. Labels by
+construction. At least one edge whose full tool output exceeds the whole
+state budget. Optional augmentation: a handful of edges from W13's
+prototype captures if W13 has landed (calibration-transfer read; no DAG
+edge added). Split: calibration half (tune levels/weights), held-out half
+(report only). Every edge is scored under each of three selection arms:
+(1) head-truncated excerpts (v3.1 baseline), (2) claim-indexed windows,
+(3) flash summarization (deepseek-v4.1-flash via opencode go) - same
+corpus, same labels, so the arms isolate selection, not model. The claim
+extraction spec (named classes) is a named deliverable.
+Quantitative acceptance (proposal; user adjusts at U(rubric)) - on held-out,
+for the candidate arms (2 and 3); Arm 1's bar is inverted (round-2 finding
+3): it should UNDERPERFORM Arm 2 on over-budget edges, demonstrating the
+measured failure on our corpus, and the report states the delta. Arm
+selection for W9: best held-out pairwise ordering within the cost/latency
+envelope; ties break to claim-indexed windows.
+- composite orders clean above every failure class in >=85% of pairwise
+  comparisons (the hard gate, Arms 2 and 3);
+- per-class bars numeric only where variant counts support them - the
+  criterion: >= 5 held-out labelled examples of the class
+  (fabricated-class precision >=0.9 with clean-case false-flag rate <=15%
+  where supported), directional otherwise (Tony's statistical finding);
 - adversarial classes measured and characterized (no pass number - the
   report says how far answers moved);
-- no-go: grounding cannot beat the evidence_presence-only baseline ⇒ the
-  dimension is redesigned or the workstream re-gates before W9.
-Also reported: p50/p95 latency, input tokens per call, deterministic
-grounding stats agreement with the model dimension.
+- no-go (metric defined): grounding must beat the evidence_presence-only
+  baseline on held-out clean-vs-fabricated pairwise ordering by MORE THAN
+  10 percentage points; at or below, the dimension is redesigned or the
+  workstream re-gates before W9.
+Also reported: p50/p95 latency per arm against state size, input tokens per
+call, per-edge state size and truncation rate, deterministic grounding stats
+agreement with the model dimension. Thresholds and weights are PROVISIONAL
+(Tony's calibration-transfer finding): re-checked against prototype edges at
+W9's live smoke; W10 never inherits them blind.
+
+*Leg 2 - LLM-judge control arm* (ruling 2): Kimi K3 on Bedrock (pinned
+`us.moonshotai.kimi-k3`; env-default SSO credential chain), prompted as an edge
+judge over the same corpus, same labels, same evidence windows per arm,
+blinded to worker self-confidence identically. The held-out report carries
+three columns - Jev rubric, evidence-presence-only ablation, LLM judge -
+with latency and per-call cost for each, so the report prices the
+counter-hypothesis the user's program already failed on twice (whole-DAG
+final eval; per-worker LLM eval - both died of lossiness at scale).
+
+*Review script* (ruling 8): one script in the spike crate reproduces every
+reported number from raw artifacts - corpus replay, all arms, all judges,
+latency/token tables - and is re-runnable at W10's gate against live-run
+artifacts.
 
 **Phase B (W8, W13, W10).**
 - W8 (no deps): prototype RCA TOML (`configs/rca-prototype.toml`; workers
@@ -373,6 +681,27 @@ grounding stats agreement with the model dimension.
   `run-rca-e2e.sh`, verifier OFF, N=3 iterations; baseline evidence file
   with scores, judge support, wall-clock, and ALL repo SHAs (this repo,
   ai-experiments, mock-mcp-service, jev-driver) pinned (review finding 16).
+  **v3.2: W13 is elevated to the foundational measurement** (ruling 10) -
+  no agent-driver-prototype, model-specific baseline against mock-mcp
+  exists anywhere today. The deliverable gains a **baseline analysis
+  report** carrying the **contract watch-list** - what judges and future
+  sessions look for in the initial tests:
+  coordinator task-description lengths (distribution + worst offenders;
+  the `create_plan` schema has no bound - footgun 7);
+  worker evidence-shape parse success against the W8 labelled-section
+  contract (deterministic);
+  INFERRED-label usage on unobserved values (deterministic spot-check);
+  spill rates and inline-preview sizes;
+  per-task tool-output size distributions (Tony's section-1 measurement
+  repeated on prototype traffic - his data was aura single-agent);
+  and a **temporary drift classifier** (deepseek-v4.1-flash, offline over
+  captured artifacts, observe-only flags, false-positive caveat stated)
+  for what deterministic checks cannot catch - verbatim-fidelity of
+  evidence blocks, prose drift from task intent. The classifier is a
+  baseline-analysis instrument, not pipeline code: if useful it graduates
+  to a W11 consideration, if noisy nothing is lost.
+  The `--llm-judge` model is pinned alongside the worker model (Tony's W13
+  note).
 - W10 (deps W13 + W9): treatment arm, verifier ON, same N. Predefined
   method, written into the card before any run: aggregation rules
   (per-run flagged-edge fraction; worst-edge composite; scenario outcome
@@ -386,6 +715,12 @@ grounding stats agreement with the model dimension.
   (review finding 6's explicit limit). The Jev-vs-self-confidence predictor
   comparison is clean because the scorer is blinded. Model pinned to a
   concrete version (not the moving alias) for the whole experiment.
+  **v3.2 (Tony's W10 finding): per-edge state size, truncation flags, and
+  INSUFFICIENT_EVIDENCE rate are required report columns** beside latency
+  and token usage - without them the correlation is uninterpretable. The
+  watch-list columns from W13 rerun identically on the treatment arm, and
+  the review script (ruling 8) reproduces the report from the raw results
+  directories.
 
 **Cost/latency envelope** (measured premises, dated: jev-1.12 prices
 2026-08, $0.042/1M input tokens; 70-500ms per call from jev-driver's live
@@ -422,13 +757,16 @@ logged".
 
 Pull order (WIP=2): W7 + W8, then S107, then W13, then W9, then W10.
 
-### The jev-driver consumption decision (must be SHIPPED before W9 starts)
+### The jev-driver consumption decision (required at W9's merge/CI boundary; user-owned)
 
-Any manifest reference to the private repo breaks access-less clones at
-cargo resolution time. W7 sidesteps it (spike lives inside the jev-driver
-workspace). W9 requires ONE of, as a shipped fact (review finding 11,
-a "CI waiver" alone is not accepted):
-(a) crates.io 0.1.0 per `NEXT-SESSION.md`'s punchlist - cleanest;
+**v3.2 ruling 7: the release is user-owned and off this wave's critical
+path.** W9 develops against the path dep locally; the wave is not bound to
+the release schedule. What remains true: any manifest reference to the
+private repo breaks access-less clones at cargo resolution time, so before
+W9's changes MERGE (CI must resolve the graph), ONE of these is a shipped
+fact (review finding 11, a "CI waiver" alone is not accepted):
+(a) crates.io 0.1.0 per `NEXT-SESSION.md`'s punchlist - cleanest, the
+user's chosen path;
 (b) optional git+ssh dep behind a `jev` cargo feature AND CI that can
 resolve it - a deploy key on this repo's CI, full stop. Cargo resolves the
 whole dependency graph regardless of features (a carve-out that "never
@@ -576,14 +914,27 @@ W10's report as its own card cycle.
 
 ## Open risks
 
-- Grounding quality with bounded tool_evidence excerpts - W7's budget sweep
-  is the read.
+- ~~Grounding quality with bounded tool_evidence excerpts~~ - resolved in
+  v3.2: the budget sweep is W7 acceptance (three selection arms measured on
+  the same corpus; Tony's finding verified on our data, not adopted on his).
 - Adversarial state content pulling Jev's answers (documented jaggedness),
   W7 characterizes; W11 designs defenses as tests.
 - 12 scenarios x 3 iters is directional - W10 reports scenario-clustered
   uncertainty and limits conclusions to the evidence.
 - Contract-retrofitted preambles change worker behavior independent of the
   verifier; the A/B is verifier on/off on a fixed config.
+- Contract bounds are unenforced (footgun 7): coordinator task text is
+  unbounded and the W8 OUTPUT CONTRACT is preamble-level. W13's watch-list
+  measures it; bounds land only if the data justifies them, at the named
+  insertion points (`bounding.rs`; W11 typed contracts).
+- mock-mcp-service tool-output sizes are unmeasured (Tony's verification
+  note; the mock was unreachable from the reviewing machine) - if mock
+  payloads are smaller than production Mezmo/Grafana responses, the
+  evidence-budget problem stays invisible in W7/W10 until production. W13's
+  watch-list reports per-task tool-output size distributions, which puts
+  the gap on the record.
+- Jev's 32k-token request ceiling is a reviewer-supplied premise - confirm
+  against TypeSafe's docs at W7 dispatch.
 - ai-experiments has its own conventions (`aura-e2e/AGENTS.md`); the W8/W13
   briefs name it required reading.
 
@@ -764,3 +1115,205 @@ Stage 0 executed the same day by the board-owner session: `jev` lane +
 charter edit in `boardkit.toml`; W7-W13 minted; S107 `serialize-with:
 [W9]`; S104 `serialize-with: [S103, W9]`; views regenerated; `boardkit
 check` reports **18 cards valid, views current**. W7 and W8 are `ready`.
+
+### Outside review (2026-10-01) and the v3.2 revision (2026-10-02)
+
+Reviewer: Tony Rogers (aura maintainer), session driver Claude Code
+(`claude-fable-5-1`), read-only against `main` at `8340e31`. Note:
+`2026-10-01-jev-edge-verifier-review-trogers.md` (this directory) with a
+measurement script reproducing every number. Verdict: **PASS-WITH-FIXES**.
+
+Disposition of the review's findings (all applied in v3.2 above):
+
+1. BLOCKING - fixed-excerpt evidence budget fails on measured SRE tool
+   traffic (66/189 tasks over budget on tool output alone). **Fixed:**
+   evidence flow inverted - full capture on disk, deterministic pre-check
+   against the full capture, claim-indexed window selection, flash
+   summarization over budget, Noul-per-claim fan-out on overflow (State
+   section; footgun 5). The inversion is additionally TESTED rather than
+   adopted on the reviewer's data alone: W7 scores three selection arms
+   over the same corpus, with head-truncation as the baseline arm.
+2. ISSUE (W7) - held-out split cannot support numeric per-class bars;
+   calibration on aura edges vs deployment on prototype edges; no
+   claim-extraction spec; mock output sizes unmeasured. **Fixed:**
+   synthesized labelled variants per captured edge; per-class bars numeric
+   only where counts support them, pairwise ordering the hard gate;
+   thresholds marked provisional, re-checked at W9's live smoke;
+   extraction spec a named W7 deliverable with its agreement metric;
+   prototype tool-output sizes measured by W13's watch-list (mock-size gap
+   recorded as an open risk).
+3. ISSUE (W9) - verifier on the DAG critical path; 2000ms timeout
+   unmeasured; goal is last-user-message only; dependency option.
+   **Fixed:** spawn-off-task-future with join at end of `execute()`;
+   failsafe timeout (~60s) with latency-vs-size measured in W7 as data;
+   goal limitation named as accepted v1 limitation; crates.io publication
+   confirmed as the chosen path, user-owned, required at W9's merge/CI
+   boundary rather than before W9 starts.
+4. ISSUE (W10) - truncation must be a reported column. **Fixed:**
+   per-edge state size, truncation flags, and INSUFFICIENT_EVIDENCE rate
+   are required W10 columns; the W13 watch-list columns rerun on the
+   treatment arm.
+5. SOUND (W8, W13, W11, W12, S107) - notes applied: `--llm-judge` model
+   pinned in W13; W11 takes W9's selection experience as a named input.
+
+User design-session rulings of 2026-10-02 are locked at the top of this
+document (capability-proof framing; LLM-judge control arm, Kimi K3 on
+Bedrock; three selection arms with flash summarization; deterministic size
+classifier; failsafe timeout; off-critical-path verification; user-owned
+jev-driver release; review-script deliverable; teachable diagram +
+clean-code constraint; W13 elevated to foundational measurement with the
+contract watch-list and temporary drift classifier). Session-raised
+footguns 5-8 are recorded in the footgun mapping with their documented
+paths. The baseline driver model was named 2026-10-02 (decision 11:
+`glm-5.3` via the zai coding plan endpoint; judge `us.moonshotai.kimi-k3`
+on Bedrock).
+
+v3.2 review: codex CLI (metered, user-approved 2026-10-02, max three
+rounds) with a mandated focus on the judge/deterministic-plumbing footgun
+path and evidence-chain lossiness. Ledger appended per round below.
+
+#### v3.2 review round 1 (2026-10-02)
+
+Reviewer: codex CLI 0.160.0 (gpt-5.6-sol family per the user's dispatch
+request), read-only sandbox, staged packet `.review/jev-plan-v32/`
+(PLAN-v32.md, v32-delta.diff, TONY-REVIEW.md, prompt). Mandated focus:
+footgun-path documentation and evidence-chain lossiness.
+
+Verdict: **FAIL** - 11 BLOCKING, 2 MINOR. Dispositions (all applied):
+
+1. BLOCKING - residual v3.1 bounded-excerpt text contradicted full
+   capture. **Fixed:** the capture bullet, the deterministic pre-check
+   paragraph, and W7's rubric section now say full capture; the pre-check
+   matches against full capture AND `context_provided`.
+2. BLOCKING - extraction omissions produce no not-found marker (missed
+   claim = silent). **Fixed:** extraction recall is instrumented - W7
+   reports per-class extractor hit rate against the by-construction
+   labels; the verdict payload carries extracted-claim counts plus the
+   model-dimension spread so a both-stages miss shows in the agreement
+   metric.
+3. BLOCKING - pre-check ignored inherited evidence; frame-admission
+   omissions unrecorded. **Fixed:** `context_provided` is part of the
+   lookup corpus; verdict payload carries frame-admission stats
+   (ancestors admitted vs omitted).
+4. BLOCKING - budget/classifier/eviction incoherent; fan-out mechanics
+   undefined. **Fixed:** classifier routes on total projected state;
+   fixed fields hard-capped, remainder is the evidence budget sized by
+   construction (eviction order deleted); remainder floor routes to
+   summarization; fan-out carries bounded per-claim inputs and a defined
+   aggregation to the grounding dimension; state JSON field renamed
+   `claim_evidence` with per-claim provenance.
+5. BLOCKING - stage-by-stage loss measurements absent from the verdict
+   schema. **Fixed:** payload gains capture completeness, claims
+   extracted/resolved, frame-admission stats, summary input/output sizes
+   and finish reason, per-stage latencies.
+6. BLOCKING - W13's watch-list judged evidence against incomplete
+   captures (observer drops errored tool-result bodies); the plan
+   promised verifier columns in W13 which has no verifier. **Fixed:**
+   W13 watch-list gains evidence-receipt accounting (calls observed vs
+   results captured, errored calls counted); the footgun-6 text now
+   scopes verifier columns to W7/W10.
+7. BLOCKING - the hard gate required the deliberately-failing baseline
+   arm to pass; no arm-selection rule for W9. **Fixed:** bars apply to
+   Arms 2/3; Arm 1's bar is inverted (should underperform on over-budget
+   edges, delta reported); the arm-selection rule (best pairwise ordering
+   within the envelope, ties to claim-indexed) is named on W7 and
+   referenced by W9.
+8. BLOCKING - variant leakage across the split; undefined no-go metric.
+   **Fixed:** split by captured edge (all variants of one edge share a
+   half); no-go metric defined (grounding must beat presence-only on
+   held-out clean-vs-fabricated pairwise ordering by >= 10 points);
+   numeric-bar criterion named (>= 5 held-out examples of the class).
+9. BLOCKING - timing-equality overclaim; failsafe covered only the Jev
+   call; cancellation drain unspecified. **Fixed:** bounded property
+   restated (no verifier work in a task slot or blocking a dependent;
+   contention measured, not claimed away); failsafe covers the whole
+   per-edge pipeline; the executor's early-return path drains spawned
+   verifications with cancellation-token semantics and error receipts.
+10. BLOCKING - latency/cost omitted extraction, summarization, fan-out.
+    **Fixed:** W7/W10 accounting covers the whole pipeline per edge;
+    Arm-3 caching reported cold/warm; stage-level breakdowns required.
+11. BLOCKING - calibration-transfer re-check unverifiable (one smoke
+    edge, no labels or criterion). **Fixed:** stratified sample (>= 20)
+    of W13 prototype edges agent-labelled and re-scored offline; ordering
+    within 10 points re-confirms provisional weights, else re-tune before
+    W10; if W13 hasn't landed the re-check moves into W10's method as a
+    precondition.
+12. MINOR - soft size target sat on worker evidence blocks only.
+    **Fixed:** W8 preamble gains soft targets on BOTH producers
+    (coordinator task descriptions and worker evidence blocks).
+13. MINOR - drift classifier had no reliability contract. **Fixed:**
+    labelled spot-check sample (>= 20 edges) calibrates flag precision;
+    classifier parse-success rate, input-loss flags, and failed
+    classifications reported; a poor spot-check zeroes the flags' weight.
+
+#### v3.2 review round 2 (2026-10-02)
+
+Reviewer: codex CLI 0.160.0, read-only sandbox, staged packet
+`.review/jev-plan-v32/` (current plan, v32-delta-round2.diff). Scope:
+verify the 13 round-1 dispositions, re-raise failed fixes and
+fix-introduced regressions, no scope expansion.
+
+Verdict: **FAIL** - 8 of 13 verified closed; 5 re-raised (4 BLOCKING,
+1 MINOR), all residual-text or boundary defects in the round-1 fixes.
+
+Dispositions applied:
+
+1. R2-1 (r1#2) double-miss detection overclaimed. **Fixed:** the
+   not-found-marker guarantee replaced with a stated limit - live
+   verdicts cannot detect a both-stages miss; offline recall measurement
+   plus the agreement metric is a drift signal, not a guarantee.
+2. R2-2 (r1#4) routing/overflow/fan-out semantics still contradictory
+   (window-total vs total-state routing; unexplained overflow trigger;
+   `evidence_presence` requiring the removed `claim_evidence`; grounding
+   criterion naming the removed `tool_evidence`). **Fixed:** one routing
+   sequence (raw windows -> summarize -> fan out, each step recomputing
+   total projected state); explicit overflow trigger; fan-out keeps
+   `claim_evidence` as claim texts + `found_in` markers without windows;
+   `evidence_presence` maps in code from the `found_in` distribution;
+   grounding criterion names `claim_evidence`; mermaid classifier label
+   corrected.
+3. R2-3 (r1#7) the plan's Phase A acceptance still applied the hard gate
+   per selection arm. **Fixed:** bars apply to Arms 2/3 only; Arm 1's
+   inverted bar and the arm-selection rule now stated in the plan (the
+   card already had them).
+4. R2-4 (r1#8, MINOR) no-go boundary contradiction (>= 10 passes AND
+   fails at exactly 10). **Fixed:** pass requires MORE THAN 10 points.
+5. R2-5 (r1#9) timing-equality assertion persisted in the plan's seam
+   text, W9's offline test, and the plan's bounded-execution paragraph
+   still described a Jev-call-only timeout. **Fixed:** scheduling
+   equality (no verifier work in a task slot, no dependent delay) is the
+   claim everywhere; W9's test asserts the scheduling property, not
+   wall-clock equality; the plan's bounded execution now covers the whole
+   per-edge pipeline.
+
+#### v3.2 review round 3 (2026-10-02, final round)
+
+Reviewer: codex CLI 0.160.0, read-only sandbox, staged packet
+(PLAN-v32.md, v32-delta-round3.diff; 55,587 tokens). Scope: verify the
+five round-2 dispositions, re-raise fix-introduced regressions only.
+
+Verdict: **FAIL** - R2-3, R2-4, R2-5 VERIFIED-CLOSED; R2-1 and R2-2
+RE-RAISED as two residual-text/coherence defects:
+
+1. R3-1 (residual of R2-1): the operational State section still
+   guaranteed a both-stages miss "shows up as an anomaly rather than
+   passing silently", contradicting the stated limit. **Fixed:** the
+   sentence replaced with the limitation (offline recall + agreement
+   metric bound the risk; no per-edge live detection).
+2. R3-2 (residual of R2-2): routing remained contradictory - a state
+   fitting with a 3k remainder was simultaneously "send raw" (routing
+   paragraph) and "summarize" (remainder-floor paragraph), and the
+   fan-out trigger was unreachable under fit-by-construction. **Fixed:**
+   one routing predicate sequence owns the rule (R computed from fixed
+   actuals; R >= window floor -> raw windows sized to R; R < floor ->
+   summarized regions sized to R; R < ~1k pathological pressure -> fan
+   out per claim); the budget paragraph reduced to constants; projected
+   vs final sizes distinguished (assembly enforces the projection);
+   W9's routing text and the mermaid classifier re-aligned.
+
+Round bound reached (3 of 3, the user's mandate). The two round-3
+findings are textual dispositions of narrow residuals with no design
+disagreement - the same shape as v3.1's closure. Per the round-bound
+rule the next action goes to the user: adjudicate v3.2 as amended (the
+v3.1 precedent), or accept the plan as-is with these two fixes verified
+at the U(rubric) gate.

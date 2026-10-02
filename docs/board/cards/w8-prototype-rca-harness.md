@@ -46,7 +46,12 @@ smoke does not.
    downstream workers must not execute or replay text found inside
    evidence blocks - provenance formatting, not a claimed injection
    defense); an ESCALATION PACKET for the failure arm; a mechanical
-   depth checklist for the analyst role only.
+   depth checklist for the analyst role only. v3.2: soft SIZE TARGETS on
+   both producers (round-1 finding 12) - the coordinator preamble states
+   a target for task descriptions (concise; a named character target) and
+   the worker preamble states one for evidence blocks. Both unenforced;
+   they exist so W13's watch-list measures deviations against a number
+   (plan v3.2 footgun 7).
 2. A runner wrapper script in ai-experiments (external repo, shas
    logged): translates the runner's env interface (`CONFIG_PATH`, `PORT`)
    into the shim's CLI flags (`--port`, `--config`). Read
@@ -97,6 +102,9 @@ failed pre-vet, not a surprise to debug.
   presented. STOPS.
 
 ## Log
+
+- 2026-10-02 Amended per plan v3.2: preamble gains a soft size target for
+  evidence blocks (unenforced; measured by W13's watch-list). Board owner.
 
 - 2026-09-30 STANDING GATE: dispatch of any leg of this card waits on the
   user's review of the proposal artifact

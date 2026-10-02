@@ -50,21 +50,30 @@ unless the edge-audit sample supports more (round-1 review finding 6).
   `key_clusters`) by an agent reviewer; reported with its own CI.
 - Predictor comparison: Jev composite vs worker self-confidence as
   failure predictors - clean because the scorer never saw self-confidence.
+- Required columns (v3.2, Tony's W10 finding): per-edge state size,
+  truncation flags, and INSUFFICIENT_EVIDENCE rate beside latency and
+  token usage - without them the correlation is uninterpretable. The
+  W13 contract watch-list columns rerun identically on the treatment arm.
 
 ## Deliverable
 
 An evidence report under `docs/board/evidence/` with the correlation
-tables, the self-confidence comparison, per-edge Jev latency (p50/p95)
-and token usage from verdict payloads, added wall-clock per run, and a
+tables, the self-confidence comparison, per-edge verification latency
+(p50/p95 - whole pipeline: extraction, retrieval, summarization, Jev
+call(s), fan-out, write, from the verdict payloads' stage-level fields,
+v3.2 round-1 finding 10) and token usage, added wall-clock per run
+(verifier-on vs verifier-off, with the contention caveat named), and a
 go/no-go recommendation for W11 (typed evidence architecture) and W12.
 
 ## Acceptance
 
 - Both arms' artifacts complete per the method; the analysis reproduces
   from the raw results directories; every number in the report traces to
-  a file.
+  a file. The W7 review script re-runs against the live-run artifacts
+  (v3.2 ruling 8).
 - SHAs of all four repos pinned in the report.
 - The report states the run-level conclusion limit explicitly.
+- Truncation/state-size/INSUFFICIENT_EVIDENCE columns present (above).
 
 ## Gate checklist
 
@@ -79,5 +88,8 @@ go/no-go recommendation for W11 (typed evidence architecture) and W12.
 
 ## Log
 
+- 2026-10-02 Amended per plan v3.2: truncation/state-size/
+  INSUFFICIENT_EVIDENCE required columns; watch-list rerun on the
+  treatment arm; review-script reproduction at the gate. Board owner.
 - 2026-09-30 Minted backlog under the jev lane behind W13 (full RCA
   baseline) and W9 (edge verifier seam). Board owner.

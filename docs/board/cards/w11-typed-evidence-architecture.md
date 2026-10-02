@@ -49,6 +49,13 @@ resolution.
   claims - provenance formatting is not demonstrated resistance.
 - `src/producers.rs` / `src/context/frame.rs` change behind config; the
   `worker_*` fixture goldens move deliberately, reviewed as intentional.
+- v3.2 (Tony's W11 note + ruling 4): this card takes W9's claim-indexed
+  selection experience as a NAMED INPUT - typed, addressable artifacts are
+  the structural end-state of claim-indexed evidence (the verifier takes
+  artifact references plus ranked windows instead of excerpts). The async
+  pre-summarization question (summarize at capture time; the verifier
+  picks raw or summary per the size classifier) is decided here from W7's
+  Arm-3 latency numbers, not ahead of them.
 - Type inventory + seam table per the repo's DESIGN.md convention; the
   doc names which living documents its later diffs affect.
 
@@ -64,5 +71,8 @@ resolution.
 
 ## Log
 
+- 2026-10-02 Amended per plan v3.2: W9 selection experience named as an
+  input; async pre-summarization decision grounded in W7 Arm-3 latency
+  data. Board owner.
 - 2026-09-30 Minted backlog under the jev lane behind W10 (RCA verifier
   experiment). Board owner.
