@@ -350,10 +350,12 @@ async fn success_steps_apply_in_order_and_exports_captured() {
     );
 }
 
-/// Card acceptance 2: a scripted step failure runs the declared rollback
-/// of the completed step (the unwind walks completion order backwards —
-/// here the only completed step is the first), and the record shows the
-/// failing step `Failed`, the earlier step `Unwound`, with no residual.
+/// Card acceptance 2: a step failure unwinds the completed steps in
+/// REVERSE completion order. Three steps complete (state, scale,
+/// resize) before the fourth fails, each carrying a rollback with a
+/// distinct dispatch signature, so the call log proves the unwind
+/// order (resize's 98, then scale's bound 3, then state's 99) rather
+/// than leaning on a single-completed-step case.
 #[tokio::test]
 async fn step_failure_runs_reverse_order_unwind() {
     let cancel = CancellationToken::new();
@@ -368,16 +370,34 @@ async fn step_failure_runs_reverse_order_unwind() {
                 "args": {"app": "payments", "replicas": 6},
                 "exports": {},
                 "rollback": bound_scale_rollback()
+            },
+            {
+                "id": "resize",
+                "dependencies": ["scale"],
+                "tool": "ops_scale_app",
+                "args": {"app": "payments", "replicas": 7},
+                "exports": {},
+                "rollback": {
+                    "tool": "ops_scale_app",
+                    "args": {"app": "payments", "replicas": 98}
+                }
+            },
+            {
+                "id": "verify",
+                "dependencies": ["resize"],
+                "tool": "ops_get_cluster_state",
+                "args": {"app": "verify"},
+                "exports": {},
+                "rollback": null
             }
         ]
     });
     let (record, server) = run(
         |name, args| match name {
-            "ops_get_cluster_state" => Ok(read_result()),
-            "ops_scale_app" if args.get("replicas") == Some(&json!(6)) => {
-                Err("the cluster rejected the scale to 6".to_owned())
+            "ops_get_cluster_state" if args.get("app") == Some(&json!("verify")) => {
+                Err("the cluster rejected the verification read".to_owned())
             }
-            // The unwind's rollback call.
+            "ops_get_cluster_state" => Ok(read_result()),
             "ops_scale_app" => Ok(scaled_result()),
             other => Err(format!("unexpected tool call {other}")),
         },
@@ -388,24 +408,35 @@ async fn step_failure_runs_reverse_order_unwind() {
 
     assert_eq!(
         statuses(&record),
-        vec![StepStatus::Unwound, StepStatus::Failed]
+        vec![
+            StepStatus::Unwound,
+            StepStatus::Unwound,
+            StepStatus::Unwound,
+            StepStatus::Failed
+        ]
     );
     match &record.outcome {
         RunOutcome::Failed {
             step,
+            error,
             rollback_failure,
             residual,
-            ..
         } => {
-            assert_eq!(step.as_str(), "scale");
+            assert_eq!(step.as_str(), "verify");
+            assert!(
+                error.to_string().contains("verification read"),
+                "the step failure names its cause: {error}"
+            );
             assert!(rollback_failure.is_none(), "the unwind itself succeeded");
             assert!(residual.is_empty(), "every applied step was unwound");
         }
         other => panic!("expected a Failed outcome, got {other:?}"),
     }
     assert_eq!(record.steps[0].rollback, Some(RollbackOutcome::Success));
+    assert_eq!(record.steps[1].rollback, Some(RollbackOutcome::Success));
+    assert_eq!(record.steps[2].rollback, Some(RollbackOutcome::Success));
     assert_eq!(
-        record.steps[1].rollback, None,
+        record.steps[3].rollback, None,
         "only applied steps unwind; the failing step has no rollback attempt"
     );
 
@@ -421,12 +452,27 @@ async fn step_failure_runs_reverse_order_unwind() {
                 "ops_scale_app".to_owned(),
                 json!({"app": "payments", "replicas": 6})
             ),
-            // The unwind: state's declared rollback dispatched after the failure.
+            (
+                "ops_scale_app".to_owned(),
+                json!({"app": "payments", "replicas": 7})
+            ),
+            ("ops_get_cluster_state".to_owned(), json!({"app": "verify"})),
+            // The unwind, in reverse completion order: resize, scale,
+            // state (98, then the bound 3, then 99).
+            (
+                "ops_scale_app".to_owned(),
+                json!({"app": "payments", "replicas": 98})
+            ),
+            (
+                "ops_scale_app".to_owned(),
+                json!({"app": "payments", "replicas": 3})
+            ),
             (
                 "ops_scale_app".to_owned(),
                 json!({"app": "payments", "replicas": 99})
             ),
-        ]
+        ],
+        "the unwind dispatches rollbacks in reverse completion order"
     );
 }
 
@@ -493,15 +539,25 @@ async fn rollback_failure_reports_both_failures_and_residual_set() {
     match &record.outcome {
         RunOutcome::Failed {
             step,
-            error: _,
+            error,
             rollback_failure,
             residual,
         } => {
             assert_eq!(step.as_str(), "verify");
-            let (rollback_step, _rollback_error) = rollback_failure
+            assert!(
+                error.to_string().contains("verification exploded"),
+                "the step failure names its cause: {error}"
+            );
+            let (rollback_step, rollback_error) = rollback_failure
                 .as_ref()
                 .expect("the rollback failure is reported alongside the step failure");
             assert_eq!(rollback_step.as_str(), "scale");
+            assert!(
+                rollback_error
+                    .to_string()
+                    .contains("refused the rollback rescale"),
+                "the rollback failure names its own cause: {rollback_error}"
+            );
             assert_eq!(
                 residual.iter().map(StepId::as_str).collect::<Vec<_>>(),
                 vec!["state"],
@@ -780,5 +836,144 @@ async fn cancellation_mid_apply_halts_and_records_residual_state() {
             ),
         ],
         "apply halts after the in-flight step: no verify dispatch, no rollback"
+    );
+}
+
+/// D11 repair coverage (Gate A round 1, finding 2): a cancellation
+/// that lands while a FAILING call is in flight still halts — the
+/// failed step is recorded `Failed`, but no rollback dispatches after
+/// the interrupt, and the outcome is `Cancelled` with the applied
+/// steps as residual.
+#[tokio::test]
+async fn cancellation_during_a_failing_call_halts_without_unwinding() {
+    let cancel = CancellationToken::new();
+    let script_token = cancel.clone();
+    let workflow = json!({
+        "goal": "scale payments",
+        "steps": [
+            state_step(state_rollback()),
+            {
+                "id": "scale",
+                "dependencies": ["state"],
+                "tool": "ops_scale_app",
+                "args": {"app": "payments", "replicas": 6},
+                "exports": {},
+                "rollback": bound_scale_rollback()
+            }
+        ]
+    });
+    let (record, server) = run(
+        move |name, _args| {
+            if name == "ops_scale_app" {
+                // Cancel lands inside the failing call: the executor
+                // observes the failure with the token already cancelled.
+                script_token.cancel();
+                return Err("the cluster rejected the scale".to_owned());
+            }
+            Ok(read_result())
+        },
+        workflow,
+        &cancel,
+    )
+    .await;
+
+    assert_eq!(
+        statuses(&record),
+        vec![StepStatus::Applied, StepStatus::Failed],
+        "the failed step is recorded truthfully; the applied step is never unwound"
+    );
+    match &record.outcome {
+        RunOutcome::Cancelled { residual } => {
+            assert_eq!(
+                residual.iter().map(StepId::as_str).collect::<Vec<_>>(),
+                vec!["state"],
+                "the interrupt, not the failure, ends the run"
+            );
+        }
+        other => panic!("expected a Cancelled outcome, got {other:?}"),
+    }
+
+    let log = server.calls().await;
+    assert_eq!(
+        log,
+        vec![
+            (
+                "ops_get_cluster_state".to_owned(),
+                json!({"app": "payments"})
+            ),
+            (
+                "ops_scale_app".to_owned(),
+                json!({"app": "payments", "replicas": 6})
+            ),
+        ],
+        "no rollback dispatches after the operator interrupted the apply"
+    );
+}
+
+/// D11 repair coverage (Gate A round 1, finding 2, second half): a
+/// cancellation that lands during the FINAL in-flight call records the
+/// interrupt — every step applied, none unwound, `Cancelled` with the
+/// full applied set as residual — rather than a clean `Complete`.
+#[tokio::test]
+async fn cancellation_during_the_final_call_records_the_interrupt() {
+    let cancel = CancellationToken::new();
+    let script_token = cancel.clone();
+    let workflow = json!({
+        "goal": "scale payments",
+        "steps": [
+            state_step(state_rollback()),
+            {
+                "id": "scale",
+                "dependencies": ["state"],
+                "tool": "ops_scale_app",
+                "args": {"app": "payments", "replicas": 6},
+                "exports": {},
+                "rollback": bound_scale_rollback()
+            }
+        ]
+    });
+    let (record, server) = run(
+        move |name, _args| {
+            if name == "ops_scale_app" {
+                // Cancel lands inside the final call, which succeeds.
+                script_token.cancel();
+                return Ok(scaled_result());
+            }
+            Ok(read_result())
+        },
+        workflow,
+        &cancel,
+    )
+    .await;
+
+    assert_eq!(
+        statuses(&record),
+        vec![StepStatus::Applied, StepStatus::Applied]
+    );
+    match &record.outcome {
+        RunOutcome::Cancelled { residual } => {
+            assert_eq!(
+                residual.iter().map(StepId::as_str).collect::<Vec<_>>(),
+                vec!["state", "scale"],
+                "the interrupt is recorded, not swallowed into a Complete"
+            );
+        }
+        other => panic!("expected a Cancelled outcome, got {other:?}"),
+    }
+
+    let log = server.calls().await;
+    assert_eq!(
+        log,
+        vec![
+            (
+                "ops_get_cluster_state".to_owned(),
+                json!({"app": "payments"})
+            ),
+            (
+                "ops_scale_app".to_owned(),
+                json!({"app": "payments", "replicas": 6})
+            ),
+        ],
+        "nothing follows the interrupted apply: no rollback on cancel"
     );
 }

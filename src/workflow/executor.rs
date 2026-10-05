@@ -13,7 +13,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::mcp_client::{SidecarClient, SidecarError, SidecarToolArgs};
 use crate::workflow::plan::{
-    ExportName, RollbackSpec, StepId, ValidatedWorkflowSpec, WorkflowStep,
+    ExportName, RollbackSpec, StepId, ValidatedWorkflowSpec, WorkflowSpec, WorkflowStep,
 };
 use crate::workflow::resolve::{
     ExportEnvironment, ResolveError, capture_exports, parse_tool_result, resolve_arguments,
@@ -154,16 +154,7 @@ pub async fn execute_workflow(
         // applied ones are the residual state the coordinator replans
         // against.
         if cancel.is_cancelled() {
-            return Ok(RunRecord {
-                goal: spec.goal.clone(),
-                steps: records,
-                outcome: RunOutcome::Cancelled {
-                    residual: completed
-                        .iter()
-                        .map(|&applied| steps[applied].id.clone())
-                        .collect(),
-                },
-            });
+            return Ok(cancelled_record(spec, records, steps, &completed));
         }
         match apply_step(step, &env, client).await {
             Ok((result, exports)) => {
@@ -181,6 +172,14 @@ pub async fn execute_workflow(
             }
             Err(error) => {
                 records[position].status = StepStatus::Failed;
+                // D11: a cancellation observed while the call was in
+                // flight still interrupts the run. The failed step is
+                // recorded truthfully, but no rollback dispatches after
+                // the operator interrupted the apply — halt, record
+                // residual, do not unwind.
+                if cancel.is_cancelled() {
+                    return Ok(cancelled_record(spec, records, steps, &completed));
+                }
                 let (rollback_failure, residual) =
                     unwind_completed_steps(steps, &mut records, &completed, &env, client).await;
                 return Ok(RunRecord {
@@ -197,11 +196,38 @@ pub async fn execute_workflow(
         }
     }
 
+    // A cancellation that landed during the final in-flight call
+    // interrupts the run too: every step applied, none unwound, the
+    // outcome records the interrupt rather than a clean completion.
+    if cancel.is_cancelled() {
+        return Ok(cancelled_record(spec, records, steps, &completed));
+    }
+
     Ok(RunRecord {
         goal: spec.goal.clone(),
         steps: records,
         outcome: RunOutcome::Complete,
     })
+}
+
+/// The D11 cancellation record: applied steps are the residual set the
+/// coordinator replans against, and nothing unwinds.
+fn cancelled_record(
+    spec: &WorkflowSpec,
+    records: Vec<StepRecord>,
+    steps: &[WorkflowStep],
+    completed: &[usize],
+) -> RunRecord {
+    RunRecord {
+        goal: spec.goal.clone(),
+        steps: records,
+        outcome: RunOutcome::Cancelled {
+            residual: completed
+                .iter()
+                .map(|&applied| steps[applied].id.clone())
+                .collect(),
+        },
+    }
 }
 
 /// Apply one step: resolve its arguments against the exports of the
@@ -261,9 +287,11 @@ async fn run_rollback(
 /// one loud [`ExecuteError::RollbackFailed`] shape.
 ///
 /// Returns the first failed rollback, if any, and the residual set: the
-/// completed steps still applied after the unwind stopped —
-/// [`StepStatus::NotUnwound`] and [`StepStatus::RollbackFailed`] both, in
-/// completion order.
+/// completed steps whose rollbacks never ran
+/// ([`StepStatus::NotUnwound`] only, in completion order). A
+/// [`StepStatus::RollbackFailed`] step is still applied, but its rollback
+/// did run and failed; it reports through the run's `rollback_failure`
+/// and its own step record instead of doubling into the residual set.
 async fn unwind_completed_steps(
     steps: &[WorkflowStep],
     records: &mut [StepRecord],

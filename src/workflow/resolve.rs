@@ -217,21 +217,64 @@ pub fn resolve_arguments(
 
 /// Total order over two JSON numbers: exact when both fit one integer
 /// width, else `f64`. A `serde_json::Number` is never NaN, so the
-/// `f64` comparison is always a valid order; the `unwrap_or` arm only
-/// keeps the function total, and the mixed-width loss is confined to
-/// values beyond ±2⁵³, where integer and float comparisons agree on the
-/// side of any declared bound that itself parses as JSON.
+/// Compare two JSON numbers exactly.
+///
+/// Integer-integer pairs widen to `i128` (every `i64` and `u64` fits),
+/// so they are exact at any magnitude. Float-float pairs compare as
+/// `f64` values, which is exact between two floats. The mixed pair —
+/// the one that used to lose precision — compares the float against
+/// the integer through the float's floor as `i128` (clamped where
+/// `i128` cannot hold it) with the fraction breaking ties, so an
+/// integer beyond ±2⁵³ never rounds onto a float's value:
+/// `9007199254740993i64` is greater than `9007199254740992.0`, not
+/// equal to it. NaN cannot come out of `serde_json`; the fallback only
+/// keeps the function total.
 fn compare_numbers(left: &Number, right: &Number) -> Ordering {
-    if let (Some(left), Some(right)) = (left.as_i64(), right.as_i64()) {
+    if let (Some(left), Some(right)) = (as_i128(left), as_i128(right)) {
         return left.cmp(&right);
     }
-    if let (Some(left), Some(right)) = (left.as_u64(), right.as_u64()) {
-        return left.cmp(&right);
+    // At least one side is a float (serde_json integers never exceed
+    // i64/u64, so everything wider is a float).
+    let (Some(left_f), Some(right_f)) = (left.as_f64(), right.as_f64()) else {
+        return Ordering::Equal;
+    };
+    match (as_i128(left), as_i128(right)) {
+        (Some(left_i), None) => cmp_f64_vs_i128(right_f, left_i).reverse(),
+        (None, Some(right_i)) => cmp_f64_vs_i128(left_f, right_i),
+        _ => left_f.partial_cmp(&right_f).unwrap_or(Ordering::Equal),
     }
-    left.as_f64()
-        .zip(right.as_f64())
-        .and_then(|(left, right)| left.partial_cmp(&right))
-        .unwrap_or(Ordering::Equal)
+}
+
+/// A `serde_json` number as `i128` when it is an integer.
+fn as_i128(number: &Number) -> Option<i128> {
+    number
+        .as_i64()
+        .map(i128::from)
+        .or_else(|| number.as_u64().map(i128::from))
+}
+
+/// Compare a float against an exact `i128` without converting the
+/// integer: the float's floor decides as an integer (clamped where
+/// `i128` cannot hold it), and a nonzero fraction breaks a tie upward.
+#[allow(clippy::cast_possible_truncation)]
+fn cmp_f64_vs_i128(value: f64, integer: i128) -> Ordering {
+    if value.is_nan() {
+        return Ordering::Equal;
+    }
+    let floor = value.floor();
+    // 2^127 as f64: the first integer i128 cannot hold.
+    const I128_LIMIT: f64 = 1.701_411_834_604_692_3e38;
+    if floor >= I128_LIMIT {
+        return Ordering::Greater;
+    }
+    if floor < -I128_LIMIT {
+        return Ordering::Less;
+    }
+    // floor is integral and within i128 range, so the cast is exact.
+    match (floor as i128).cmp(&integer) {
+        Ordering::Equal if value > floor => Ordering::Greater,
+        ord => ord,
+    }
 }
 
 /// The violation error for a value and envelope, built once for the
@@ -520,6 +563,51 @@ mod tests {
         );
         let float_floor = bounds(Some(number(json!(0.5))), None);
         assert!(check_bounds(&json!(1), &float_floor).is_ok());
+    }
+
+    #[test]
+    fn mixed_width_beyond_two_pow_fifty_three_compares_exactly() {
+        // The Gate A round-1 finding: an integer one ulp above 2^53
+        // must not round onto the float an ulp below it. The integer
+        // 9007199254740993 is greater than the float 9007199254740992.0,
+        // so it violates a max of that float — and satisfies a min of
+        // the next representable float up, 9007199254740994.0.
+        let just_above = json!(9_007_199_254_740_993_i64);
+        let float_below = number(json!(9_007_199_254_740_992.0_f64));
+        let float_above = number(json!(9_007_199_254_740_994.0_f64));
+
+        let max_below = bounds(None, Some(float_below.clone()));
+        assert_eq!(
+            check_bounds(&just_above, &max_below),
+            Err(ResolveError::BoundsViolation {
+                value: just_above.clone(),
+                bounds: max_below,
+            }),
+            "9007199254740993 > 9007199254740992.0; the f64 conversion must not erase the ulp"
+        );
+
+        let min_above = bounds(Some(float_above), None);
+        assert_eq!(
+            check_bounds(&just_above, &min_above),
+            Err(ResolveError::BoundsViolation {
+                value: just_above.clone(),
+                bounds: min_above,
+            }),
+            "9007199254740993 is below the 9007199254740994.0 min exactly, a hair no f64 conversion may erase"
+        );
+
+        // The mirror: a float value against integer bounds astride 2^53.
+        let max_int = bounds(None, Some(number(json!(9_007_199_254_740_993_i64))));
+        assert!(check_bounds(&json!(9_007_199_254_740_992.0_f64), &max_int).is_ok());
+        let min_int = bounds(Some(number(json!(9_007_199_254_740_993_i64))), None);
+        assert_eq!(
+            check_bounds(&json!(9_007_199_254_740_992.0_f64), &min_int),
+            Err(ResolveError::BoundsViolation {
+                value: json!(9_007_199_254_740_992.0_f64),
+                bounds: min_int,
+            }),
+            "9007199254740992.0 is below the 9007199254740993 min; the integer must not round onto the float"
+        );
     }
 
     #[test]
