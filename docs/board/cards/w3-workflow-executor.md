@@ -82,18 +82,14 @@ Plus `cargo fmt --check`, `cargo clippy --all-targets --locked`,
       records `Failed` (was left `NotStarted`), and the residual set
       carries only steps whose rollbacks never ran per the plan's
       wording. Board owner re-ran every command itself.)
-- [ ] Gate A: fresh cross-family review (code-review role) of the full
-      commit range against the acceptance criteria. (OPEN 2026-10-05,
-      deferred: the in-harness rust-reviewer lane (bedrock gpt-sol,
-      PONG pre-vet passed) returned an empty final three times on the
-      real packet - the same large-payload void W2 recorded for this
-      lane - while a contract-shaped small-packet probe through the
-      same seat returned a clean numbered review with a verdict, so the
-      read path is healthy and the failure is payload-shaped. Per the
-      three-attempt cap the lane is closed for this gate; kimi-K3 is
-      same-family as the Kimi skeleton author and cannot seat it; the
-      codex fallback needs Mike's approval. Surfaced at this user
-      boundary.)
+- [x] Gate A: fresh cross-family review (code-review role) of the full
+      commit range against the acceptance criteria. (Passed 2026-10-05
+      round 4 on the bedrock gpt-5.6-sol seat after the 6.1-sol lane
+      was ruled out: round 1 FAIL (2 BLOCKING, 1 MAJOR, 1 MINOR,
+      repaired in c9c8a5c), round 2 all CONFIRMED-REPAIRED plus
+      comment-accuracy minors (fixed in 5a3afe5), round 3 one doc line
+      NOT-REPAIRED (fixed in 3250421), round 4 PASS; ledger in the Log
+      section.)
 - 2026-10-05 Lane resolution: Mike ruled the reviewer seat to bedrock
   gpt-5.6-sol (6.1-sol voided on real payloads; pin switched and
   OpenCode restarted). Round 1 on the new seat (session
@@ -139,6 +135,14 @@ Plus `cargo fmt --check`, `cargo clippy --all-targets --locked`,
   new doc. Fixed in 3250421 (two lines deleted; 468 tests green,
   clippy zero). Range extends to d3f4a89^..3250421; round 4 verifies
   the one doc line. Board owner.
+- 2026-10-05 Gate A passed (round 4, session ses_ef288ed7fffeWy8yUo-
+  1T35qVry): the doc line CONFIRMED-REPAIRED (one coherent block over
+  compare_numbers; 3250421 is exactly the two-line deletion), zero
+  regressions. Four rounds total on the 5.6-sol seat; authors Kimi +
+  GLM + board-owner GLM, reviewer GPT - the invariant holds across
+  every commit in the range. Gate A checklist box ticked this turn.
+  Card remains in-review for its U(code-review) user gate. Board
+  owner.
 
 ## Branch
 
