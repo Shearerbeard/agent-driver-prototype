@@ -1,7 +1,7 @@
 ---
 id: W3
 title: Deterministic workflow executor - resolve, apply, unwind, residual reporting
-status: backlog
+status: in-progress
 depends: [W2]
 serialize-with: [W4]
 lineage: isolated-branch
@@ -88,3 +88,13 @@ tool wiring).
   applied ahead of pull this time. Pulled in-progress this session per
   Mike's ruling (W3 proceeds ahead of W2's remaining proposal-quality
   gate). Board owner.
+- 2026-10-05 Pulled in-progress: promoted from backlog with W2 still
+  in-review (its remaining gate is U(proposal-quality), which does not
+  gate the executor's offline scenarios - the stage-1 loop re-runs
+  against the fuller surface later, per Mike's session ruling).
+  Worktree `../agent-driver-prototype-w3` on `card/w3` off
+  `origin/integration/workflow` at `c0bb0f2` (W2's merged seam is the
+  surface this card builds on). Rides with W5 in the same wave (wip
+  budget 2). Routing: rust-write (Kimi) authors the skeleton, rust-fill
+  (GLM) the fill units, Gate A to in-harness rust-reviewer (bedrock
+  gpt-sol pin, PONG pre-vet this session). Board owner.

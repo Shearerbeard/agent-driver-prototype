@@ -1,7 +1,7 @@
 ---
 id: W5
 title: Mock-mcp ops surface - three remediation tools, per-session healing, ground truth
-status: ready
+status: in-progress
 depends: []
 serialize-with: []
 lineage: none
@@ -60,3 +60,11 @@ convention), PR there; the card closes when that PR merges.
 - 2026-09-29 Minted ready; opening wave with W1 (independent repo, and
   W2's stage-1 loop wants it landed for realistic proposals). Board
   owner.
+- 2026-10-05 Pulled in-progress: worktree
+  `~/workspace/ai-experiments-w5` on `w5-ops-surface` off
+  `origin/main` at `6d8afd6` (the primary checkout there is dirty on an
+  unrelated aura-e2e branch, so this card takes a worktree). W2's Gate U
+  (code-review) landed via PR #16 (`c0bb0f2`), so this card now rides
+  with W3 in the same wave (wip budget 2, Mike's 2026-10-05 ruling).
+  Gate A routes in-harness: rust-reviewer (bedrock gpt-sol pin, PONG
+  pre-vet this session). Board owner.

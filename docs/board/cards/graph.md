@@ -23,9 +23,9 @@ flowchart TD
   end
   W1["W1 Workflow type skeleton - spec, bi…"]:::done
   W2["W2 propose_workflow through the fact…"]:::inreview
-  W3["W3 Deterministic workflow executor -…"]:::backlog
+  W3["W3 Deterministic workflow executor -…"]:::inprogress
   W4["W4 Sync approval wire - notify POST,…"]:::backlog
-  W5["W5 Mock-mcp ops surface - three reme…"]:::ready
+  W5["W5 Mock-mcp ops surface - three reme…"]:::inprogress
   W6["W6 End-to-end demo - investigate, pr…"]:::backlog
   S103["S103 Coordinator MCP access filtered b…"]:::ready
   S104["S104 Mezmo-orchestrated config parity …"]:::backlog

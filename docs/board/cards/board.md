@@ -7,8 +7,6 @@ kanban-plugin: board
 %% CHARTER - owns: all work scoped to agent-driver-prototype: the workflow-proposal mechanism (W1-W6), the re-minted CLI-drivability tail (S103, S104, S105, S107, S110), and the JEV edge-verification workstream (W7-W13: edge verifier, typed evidence, RCA eval harness; W7's spike lands in the jev-driver workspace, W8's wrapper and W13/W10's results land in ai-experiments - external-repo, shas logged) / Not here: aura product implementation (the governance workstream owns the AURA Workflows direction), agent-driver-rs crate internals (the agent-driver-rs-adr board owns those), terminalbench-aura rig-scoped cards (the tb board keeps those), mock-mcp-service internals beyond W5's ops surface / Route adr -> agent-driver-rs crate internals incl. adr/A18 (S110's pull gate): the agent-driver-rs-adr board in aura-session-docs / Route governance -> the AURA Workflows direction and its open decisions: workstreams/governance.md in aura-session-docs (surface, never edit; garden process) / Route tb -> terminalbench-aura rig-scoped cards and the done-card history of the S series: the tb board in terminalbench-aura (the five open prototype-scoped cards moved here 2026-09-29) / Admission test: where does the diff land. %%
 
 ## Ready
-- [ ] **W5** [Mock-mcp ops surface - three remediation tools, per-session healing, ground truth](w5-mock-mcp-ops-surface.md)
-	Depends: none. Gates: S -> A @ S. Executor: smart.
 - [ ] **W7** [JEV rubric research spike - synthetic edge corpus, sealed rubric, accuracy + latency read](w7-jev-rubric-research-spike.md)
 	Depends: none. Gates: S -> A -> D -> U(rubric) @ S. Executor: smart. Lane: jev.
 - [ ] **W8** [Prototype RCA harness - contract-retrofitted config, runner wrapper, single-scenario smoke](w8-prototype-rca-harness.md)
@@ -17,14 +15,16 @@ kanban-plugin: board
 	Depends: none. Gates: S -> A -> U(code-review) @ S. Executor: smart.
 
 ## In Progress
+- [ ] **W3** [Deterministic workflow executor - resolve, apply, unwind, residual reporting](w3-workflow-executor.md)
+	Depends: W2. Gates: S -> A @ S. Executor: smart.
+- [ ] **W5** [Mock-mcp ops surface - three remediation tools, per-session healing, ground truth](w5-mock-mcp-ops-surface.md)
+	Depends: none. Gates: S -> A @ S. Executor: smart.
 
 ## In Review
 - [ ] **W2** [propose_workflow through the factory - coordinator tools land, propose-only](w2-propose-workflow-factory-seam.md)
 	Depends: W1. Gates: S -> A -> U(code-review) -> U(proposal-quality) @ U. Executor: smart.
 
 ## Backlog
-- [ ] **W3** [Deterministic workflow executor - resolve, apply, unwind, residual reporting](w3-workflow-executor.md)
-	Depends: W2. Gates: S -> A. Executor: smart.
 - [ ] **W4** [Sync approval wire - notify POST, status poll, blocking hold](w4-sync-approval-wire.md)
 	Depends: W2. Gates: S -> A -> U. Executor: smart.
 - [ ] **W6** [End-to-end demo - investigate, propose, approve, apply, heal, unwind](w6-end-to-end-demo.md)
