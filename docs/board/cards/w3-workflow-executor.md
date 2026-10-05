@@ -8,7 +8,7 @@ lineage: isolated-branch
 executor: smart
 gates: "S -> A -> U(code-review)"
 user-gates: [code-review]
-commit-range: d3f4a89^..ec4b679
+commit-range: d3f4a89^..c9c8a5c
 ---
 
 # W3: Deterministic workflow executor - resolve, apply, unwind, residual reporting
@@ -94,6 +94,35 @@ Plus `cargo fmt --check`, `cargo clippy --all-targets --locked`,
       same-family as the Kimi skeleton author and cannot seat it; the
       codex fallback needs Mike's approval. Surfaced at this user
       boundary.)
+- 2026-10-05 Lane resolution: Mike ruled the reviewer seat to bedrock
+  gpt-5.6-sol (6.1-sol voided on real payloads; pin switched and
+  OpenCode restarted). Round 1 on the new seat (session
+  ses_ef29f9aafffeCTtIXpik1kWE2r): FAIL - 2 BLOCKING, 1 MAJOR, 1
+  MINOR, all ACCEPTED. (1) resolve.rs mixed int/float bounds compare
+  via f64 is inexact beyond 2^53 (integer 9007199254740993 equals
+  float 9007199254740992.0, a value above max passes); (2) executor
+  checks cancellation only before dispatch - a call failing in flight
+  after cancel enters the unwind branch (violates D11 halt-no-unwind)
+  and a cancel during the final call returns Complete instead of
+  Cancelled; (3) the unwind tests under-prove their lines (one
+  completed step cannot show reverse order; the rollback-failure test
+  ignores both error payloads); (4) the unwind doc comment still
+  claims RollbackFailed steps join the residual set, contradicting the
+  recorded decision. Fixes land in-range; round 2 verifies. Board
+  owner.
+- 2026-10-05 Round-1 fixes landed in c9c8a5c (board-owner repair, the
+  W2 precedent): exact mixed int/float comparison (i128 widening for
+  integer pairs; floor/fract splitting against integers for mixed
+  pairs, pinned at the 2^53 ulp boundary in both directions);
+  cancellation observed in flight halts without unwinding (a failing
+  call records Failed and no rollback dispatches) and a cancel during
+  the final call records Cancelled with the full applied set - both
+  pinned by new tests; the unwind doc now matches the recorded residual
+  decision; the reverse-order unwind is proven with three completed
+  steps and both failure payloads pinned. 468 tests green, clippy zero,
+  fmt clean. commit-range extends to d3f4a89^..c9c8a5c; the packet
+  regenerates for the round-2 re-review per the fix-commit duty.
+  Board owner.
 
 ## Branch
 

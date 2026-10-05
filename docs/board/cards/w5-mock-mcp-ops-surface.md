@@ -76,6 +76,30 @@ truth). Nothing else; stop and report instead.
       reviewer-differs-from-author invariant (Kimi authored the
       skeleton), codex fallback awaits Mike's approval. Surfaced at
       this user boundary.)
+- 2026-10-05 Lane resolution: Mike ruled the reviewer seat to bedrock
+  gpt-5.6-sol (restart). Round 1 on the new seat (session
+  ses_ef29f9a9fffeSPQ63OJaY2hw0l): FAIL - 1 BLOCKING, 2 MAJOR, all
+  ACCEPTED. (1) healing clips counts but RCA/timeline/dedup
+  representative timestamps still derive from the unclipped window, so
+  straddling queries can show post-fix occurrences for suppressed
+  logs (the fill's own report flagged this as beyond its named
+  bodies); (2) ops_scale_app records remediation BEFORE the scale
+  mutation succeeds - a matching call on an unknown app could mark the
+  incident healed and then error; (3) record_remediation overwrites
+  the first instant, so repeating the correct scale moves the cutoff
+  forward and re-exposes logs between the two instants - remediation
+  must be monotonic (first successful instant wins). Fixes land
+  in-range; round 2 verifies. Board owner.
+- 2026-10-05 Round-1 fixes landed in 1152056 (board-owner repair):
+  occurrences clip at the cutoff exactly like counts through a shared
+  `healed_to_off` seam (dedup representatives, rca group timestamps,
+  timeline entries - pinned by a dedup assertion that no entry for the
+  suppressed logs lands past the fix instant); the scale mutation lands
+  before the remediation record (a failed fix heals nothing, pinned by
+  an unknown-app test); record_remediation keeps the first instant
+  (pinned: a repeat does not move the cutoff). 124 tests green, clippy
+  zero, fmt clean. Range extends 6d8afd6..1152056; packet regenerates
+  for round 2. Board owner.
 
 ## Branch
 
