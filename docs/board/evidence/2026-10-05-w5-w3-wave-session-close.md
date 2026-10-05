@@ -52,3 +52,35 @@ W2/W3/W5 in-review at their user gates; W4 pulls after W3 lands;
 W6 waits on W2/W3/W4/W5; jev lane untouched (W7 top of ready).
 Views current (`boardkit check` OK, 18 cards valid); everything
 committed and pushed.
+
+## Late-session addendum (after the canary)
+
+Mike moved his review surface to the browser, so Gate U(code-review)
+for W3 opened as PR #20 (card/w3 -> integration/workflow) after the
+canary ran; the canary record above is unaffected (no frontmatter or
+status change - W3 was and remains in-review at Gate U). Mike's
+stated plan: he gives the W3 and W5 reviews at the start of the next
+session.
+
+Handoff for the next session (recovery per PROCESS, not this
+transcript):
+
+1. Read the board (INDEX, board.md), then the W3 and W5 cards' logs.
+2. Mike's rulings land first: PR #20 merge = W3's U(code-review)
+   approval -> tick the box, log it, merge card/w3 to
+   integration/workflow, and W4 becomes pullable (serialize-with W3
+   clears when W3 lands). For W5 he rules on the review surface of
+   his choosing - the packet at docs/board/reviews/W5-aiexperiments/
+   is local-only (gitignored); the ai-experiments PR from branch
+   w5-ops-surface (range 6d8afd6..1d6be81, worktree
+   ~/workspace/ai-experiments-w5) opens when he asks.
+3. Then W4 pulls (card/w4 off integration/workflow after the W3
+   merge) - the last code card before W6.
+4. W2's U(proposal-quality) stage-1 loop is unblocked once W5 merges;
+   a first pass can ride the W6 demo.
+
+Pins this session ran on (live config is the truth, re-read it):
+rust-reviewer bedrock gpt-5.6-sol (Mike's ruling; 6.1-sol voids on
+real payloads), rust-write Kimi k2.7, rust-fill GLM 5.3-flash, board
+owner GLM 5.3. The 6.1-sol large-payload void is the lane hazard to
+remember if the pin drifts back.
