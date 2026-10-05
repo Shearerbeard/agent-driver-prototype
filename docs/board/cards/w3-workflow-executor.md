@@ -1,13 +1,14 @@
 ---
 id: W3
 title: Deterministic workflow executor - resolve, apply, unwind, residual reporting
-status: in-progress
+status: in-review
 depends: [W2]
 serialize-with: [W4]
 lineage: isolated-branch
 executor: smart
-gates: "S -> A"
-user-gates: []
+gates: "S -> A -> U(code-review)"
+user-gates: [code-review]
+commit-range: d3f4a89^..ec4b679
 ---
 
 # W3: Deterministic workflow executor - resolve, apply, unwind, residual reporting
@@ -68,6 +69,22 @@ scripted-server rig (`SidecarClient::connect_stream`), all passing:
 Plus `cargo fmt --check`, `cargo clippy --all-targets --locked`,
 `cargo test --locked` green.
 
+## Gate checklist
+
+- [x] Gate S: gate-probes; `cargo fmt --check`,
+      `cargo clippy --all-targets --locked`, `cargo test --locked`
+      green; the six integration scenarios green on the `test-support`
+      scripted-server rig. (Passed 2026-10-05: 465 tests green
+      repo-wide in the worktree (443 at the W2 merge baseline + the new
+      resolve inline tests and the six scenarios); fmt and clippy zero
+      warnings; no snapshot changes over the range. Two concurrent-fill
+      seams repaired at board-owner integration: the failing step now
+      records `Failed` (was left `NotStarted`), and the residual set
+      carries only steps whose rollbacks never ran per the plan's
+      wording. Board owner re-ran every command itself.)
+- [ ] Gate A: fresh cross-family review (code-review role) of the full
+      commit range against the acceptance criteria.
+
 ## Branch
 
 `card/w3` off `integration/workflow` when pulled (corrected 2026-10-05
@@ -98,3 +115,22 @@ tool wiring).
   budget 2). Routing: rust-write (Kimi) authors the skeleton, rust-fill
   (GLM) the fill units, Gate A to in-harness rust-reviewer (bedrock
   gpt-sol pin, PONG pre-vet this session). Board owner.
+- 2026-10-05 Layer-1 skeleton delivered by rust-write (Kimi, session
+  ses_ef39b19e8ffePFOaIommHxUT7U) and landed as d3f4a89 after
+  board-owner integration (test imports moved to the workflow-root
+  re-exports; two unfulfilled expects and a test type-alias cleaned;
+  fmt applied). 443 baseline tests still green; the six scenario tests
+  red on their todo!() holes, as designed. Layer-2 fills by rust-fill
+  (GLM, sessions ses_ef38ec6157ffeSwupYZ21Ukz5xo resolve,
+  ses_ef38e614fffeKDy7r1LMOF1rLS executor,
+  ses_ef38e6131ffe4e3h7vnKda9YTj tests), landed as ec4b679 after
+  board-owner integration of two concurrent-fill seams (the failing
+  step records Failed rather than staying NotStarted; the residual set
+  enumerates only steps whose rollbacks never ran, the plan's wording -
+  a RollbackFailed step reports as the run's rollback_failure and in
+  its own record instead). Gate S ticked this turn, card in-review:
+  465 tests green, fmt clean, clippy zero warnings, no snapshot
+  changes over d3f4a89^..ec4b679. Frontmatter at Gate S: standing
+  U(code-review) inserted per PROCESS (every code card carries it after
+  Gate A) and commit-range recorded. Gate A next, in-harness
+  rust-reviewer. Board owner.

@@ -1,13 +1,13 @@
 ---
 id: W5
 title: Mock-mcp ops surface - three remediation tools, per-session healing, ground truth
-status: in-progress
+status: in-review
 depends: []
 serialize-with: []
 lineage: none
 executor: smart
-gates: "S -> A"
-user-gates: []
+gates: "S -> A -> U(code-review)"
+user-gates: [code-review]
 ---
 
 # W5: Mock-mcp ops surface - three remediation tools, per-session healing, ground truth
@@ -50,6 +50,26 @@ truth). Nothing else; stop and report instead.
   the drop.
 - `cargo test` green in mock-mcp-service.
 
+## Gate checklist
+
+- [x] Gate S: gate-probes; `cargo test` green in mock-mcp-service; a
+      scenario test proving logs heal after `ops_scale_app` on the
+      incident's app - the cluster stops after the remediation
+      timestamp and a follow-up histogram query shows the drop; fmt and
+      clippy clean. (Passed 2026-10-05 in the worktree: 123 tests
+      green (114 at baseline plus the handler suite and the healing
+      tests), clippy zero warnings, fmt clean. The acceptance is proven
+      twice: through the views layer (registry record + histogram, in
+      scenarios_test) and through the tool surface itself
+      (handler-level: incident visible pre-fix, correct
+      `ops_scale_app(payments, 6)` remediates, a post-fix window shows
+      0, the straddling window honestly keeps its pre-fix history,
+      another session still sees the incident). Board owner re-ran
+      every command itself.)
+- [ ] Gate A: fresh cross-family review (code-review role) of the full
+      commit range against the acceptance criteria, packet generated
+      with `--repo` against the ai-experiments worktree.
+
 ## Branch
 
 Feature branch in ai-experiments (`w5-ops-surface` or the repo's
@@ -68,3 +88,23 @@ convention), PR there; the card closes when that PR merges.
   with W3 in the same wave (wip budget 2, Mike's 2026-10-05 ruling).
   Gate A routes in-harness: rust-reviewer (bedrock gpt-sol pin, PONG
   pre-vet this session). Board owner.
+- 2026-10-05 Layer-1 skeleton by rust-write (Kimi, session
+  ses_ef39b19f3ffeC9wVXVuV3hkQmy) landed as 5002537 after
+  board-owner integration: the crate denies `clippy::todo` at priority
+  127, so the four holes carry `#[expect(clippy::todo)]` markers
+  (item-scope expects override the crate-level deny), plus a must_use
+  and a pass-by-value expect on the transient skeleton states; all 114
+  baseline tests still green. Layer-2 fills by rust-fill (GLM,
+  sessions ses_ef38ec7c4ffeFjWZ4Qa9HmOnV handler+registry,
+  ses_ef38e6164ffeHStQI6OQGrZh2Z views/model/acceptance) landed as
+  ae2488e after board-owner integration of the concurrent-fill seams:
+  the healing cutoff threaded through `session()` into all seven
+  log-tool call sites, and `RemediationApp` now carries action+replicas
+  so the correctness predicate checks all three ground-truth clauses.
+  One wrong-by-me test assertion caught at integration and corrected:
+  healing caps a window's far end, so the honest semantics are
+  post-fix-window 0, straddling window keeps its pre-fix history - the
+  handler-level acceptance test pins both. Gate S ticked this turn,
+  card in-review: 123 tests green, clippy zero warnings, fmt clean.
+  Frontmatter at Gate S: standing U(code-review) inserted per PROCESS.
+  Gate A next, packet with `--repo` against the worktree. Board owner.
