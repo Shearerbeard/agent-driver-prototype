@@ -24,9 +24,10 @@
 //! continuation surface is covered by its template and its decision-point
 //! list.
 //!
-//! The coordinator templates name the registered four everywhere; these
-//! assertions pin that state, and the `planning_loop_prompt.md` control
-//! assertions hold throughout.
+//! The coordinator templates name the registered tools everywhere (four
+//! unmounted; five with `propose_workflow` when `[workflow]` is enabled);
+//! these assertions pin that state, and the `planning_loop_prompt.md`
+//! control assertions hold throughout.
 
 use std::collections::{BTreeSet, HashMap};
 
@@ -36,15 +37,21 @@ use crate::bounding::ToolListLimit;
 use crate::config::{
     OrchestrationConfig, SkillConfig, SkillName, ToolVisibility, VectorStoreConfig, WorkerConfig,
 };
-use crate::config_builders::build_coordinator_preamble;
+use crate::config_builders::{
+    build_coordinator_preamble, build_coordinator_preamble_with_workflow,
+    render_planning_loop_tools_section,
+};
 use crate::context::PinnedGoal;
 use crate::coordinator_loop::{
     CreatePlanArgs, WorkerRoster, WorkerSections, coordinator_tool_definitions,
+    coordinator_tool_definitions_with_workflow, coordinator_tool_names,
+    coordinator_tool_planning_loop_pairs,
 };
 use crate::fixture::{
     CoordinatorCall, CoordinatorScenario, PreambleFixture, SessionHistoryFixture,
     WorkerRosterFixture, coordinator_envelope,
 };
+use crate::mcp_client::SidecarClient;
 use crate::message::ToolDefinition as MirrorToolDefinition;
 use crate::persistence::{
     ArtifactEntry, ArtifactKind, RoutingMode, RunManifest, RunStatus, TaskSummary, ToolOutcome,
@@ -57,6 +64,8 @@ use crate::templates::{
     render_planning_prompt,
 };
 use crate::types::{StepInput, TaskStatus};
+use crate::workflow::workflow_tool_for;
+use agent_driver_rs::tool::Tool as _;
 
 // ============================================================================
 // The banned vocabulary (coordinator surfaces only). `load_skill` is a
@@ -143,6 +152,7 @@ fn inert_preamble() -> PreambleFixture {
         skills: Vec::new(),
         vector_stores: Vec::new(),
         session_history: None,
+        workflow_definition: None,
     }
 }
 
@@ -156,6 +166,7 @@ fn isolated_preamble() -> PreambleFixture {
         skills: Vec::new(),
         vector_stores: Vec::new(),
         session_history: None,
+        workflow_definition: None,
     }
 }
 
@@ -637,17 +648,88 @@ fn planning_wrapper_names_the_registered_tools() {
 #[test]
 fn planning_loop_wrapper_names_the_registered_tools() {
     let sections = worker_sections_for(&coordinator_scenarios()[0]);
+    let pairs = coordinator_tool_planning_loop_pairs(&coordinator_tool_names());
+    let coordinator_tools = render_planning_loop_tools_section(&pairs);
     let wrapper = render_planning_loop_prompt(&PlanningLoopVars {
         timestamp: "inert-timestamp",
         chat_history: "",
         query: INERT_QUERY,
         worker_section: "",
         worker_guidelines: "",
+        coordinator_tools: &coordinator_tools,
     });
     assert_eq!(
         numbered_tool_names(&wrapper),
         factory_names(&sections),
         "loop planning wrapper tools list must name exactly the registered tools"
+    );
+}
+
+#[test]
+fn mounted_preamble_tools_section_names_the_registered_tools() {
+    let sections = worker_sections_for(&coordinator_scenarios()[0]);
+    // Mount through the single decision point the runtime uses
+    // (`workflow_tool_for`), deriving the rendered input from the
+    // constructed tool's own name and the expectation from the mounted
+    // factory list: this fails if claims and registration ever diverge
+    // (the S114 invariant).
+    let mounted_section = crate::shim_config::WorkflowSection {
+        enabled: true,
+        ..Default::default()
+    };
+    let workflow_tool = workflow_tool_for(&mounted_section, &SidecarClient::disconnected())
+        .expect("enabled section mounts the tool");
+    let workflow_definition = workflow_tool.definition().clone();
+    let expected: BTreeSet<String> =
+        coordinator_tool_definitions_with_workflow(&sections, Some(&workflow_definition))
+            .iter()
+            .map(|definition| definition.name.as_str().to_owned())
+            .collect();
+    let mut registered = coordinator_tool_names();
+    registered.push(workflow_definition.name.as_str());
+    let preamble = build_coordinator_preamble_with_workflow("", false, false, &registered);
+    let tools_section = section_between(&preamble, "## Your Tools", "## Core Behavior");
+    assert_eq!(
+        backticked_tokens(tools_section),
+        expected,
+        "mounted preamble tools section must name exactly the registered tools"
+    );
+}
+
+#[test]
+fn mounted_planning_loop_wrapper_names_the_registered_tools() {
+    let sections = worker_sections_for(&coordinator_scenarios()[0]);
+    // Same shape as the preamble test: mount through `workflow_tool_for`,
+    // derive the rendered input from the constructed tool's name and the
+    // expectation from the mounted factory list (S114).
+    let mounted_section = crate::shim_config::WorkflowSection {
+        enabled: true,
+        ..Default::default()
+    };
+    let workflow_tool = workflow_tool_for(&mounted_section, &SidecarClient::disconnected())
+        .expect("enabled section mounts the tool");
+    let workflow_definition = workflow_tool.definition().clone();
+    let expected: BTreeSet<String> =
+        coordinator_tool_definitions_with_workflow(&sections, Some(&workflow_definition))
+            .iter()
+            .map(|definition| definition.name.as_str().to_owned())
+            .collect();
+    let mut registered = coordinator_tool_names();
+    registered.push(workflow_definition.name.as_str());
+    let pairs = coordinator_tool_planning_loop_pairs(&registered);
+    let coordinator_tools = render_planning_loop_tools_section(&pairs);
+    let wrapper = render_planning_loop_prompt(&PlanningLoopVars {
+        timestamp: "inert-timestamp",
+        chat_history: "",
+        query: INERT_QUERY,
+        worker_section: "",
+        worker_guidelines: "",
+        coordinator_tools: &coordinator_tools,
+    });
+    assert_eq!(
+        numbered_tool_names(&wrapper),
+        expected,
+        "mounted loop planning wrapper tools list must name exactly the registered tools"
     );
 }
 

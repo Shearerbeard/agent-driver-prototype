@@ -14,8 +14,15 @@ use agent_driver_rs::tool::ToolDefinition as PinToolDefinition;
 use crate::bounding::ToolListLimit;
 use crate::config::OrchestrationConfig;
 use crate::config_builders::build_vector_store_context;
-use crate::config_builders::{build_coordinator_preamble, build_worker_preamble};
-use crate::coordinator_loop::{WorkerRoster, WorkerSections};
+use crate::config_builders::{
+    build_coordinator_preamble, build_coordinator_preamble_with_workflow, build_worker_preamble,
+    render_planning_loop_tools_section,
+};
+use crate::coordinator_loop::{
+    WorkerRoster, WorkerSections, coordinator_tool_definitions,
+    coordinator_tool_definitions_with_workflow, coordinator_tool_names,
+    coordinator_tool_planning_loop_pairs,
+};
 use crate::message::{Message, ToolDefinition};
 use crate::persistence::ToolTraceEntry;
 use crate::producers::{
@@ -23,7 +30,8 @@ use crate::producers::{
     build_worker_prompt_sections, compact_decision_turn,
 };
 use crate::templates::{
-    WorkerPreambleVars, WorkerTaskVars, render_worker_preamble, render_worker_task_prompt,
+    PlanningLoopVars, WorkerPreambleVars, WorkerTaskVars, render_planning_loop_prompt,
+    render_worker_preamble, render_worker_task_prompt,
 };
 use crate::types::{IterationContext, Plan, StructuredTaskOutput};
 
@@ -49,8 +57,17 @@ pub(crate) fn compose_coordinator_preamble(fixture: &PreambleFixture) -> String 
     // registered surface is the factory's four regardless of the retired
     // router configuration. Vector stores configured for the coordinator
     // append nothing — the vector-search tools are worker-side
-    // registrations, so the coordinator path never claims them.
-    let mut preamble = build_coordinator_preamble(&fixture.playbook, false, false);
+    // registrations, so the coordinator path never claims them. A mounted
+    // workflow definition extends the factory to five; without one the
+    // preamble is byte-identical to the pre-W2 golden.
+    let mut preamble = match fixture.workflow_definition.as_ref() {
+        Some(definition) => {
+            let mut registered = coordinator_tool_names();
+            registered.push(definition.name.as_str());
+            build_coordinator_preamble_with_workflow(&fixture.playbook, false, false, &registered)
+        }
+        None => build_coordinator_preamble(&fixture.playbook, false, false),
+    };
     if let Some(catalog) = render_coordinator_skill_catalog(&fixture.skills) {
         preamble.push_str(&catalog);
     }
@@ -170,11 +187,32 @@ pub(crate) fn coordinator_envelope(
         &ToolInventory::empty(),
     );
 
-    let planning_wrapper = build_planning_wrapper(
-        scenario.query().as_str(),
-        &worker_section,
-        &worker_guidelines,
-    );
+    // The opening message: mounted fixtures render through the live loop's
+    // shape (`CoordinatorLoop::new` + `run`) — the loop-shaped planning
+    // template with the factory-derived tools list, `propose_workflow`
+    // fifth when mounted. `chat_history` is empty: the corpus replay carries
+    // prior turns as messages, never as a history block.
+    let planning_wrapper = match scenario.preamble().workflow_definition.as_ref() {
+        Some(definition) => {
+            let timestamp = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+            let mut registered = coordinator_tool_names();
+            registered.push(definition.name.as_str());
+            let pairs = coordinator_tool_planning_loop_pairs(&registered);
+            render_planning_loop_prompt(&PlanningLoopVars {
+                timestamp: &timestamp,
+                chat_history: "",
+                query: scenario.query().as_str(),
+                worker_section: &worker_section,
+                worker_guidelines: &worker_guidelines,
+                coordinator_tools: &render_planning_loop_tools_section(&pairs),
+            })
+        }
+        None => build_planning_wrapper(
+            scenario.query().as_str(),
+            &worker_section,
+            &worker_guidelines,
+        ),
+    };
 
     let mut messages = vec![Message::user(planning_wrapper)];
     if let CoordinatorCall::Continuation(thread) = scenario.call() {
@@ -284,7 +322,8 @@ fn append_shared_worker_sections(preamble: &mut String, appends: &WorkerPreamble
 
 /// The coordinator's attached tool definitions: the shared factory's
 /// definitions in production registration order, projected onto the
-/// fixture's wire-mirror type.
+/// fixture's wire-mirror type. A mounted workflow definition appends after
+/// the factory's four, the production registration order.
 ///
 /// The envelope cannot attach the pin's definitions directly — production
 /// uses `agent_driver_rs::tool::ToolDefinition`, the envelope uses
@@ -303,10 +342,11 @@ fn coordinator_tools(scenario: &CoordinatorScenario) -> Vec<ToolDefinition> {
     )
     .expect("corpus roster configs parse into worker sections");
     let sections = WorkerSections::from_roster(roster);
-    crate::coordinator_loop::coordinator_tool_definitions(&sections)
-        .iter()
-        .map(mirror_definition)
-        .collect()
+    let native = match scenario.preamble().workflow_definition.as_ref() {
+        Some(definition) => coordinator_tool_definitions_with_workflow(&sections, Some(definition)),
+        None => coordinator_tool_definitions(&sections),
+    };
+    native.iter().map(mirror_definition).collect()
 }
 
 /// Project a native tool definition onto the fixture's wire-mirror type.

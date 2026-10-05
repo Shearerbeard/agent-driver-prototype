@@ -25,6 +25,9 @@ pub struct ShimConfig {
     /// The crate's `OrchestrationConfig` mirror, assembled from the parsed
     /// sections for the roster/preamble builders.
     pub orchestration_config: OrchestrationConfig,
+    /// The optional `[workflow]` section that enables the `propose_workflow`
+    /// coordinator tool and names the approval receiver.
+    pub workflow: WorkflowSection,
 }
 
 /// The transport a configured MCP server speaks, resolved from the
@@ -179,6 +182,7 @@ pub fn load_shim_config(path: &std::path::Path) -> Result<ShimConfig, ShimError>
     // Resolve before `parsed.orchestration` is moved out below; the borrow
     // ends here.
     let mcp_server = resolve_mcp_server(&parsed)?;
+    validate_workflow_section(&parsed.workflow)?;
 
     let mut orchestration_config = OrchestrationConfig {
         enabled: true,
@@ -214,6 +218,7 @@ pub fn load_shim_config(path: &std::path::Path) -> Result<ShimConfig, ShimError>
         orchestration,
         mcp_server,
         orchestration_config,
+        workflow: parsed.workflow,
     })
 }
 
@@ -226,6 +231,8 @@ struct ParsedConfig {
     orchestration: OrchestrationSection,
     #[serde(default)]
     mcp: McpSection,
+    #[serde(default)]
+    workflow: WorkflowSection,
 }
 
 /// The `[mcp]` table: the server map plus fields the shim does not
@@ -244,6 +251,42 @@ struct McpServerSection {
     url: Option<String>,
     #[serde(default)]
     headers: HashMap<String, String>,
+}
+
+/// The optional `[workflow]` section that controls the `propose_workflow`
+/// coordinator tool and its sync-approval receiver.
+#[derive(Debug, Default, Deserialize)]
+pub struct WorkflowSection {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub approval_url: Option<String>,
+    #[serde(default)]
+    pub hold_secs: Option<u64>,
+}
+
+/// Validate the `[workflow]` section the same way `[mcp.servers.*]` is
+/// validated: required fields are enforced when the section is enabled, and
+/// URL values are checked by `SidecarUrl`.
+fn validate_workflow_section(section: &WorkflowSection) -> Result<(), ShimError> {
+    if !section.enabled {
+        return Ok(());
+    }
+    let hold_secs = section.hold_secs.ok_or_else(|| {
+        ShimError::Server(
+            "[workflow] is enabled but hold_secs is missing; hold_secs is required".to_owned(),
+        )
+    })?;
+    if hold_secs == 0 {
+        return Err(ShimError::Server(
+            "[workflow].hold_secs must be greater than 0".to_owned(),
+        ));
+    }
+    if let Some(url) = &section.approval_url {
+        SidecarUrl::new(url)
+            .map_err(|e| ShimError::Server(format!("[workflow].approval_url is invalid: {e}")))?;
+    }
+    Ok(())
 }
 
 /// Map the `tools_in_planning` string to the crate's `ToolVisibility` enum.
@@ -422,5 +465,56 @@ url = "http://b:2/mcp"
             message.contains('2') && message.contains("a, b"),
             "the error names the count and both servers, got: {message}"
         );
+    }
+
+    #[test]
+    fn disabled_workflow_section_needs_no_fields() {
+        let parsed = parse_config("[workflow]\nenabled = false\n").expect("parses");
+        validate_workflow_section(&parsed.workflow).expect("disabled section is valid");
+    }
+
+    #[test]
+    fn enabled_workflow_requires_hold_secs() {
+        let parsed = parse_config("[workflow]\nenabled = true\n").expect("parses");
+        let error =
+            validate_workflow_section(&parsed.workflow).expect_err("missing hold_secs should fail");
+        assert!(
+            error.to_string().contains("hold_secs"),
+            "error must name hold_secs, got: {error}"
+        );
+    }
+
+    #[test]
+    fn enabled_workflow_rejects_zero_hold_secs() {
+        let parsed = parse_config("[workflow]\nenabled = true\nhold_secs = 0\n").expect("parses");
+        let error =
+            validate_workflow_section(&parsed.workflow).expect_err("zero hold_secs should fail");
+        assert!(
+            error.to_string().contains("hold_secs"),
+            "error must name hold_secs, got: {error}"
+        );
+    }
+
+    #[test]
+    fn enabled_workflow_rejects_invalid_approval_url() {
+        let parsed = parse_config(
+            "[workflow]\nenabled = true\nhold_secs = 900\napproval_url = \"not-a-url\"\n",
+        )
+        .expect("parses");
+        let error = validate_workflow_section(&parsed.workflow)
+            .expect_err("invalid approval_url should fail");
+        assert!(
+            error.to_string().contains("approval_url"),
+            "error must name approval_url, got: {error}"
+        );
+    }
+
+    #[test]
+    fn enabled_workflow_with_valid_fields_passes() {
+        let parsed = parse_config(
+            "[workflow]\nenabled = true\nhold_secs = 900\napproval_url = \"https://approvals.example/receive\"\n",
+        )
+        .expect("parses");
+        validate_workflow_section(&parsed.workflow).expect("valid enabled section passes");
     }
 }

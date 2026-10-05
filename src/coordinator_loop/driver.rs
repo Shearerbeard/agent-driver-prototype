@@ -9,8 +9,10 @@ use async_trait::async_trait;
 use tokio_util::sync::CancellationToken;
 
 use crate::config::ToolVisibility;
+use crate::config_builders::render_planning_loop_tools_section;
 use crate::context::PinnedGoal;
 use crate::templates::{PlanningLoopVars, render_planning_loop_prompt};
+use crate::workflow::ProposeWorkflowTool;
 
 use super::budget::LoopBudget;
 use super::error::CoordinatorRunError;
@@ -19,7 +21,9 @@ use super::outcome::CoordinatorOutcome;
 use super::roster::WorkerRoster;
 use super::run_store::RunStore;
 use super::terminal::{FinalResponse, TerminalSlot};
-use super::tools::{CreatePlanTool, ExecuteTool, InspectRunTool, RespondTool};
+use super::tools::{
+    CreatePlanTool, ExecuteTool, InspectRunTool, RespondTool, coordinator_tool_planning_loop_pairs,
+};
 
 /// The worker material one typed [`WorkerRoster`] produces for the loop.
 ///
@@ -307,6 +311,10 @@ pub struct CoordinatorLoopConfig {
     pub executor: Arc<dyn PlanExecutor>,
     pub worker_sections: WorkerSections,
     pub runs: RunStore,
+    /// The optional `propose_workflow` tool. When present it is registered
+    /// with the session and included in the factory-derived tool claims; the
+    /// config itself carries no MCP client field.
+    pub propose_workflow: Option<Arc<ProposeWorkflowTool>>,
 }
 
 /// Forwards loop events to a shared observer handle.
@@ -340,13 +348,18 @@ pub struct CoordinatorLoop {
     /// the substrate falls back to the session's child token, which nothing
     /// outside the spawned task holds.
     cancellation: Option<CancellationToken>,
+    /// Pre-rendered coordinator tool list, derived from the factory when the
+    /// loop was built. Stored so the planning wrapper can reuse it without
+    /// recomputing definitions on every turn.
+    coordinator_tools_section: String,
 }
 
 impl CoordinatorLoop {
     /// Build the session, register the loop tools, and arm the budget.
     ///
     /// The registered surface is `create_plan`, `execute`, `inspect_run` and
-    /// `respond`. Worker result submission is deliberately absent: it is a
+    /// `respond`, plus `propose_workflow` when the shim's `[workflow]` section
+    /// is enabled. Worker result submission is deliberately absent: it is a
     /// worker's tool, and mounting it here would offer the coordinator a way
     /// to report evidence it never gathered.
     ///
@@ -369,11 +382,27 @@ impl CoordinatorLoop {
             Arc::new(InspectRunTool::new(&config.worker_sections, runs.clone()));
         let respond: DynTool = Arc::new(RespondTool::new(&config.worker_sections, answer.clone()));
 
+        let mut tools: Vec<DynTool> = vec![create_plan, execute, inspect_run, respond];
+        if let Some(ref propose_workflow) = config.propose_workflow {
+            tools.push(Arc::clone(propose_workflow) as DynTool);
+        }
+
+        // Claims derive from the registration itself: the names the model is
+        // told about are the names of the tools the session actually holds,
+        // read off the registered instances in registration order. Nothing
+        // appends to the claims independently of this list (S114).
+        let registered_names: Vec<&str> = tools
+            .iter()
+            .map(|tool| tool.definition().name.as_str())
+            .collect();
+        let planning_loop_pairs = coordinator_tool_planning_loop_pairs(&registered_names);
+        let coordinator_tools_section = render_planning_loop_tools_section(&planning_loop_pairs);
+
         let session = SessionBuilder::new()
             .provider(config.provider)
             .model(config.model)
             .system_prompt(config.system_prompt)
-            .tools([create_plan, execute, inspect_run, respond])
+            .tools(tools)
             .build()
             .await?;
 
@@ -385,6 +414,7 @@ impl CoordinatorLoop {
             worker_sections: config.worker_sections,
             observer: None,
             cancellation: None,
+            coordinator_tools_section,
         })
     }
 
@@ -428,8 +458,9 @@ impl CoordinatorLoop {
     /// Run the loop over one user query.
     ///
     /// The opening message is the rendered loop-shaped planning wrapper,
-    /// which names the four tools this loop registers (`create_plan`,
-    /// `execute`, `inspect_run`, `respond`) rather than the bounded
+    /// which names the tools this loop registers (`create_plan`,
+    /// `execute`, `inspect_run`, `respond`, plus `propose_workflow`
+    /// when the shim mounts it) rather than the bounded
     /// router's three. Prior conversation (`history`) renders into that
     /// wrapper ahead of the query when present; everything after the
     /// wrapper is ordinary conversation history: tool calls and their
@@ -453,6 +484,7 @@ impl CoordinatorLoop {
             query: query.as_str(),
             worker_section: self.worker_sections.roster_section(),
             worker_guidelines: self.worker_sections.guidelines(),
+            coordinator_tools: &self.coordinator_tools_section,
         });
 
         let config = AgentLoopConfig {

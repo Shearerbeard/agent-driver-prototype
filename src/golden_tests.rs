@@ -1,11 +1,14 @@
 //! The S2 golden-frame snapshot corpus, ported from
 //! `crates/aura/src/orchestration/context_fixture/golden_tests.rs`.
 //!
-//! 20 snapshot tests (12 coordinator + 8 worker) pin the spike's generated
+//! 21 snapshot tests (13 coordinator + 8 worker) pin the spike's generated
 //! envelopes. Since S114 the corpus is a coherent prototype-world corpus
 //! (Option B): coordinator frames pin this crate's registered coordinator
 //! surface — the shared factory's four tools, projected onto the wire
-//! mirror — while worker frames keep their original byte-parity. The
+//! mirror — while worker frames keep their original byte-parity. The one
+//! workflow-mounted coordinator frame pins the five-tool mounted surface
+//! (W2); every unmounted frame stays byte-identical to its pre-W2
+//! snapshot. The
 //! R3/R5/R8 comparison gates that call live production `Orchestrator`
 //! constructors are SKIPPED — the spike has no `Orchestrator` to compare
 //! against; the byte-diff proof against the canonical snapshots is the
@@ -26,6 +29,7 @@ use crate::tools::submit_result::Confidence;
 use crate::types::{
     FailureCategory, FailureSummary, Plan, PlanningResponse, StepInput, Task, TaskStatus,
 };
+use crate::workflow::ProposeWorkflowTool;
 
 use crate::fixture::{
     CompletedResultFixture, ContinuationThread, CoordinatorCall, CoordinatorScenario,
@@ -161,6 +165,7 @@ fn preamble() -> PreambleFixture {
         skills: Vec::new(),
         vector_stores: Vec::new(),
         session_history: None,
+        workflow_definition: None,
     }
 }
 
@@ -488,6 +493,7 @@ fn coordinator_preamble_full_appends() {
             Some("Operational runbooks for the payments platform"),
         )],
         session_history: Some(session_history()),
+        workflow_definition: None,
     };
     let scenario = scenario(
         preamble,
@@ -500,6 +506,38 @@ fn coordinator_preamble_full_appends() {
     snapshot_coordinator("coordinator_preamble_full_appends", &scenario);
 }
 
+/// The workflow-mounted rendering of the full-appends coordinator frame
+/// (W2): the preamble's tools section and the planning-loop wrapper both
+/// carry `propose_workflow` as the fifth tool, and the envelope attaches
+/// the fifth definition. The fixture mirrors
+/// [`coordinator_preamble_full_appends`] with the workflow definition
+/// mounted; every unmounted golden stays byte-identical.
+#[test]
+fn coordinator_preamble_workflow_mounted() {
+    let preamble = PreambleFixture {
+        playbook: SOURCE_PLAYBOOK.to_owned(),
+        skills: fixture_skills(),
+        // Configured but inert on the coordinator path: the vector-search
+        // tools are worker-side registrations, so the coordinator preamble
+        // renders no knowledge-base section (S114 surface 10).
+        vector_stores: vec![vector_store(
+            "runbooks",
+            Some("Operational runbooks for the payments platform"),
+        )],
+        session_history: Some(session_history()),
+        workflow_definition: Some(ProposeWorkflowTool::definition()),
+    };
+    let scenario = scenario(
+        preamble,
+        WorkerRosterFixture::new(
+            roster_config(analyst_operator_workers(), ToolVisibility::Summary),
+            Vec::new(),
+        ),
+        CoordinatorCall::Initial,
+    );
+    snapshot_coordinator("coordinator_preamble_workflow_mounted", &scenario);
+}
+
 /// Session-history block with catch-all Running and Pending task summaries.
 #[test]
 fn session_history_catch_all() {
@@ -510,6 +548,7 @@ fn session_history_catch_all() {
         session_history: Some(
             SessionHistoryFixture::new(vec![catch_all_manifest()]).expect("one prior manifest"),
         ),
+        workflow_definition: None,
     };
     let scenario = scenario(
         preamble,
