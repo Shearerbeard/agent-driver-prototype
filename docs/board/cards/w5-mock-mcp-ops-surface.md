@@ -63,7 +63,7 @@ truth). Nothing else; stop and report instead.
       scenarios_test) and through the tool surface itself
       (handler-level: incident visible pre-fix, correct
       `ops_scale_app(payments, 6)` remediates, a post-fix window shows
-      0, the straddling window honestly keeps its pre-fix history,
+      0, the straddling window keeps its pre-fix history,
       another session still sees the incident). Board owner re-ran
       every command itself.)
 - [x] Gate A: fresh cross-family review (code-review role) of the full
@@ -156,6 +156,6 @@ convention), PR there; the card closes when that PR merges.
   healing caps a window's far end, so the honest semantics are
   post-fix-window 0, straddling window keeps its pre-fix history - the
   handler-level acceptance test pins both. Gate S ticked this turn,
-  card in-review: 123 tests green, clippy zero warnings, fmt clean.
+  card in-review: 123 tests green with clippy and fmt clean.
   Frontmatter at Gate S: standing U(code-review) inserted per PROCESS.
   Gate A next, packet with `--repo` against the worktree. Board owner.
