@@ -4,7 +4,7 @@ title: End-to-end demo - investigate, propose, approve, apply, heal, unwind
 status: backlog
 depends: [W2, W3, W4, W5]
 serialize-with: []
-lineage: none
+lineage: isolated-branch
 executor: any
 gates: "S -> A -> M -> T"
 user-gates: [demo]
@@ -72,9 +72,15 @@ one.
 
 ## Branch
 
-`card/w6` off `main` when pulled (after W2, W3, W4, W5); closes at its
+`card/w6` off `integration/workflow` when pulled (corrected 2026-10-05
+from the minted `off main` - the evaluation ruling keeps the workflow
+line on the integration branch; after W2, W3, W4, W5); closes at its
 Gate T.
 
 ## Log
 
 - 2026-09-29 Minted backlog behind W2/W3/W4/W5. Board owner.
+- 2026-10-05 Mint-drift hygiene (same pass as W2's Gate U tick):
+  `lineage` corrected `none` -> `isolated-branch`, Branch section
+  re-based `off main` -> `off integration/workflow` per the standing
+  evaluation ruling. Still backlog. Board owner.

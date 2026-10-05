@@ -6,7 +6,7 @@ depends: [W1]
 serialize-with: []
 lineage: isolated-branch
 executor: smart
-gates: "S -> A -> U -> U"
+gates: "S -> A -> U(code-review) -> U(proposal-quality)"
 user-gates: [code-review, proposal-quality]
 commit-range: eb9a67b..ed6ba03
 ---
@@ -84,8 +84,13 @@ hold_secs required-when-enabled). Nothing else; stop and report instead.
       registration/claims seam, fixed in e8ea925 and ed6ba03; round 3
       PASS verifying the single-decision-point repair; ledger in the
       Log section.)
-- [ ] Gate U (code-review): board owner presents the review packet and
-      STOPS.
+- [x] Gate U (code-review): board owner presents the review packet and
+      STOPS. (Approved 2026-10-05 by Mike's merge of PR #16, `c0bb0f2` -
+      his one review comment, the `#[async_trait]` question at
+      tool.rs:85, was answered in session: required by the substrate
+      trait declaration in agent-driver-rs@2e6be4e (dyn-compatible boxed
+      futures), not by any rust floor; no code change. No PR reply
+      posted, per Mike's ruling.)
 - [ ] Gate U (proposal-quality): the stage-1 loop, user-ruled - run
       the world-based scenarios against this surface and iterate on
       proposal quality until Mike is satisfied; each round's evidence
@@ -309,3 +314,19 @@ on `integration/workflow` after its second Gate U. Worktree:
   integration (evaluation checkout), ../agent-driver-prototype-w2
   (this card); two stray agy job worktrees removed at close. The next
   session ticks the Gate U box on Mike's GH approval. Board owner.
+- 2026-10-05 Gate U (code-review) approved: Mike merged PR #16
+  (`c0bb0f2`, 13:55Z) - `card/w2` landed on `integration/workflow`.
+  His review carried one comment (the `#[async_trait]` attribute,
+  tool.rs:85): answered in session, no change - the substrate
+  `agent_driver_rs::tool::Tool` trait is itself declared
+  `#[async_trait]` at the pinned rev `2e6be4e` (src/tool/executor.rs:225),
+  so a native `async fn` impl would not compile, and the macro's boxing
+  is what keeps `Tool` dyn-compatible (`Arc<dyn Tool>` mounts); the
+  branch floor is rust-version 1.91.1, no 1.88 hazard. Retiring
+  `async-trait` is a substrate (agent-driver-rs) decision, noted for
+  S110's convergence lane, not this card. Gates-string drift fixed this
+  turn (`U -> U` named `U(code-review) -> U(proposal-quality)` per the
+  W1 convention; clears the boardkit WARN). Remaining: Gate U
+  (proposal-quality) - the stage-1 loop, unblocked, first pass
+  read-only until W5 lands. Card stays in-review until that gate.
+  Board owner.

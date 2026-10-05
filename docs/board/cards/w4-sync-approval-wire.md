@@ -4,7 +4,7 @@ title: Sync approval wire - notify POST, status poll, blocking hold
 status: backlog
 depends: [W2]
 serialize-with: [W3]
-lineage: none
+lineage: isolated-branch
 executor: smart
 gates: "S -> A -> U"
 user-gates: [wire-contract]
@@ -51,9 +51,16 @@ wiring), `tests/workflow.rs`. Nothing else; stop and report instead.
 
 ## Branch
 
-`card/w4` off `main` when pulled (after W2's Gate U); serialized against
-W3 (shared `tests/workflow.rs` and tool wiring).
+`card/w4` off `integration/workflow` when pulled (corrected 2026-10-05
+from the minted `off main` - the evaluation ruling keeps the workflow
+line on the integration branch), after W3 lands; serialized against W3
+(shared `tests/workflow.rs` and tool wiring).
 
 ## Log
 
 - 2026-09-29 Minted backlog behind W2; serialize-with W3. Board owner.
+- 2026-10-05 Mint-drift hygiene (same pass as W2's Gate U tick):
+  `lineage` corrected `none` -> `isolated-branch`, Branch section
+  re-based `off main` -> `off integration/workflow` per the standing
+  evaluation ruling. Still backlog; pulls after W3 lands
+  (serialize-with). Board owner.

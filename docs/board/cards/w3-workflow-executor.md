@@ -4,7 +4,7 @@ title: Deterministic workflow executor - resolve, apply, unwind, residual report
 status: backlog
 depends: [W2]
 serialize-with: [W4]
-lineage: none
+lineage: isolated-branch
 executor: smart
 gates: "S -> A"
 user-gates: []
@@ -70,9 +70,21 @@ Plus `cargo fmt --check`, `cargo clippy --all-targets --locked`,
 
 ## Branch
 
-`card/w3` off `main` when pulled (after W2's Gate U); serialized against
-W4 (shared `tests/workflow.rs` and tool wiring).
+`card/w3` off `integration/workflow` when pulled (corrected 2026-10-05
+from the minted `off main` - the evaluation ruling keeps the workflow
+line on the integration branch; W2's work landed there in `c0bb0f2`).
+Pulled 2026-10-05 without waiting for W2's remaining U(proposal-quality)
+gate, per Mike's ruling: the stage-1 loop re-runs against the fuller
+surface later. Serialized against W4 (shared `tests/workflow.rs` and
+tool wiring).
 
 ## Log
 
 - 2026-09-29 Minted backlog behind W2; serialize-with W4. Board owner.
+- 2026-10-05 Mint-drift hygiene (same pass as W2's Gate U tick):
+  `lineage` corrected `none` -> `isolated-branch`, Branch section
+  re-based `off main` -> `off integration/workflow` per the standing
+  evaluation ruling - the same at-pull corrections W1/W2 carried,
+  applied ahead of pull this time. Pulled in-progress this session per
+  Mike's ruling (W3 proceeds ahead of W2's remaining proposal-quality
+  gate). Board owner.
