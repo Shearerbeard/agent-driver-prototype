@@ -215,8 +215,6 @@ pub fn resolve_arguments(
     resolve_node(args, env)
 }
 
-/// Total order over two JSON numbers: exact when both fit one integer
-/// width, else `f64`. A `serde_json::Number` is never NaN, so the
 /// Compare two JSON numbers exactly.
 ///
 /// Integer-integer pairs widen to `i128` (every `i64` and `u64` fits),
