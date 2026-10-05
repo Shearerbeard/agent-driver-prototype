@@ -8,7 +8,7 @@ lineage: isolated-branch
 executor: smart
 gates: "S -> A -> U(code-review)"
 user-gates: [code-review]
-commit-range: d3f4a89^..5a3afe5
+commit-range: d3f4a89^..3250421
 ---
 
 # W3: Deterministic workflow executor - resolve, apply, unwind, residual reporting
@@ -132,6 +132,13 @@ Plus `cargo fmt --check`, `cargo clippy --all-targets --locked`,
   match behavior; review-ledger narration moved out of source; 468
   tests green, clippy zero. Range extends to d3f4a89^..5a3afe5; round
   3 verifies the minors only. Board owner.
+- 2026-10-05 Gate A round 3 (same seat, session
+  ses_ef28b0e96ffeUCoX2n4ddyzWqP): minors 2-4 CONFIRMED-REPAIRED, no
+  regressions in the cleanup commits; minor 1 NOT-REPAIRED - the
+  stale exactness sentence had only half-replaced and sat glued to the
+  new doc. Fixed in 3250421 (two lines deleted; 468 tests green,
+  clippy zero). Range extends to d3f4a89^..3250421; round 4 verifies
+  the one doc line. Board owner.
 
 ## Branch
 

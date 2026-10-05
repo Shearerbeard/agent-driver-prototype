@@ -66,16 +66,14 @@ truth). Nothing else; stop and report instead.
       0, the straddling window honestly keeps its pre-fix history,
       another session still sees the incident). Board owner re-ran
       every command itself.)
-- [ ] Gate A: fresh cross-family review (code-review role) of the full
+- [x] Gate A: fresh cross-family review (code-review role) of the full
       commit range against the acceptance criteria, packet generated
-      with `--repo` against the ai-experiments worktree. (OPEN
-      2026-10-05, deferred: same lane failure as W3 - the in-harness
-      rust-reviewer seat returned empty finals three times on this
-      packet while its small-payload probe review came back clean;
-      three-attempt cap reached, kimi-K3 blocked by the
-      reviewer-differs-from-author invariant (Kimi authored the
-      skeleton), codex fallback awaits Mike's approval. Surfaced at
-      this user boundary.)
+      with `--repo` against the ai-experiments worktree. (Passed
+      2026-10-05 round 3 on the bedrock gpt-5.6-sol seat after the
+      6.1-sol lane was ruled out: round 1 FAIL (1 BLOCKING, 2 MAJOR,
+      all repaired in 1152056), round 2 verified all three
+      CONFIRMED-REPAIRED and left two MINORs (fixed in 1d6be81), round
+      3 PASS verifying both minors; ledger in the Log section.)
 - 2026-10-05 Lane resolution: Mike ruled the reviewer seat to bedrock
   gpt-5.6-sol (restart). Round 1 on the new seat (session
   ses_ef29f9a9fffeSPQ63OJaY2hw0l): FAIL - 1 BLOCKING, 2 MAJOR, all
@@ -113,6 +111,15 @@ truth). Nothing else; stop and report instead.
   mutation ordering would fail it; narration moved out of source. 124
   tests green, clippy zero. Range extends 6d8afd6..1d6be81; round 3
   verifies the minors only. Board owner.
+- 2026-10-05 Gate A passed (round 3, session ses_ef28b0e86ffelrAgu-
+  JnIi0DuFK): both round-2 minors CONFIRMED-REPAIRED with evidence
+  (the ordering-pin test fails under record-before-mutation ordering;
+  no ledger narration remains in the crate), zero regressions in the
+  cleanup commit. Cumulative Gate A reviewer spend across the three
+  rounds: three in-harness dispatches on the bedrock gpt-5.6-sol seat.
+  Gate A checklist box ticked this turn. Card remains in-review for
+  its U(code-review) user gate; the ai-experiments PR opens at that
+  gate. Board owner.
 
 ## Branch
 

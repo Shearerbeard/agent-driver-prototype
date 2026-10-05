@@ -22,7 +22,7 @@ kanban-plugin: board
 - [ ] **W3** [Deterministic workflow executor - resolve, apply, unwind, residual reporting](w3-workflow-executor.md)
 	Depends: W2. Gates: S -> A -> U(code-review) @ A. Executor: smart.
 - [ ] **W5** [Mock-mcp ops surface - three remediation tools, per-session healing, ground truth](w5-mock-mcp-ops-surface.md)
-	Depends: none. Gates: S -> A -> U(code-review) @ A. Executor: smart.
+	Depends: none. Gates: S -> A -> U(code-review) @ U. Executor: smart.
 
 ## Backlog
 - [ ] **W4** [Sync approval wire - notify POST, status poll, blocking hold](w4-sync-approval-wire.md)
