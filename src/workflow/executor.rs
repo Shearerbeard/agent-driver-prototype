@@ -88,7 +88,9 @@ pub enum RunOutcome {
         /// Steps still applied after the run stopped.
         residual: Vec<StepId>,
     },
-    /// The run was cancelled before every step applied.
+    /// The run was cancelled: either before every step applied, or
+    /// during the final in-flight call after they all had. Nothing
+    /// unwound either way; the residual is the full applied set.
     Cancelled {
         /// Steps that had already been applied.
         residual: Vec<StepId>,

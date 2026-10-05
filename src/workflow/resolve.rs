@@ -567,11 +567,11 @@ mod tests {
 
     #[test]
     fn mixed_width_beyond_two_pow_fifty_three_compares_exactly() {
-        // The Gate A round-1 finding: an integer one ulp above 2^53
-        // must not round onto the float an ulp below it. The integer
-        // 9007199254740993 is greater than the float 9007199254740992.0,
-        // so it violates a max of that float — and satisfies a min of
-        // the next representable float up, 9007199254740994.0.
+        // An integer one ulp above 2^53 must not round onto the float
+        // an ulp below it. The integer 9007199254740993 is greater than
+        // the float 9007199254740992.0 (violates that max) and below
+        // the next representable float, 9007199254740994.0 (violates
+        // that min): exact comparison keeps both hairs.
         let just_above = json!(9_007_199_254_740_993_i64);
         let float_below = number(json!(9_007_199_254_740_992.0_f64));
         let float_above = number(json!(9_007_199_254_740_994.0_f64));

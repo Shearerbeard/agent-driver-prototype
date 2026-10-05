@@ -839,7 +839,7 @@ async fn cancellation_mid_apply_halts_and_records_residual_state() {
     );
 }
 
-/// D11 repair coverage (Gate A round 1, finding 2): a cancellation
+/// D11 edge: a cancellation
 /// that lands while a FAILING call is in flight still halts — the
 /// failed step is recorded `Failed`, but no rollback dispatches after
 /// the interrupt, and the outcome is `Cancelled` with the applied
@@ -910,7 +910,7 @@ async fn cancellation_during_a_failing_call_halts_without_unwinding() {
     );
 }
 
-/// D11 repair coverage (Gate A round 1, finding 2, second half): a
+/// D11 edge, final-call case: a
 /// cancellation that lands during the FINAL in-flight call records the
 /// interrupt — every step applied, none unwound, `Cancelled` with the
 /// full applied set as residual — rather than a clean `Complete`.
