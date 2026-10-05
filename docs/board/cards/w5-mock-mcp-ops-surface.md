@@ -68,7 +68,14 @@ truth). Nothing else; stop and report instead.
       every command itself.)
 - [ ] Gate A: fresh cross-family review (code-review role) of the full
       commit range against the acceptance criteria, packet generated
-      with `--repo` against the ai-experiments worktree.
+      with `--repo` against the ai-experiments worktree. (OPEN
+      2026-10-05, deferred: same lane failure as W3 - the in-harness
+      rust-reviewer seat returned empty finals three times on this
+      packet while its small-payload probe review came back clean;
+      three-attempt cap reached, kimi-K3 blocked by the
+      reviewer-differs-from-author invariant (Kimi authored the
+      skeleton), codex fallback awaits Mike's approval. Surfaced at
+      this user boundary.)
 
 ## Branch
 

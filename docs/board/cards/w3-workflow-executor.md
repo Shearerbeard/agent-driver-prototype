@@ -83,7 +83,17 @@ Plus `cargo fmt --check`, `cargo clippy --all-targets --locked`,
       carries only steps whose rollbacks never ran per the plan's
       wording. Board owner re-ran every command itself.)
 - [ ] Gate A: fresh cross-family review (code-review role) of the full
-      commit range against the acceptance criteria.
+      commit range against the acceptance criteria. (OPEN 2026-10-05,
+      deferred: the in-harness rust-reviewer lane (bedrock gpt-sol,
+      PONG pre-vet passed) returned an empty final three times on the
+      real packet - the same large-payload void W2 recorded for this
+      lane - while a contract-shaped small-packet probe through the
+      same seat returned a clean numbered review with a verdict, so the
+      read path is healthy and the failure is payload-shaped. Per the
+      three-attempt cap the lane is closed for this gate; kimi-K3 is
+      same-family as the Kimi skeleton author and cannot seat it; the
+      codex fallback needs Mike's approval. Surfaced at this user
+      boundary.)
 
 ## Branch
 
