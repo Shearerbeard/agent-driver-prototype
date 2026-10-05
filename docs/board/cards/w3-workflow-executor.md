@@ -143,6 +143,11 @@ Plus `cargo fmt --check`, `cargo clippy --all-targets --locked`,
   every commit in the range. Gate A checklist box ticked this turn.
   Card remains in-review for its U(code-review) user gate. Board
   owner.
+- 2026-10-05 Gate U (code-review) opened for Mike's review on GitHub:
+  PR #20 (card/w3 -> integration/workflow) presented with the Gate A
+  ledger and the testing record; the checklist box stays unticked
+  until his approval lands (his stated review surface is GH). Board
+  owner.
 
 ## Branch
 
