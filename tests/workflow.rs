@@ -1,14 +1,17 @@
 //! Offline integration tests for the deterministic workflow executor.
 //!
-//! Six scenarios over the `test-support` scripted-server rig.
+//! Six scenarios over the `test-support` scripted-server rig, one per
+//! acceptance line on card W3: in-order apply with captured exports;
+//! step failure with reverse-order unwind; rollback failure with a loud
+//! stop and a residual set; bounds rejection at resolve time; a binding
+//! miss on a missing export path; and cancellation mid-apply.
 
-#![expect(dead_code, unused_imports)]
 #![allow(clippy::unused_async)]
 
-use agent_driver_prototype::mcp_client::{SidecarClient, SidecarTool};
+use agent_driver_prototype::mcp_client::{SidecarTool, SidecarToolName};
 use agent_driver_prototype::workflow::{
-    ExportEnvironment, RunOutcome, RunRecord, StepStatus, ValidatedWorkflowSpec, WorkflowSpec,
-    execute_workflow,
+    ExecuteError, ResolveError, RollbackOutcome, RunOutcome, RunRecord, StepId, StepStatus,
+    ValidatedWorkflowSpec, WorkflowSpec, execute_workflow,
 };
 use serde_json::{Value as JsonValue, json};
 use tokio_util::sync::CancellationToken;
@@ -37,7 +40,7 @@ mod rig {
     type Script = Arc<dyn Fn(&str, &JsonValue) -> Result<JsonValue, String> + Send + Sync>;
 
     /// A scripted MCP server: advertises a fixed tool list and answers
-    /// `tools/call` according to the supplied script.
+    /// `tools/call` according to the script.
     #[derive(Clone)]
     pub struct ScriptedServer {
         info: ServerInfo,
@@ -155,36 +158,627 @@ fn validate(workflow: JsonValue, tools: &[SidecarTool]) -> ValidatedWorkflowSpec
     spec.validate(tools).expect("workflow validates")
 }
 
+/// The discovered inventory every scenario validates against. Both ops
+/// tools take the permissive object schema: these scenarios exercise the
+/// executor's apply/unwind semantics, not propose-time schema checking
+/// (W1's covered ground).
+fn inventory() -> Vec<SidecarTool> {
+    let schema = permissive_schema();
+    vec![
+        SidecarTool::new(
+            SidecarToolName::new("ops_get_cluster_state").expect("tool name is non-empty"),
+            String::new(),
+            schema.clone(),
+        ),
+        SidecarTool::new(
+            SidecarToolName::new("ops_scale_app").expect("tool name is non-empty"),
+            String::new(),
+            schema,
+        ),
+    ]
+}
+
+/// The `tools/list` entries the rig advertises, mirroring the inventory
+/// `validate` checked against — a real sidecar advertises what proposal
+/// discovered.
+fn advertised() -> Vec<JsonValue> {
+    let schema = permissive_schema();
+    vec![
+        rig::tool_entry(
+            "ops_get_cluster_state",
+            "read the cluster state",
+            schema.clone(),
+        ),
+        rig::tool_entry("ops_scale_app", "scale an app's deployment", schema),
+    ]
+}
+
+/// The scripted cluster-state read: three replicas under
+/// `$.deployment.replicas`.
+fn read_result() -> JsonValue {
+    json!({"deployment": {"replicas": 3}})
+}
+
+/// The scripted scale result: the applied replica count at `$.replicas`.
+fn scaled_result() -> JsonValue {
+    json!({"status": "scaled", "replicas": 6})
+}
+
+/// The read step every scenario opens with: it exports the deployment's
+/// replica count as `state.current_replicas`. `rollback` is `json!(null)`
+/// for scenarios that need no observable unwind, and [`state_rollback`]
+/// where a dispatched or withheld unwind attempt must be visible in the
+/// call log.
+fn state_step(rollback: JsonValue) -> JsonValue {
+    json!({
+        "id": "state",
+        "dependencies": [],
+        "tool": "ops_get_cluster_state",
+        "args": {"app": "payments"},
+        "exports": {"current_replicas": "$.deployment.replicas"},
+        "rollback": rollback
+    })
+}
+
+/// The state step's declared rollback: a literal rescale to 99. The
+/// out-of-band replica count is the rollback's signature in every
+/// scripted answer fn and call-log assertion.
+fn state_rollback() -> JsonValue {
+    json!({
+        "tool": "ops_scale_app",
+        "args": {"app": "payments", "replicas": 99}
+    })
+}
+
+/// The scale step's declared rollback: a `$from`-bound rescale back to
+/// the captured original replica count, inside the demo's 1..20 envelope.
+fn bound_scale_rollback() -> JsonValue {
+    json!({
+        "tool": "ops_scale_app",
+        "args": {"app": "payments",
+                 "replicas": {"$from": "state.current_replicas", "min": 1, "max": 20}}
+    })
+}
+
+/// Validate `workflow` against the permissive inventory, boot the
+/// scripted server behind a real client, and execute the workflow
+/// against the pair.
+///
+/// Returns the run record and a clone of the server sharing the call
+/// log (the server itself is moved into its serving task by `boot`).
+async fn run(
+    script: impl Fn(&str, &JsonValue) -> Result<JsonValue, String> + Send + Sync + 'static,
+    workflow: JsonValue,
+    cancel: &CancellationToken,
+) -> (RunRecord, rig::ScriptedServer) {
+    let validated = validate(workflow, &inventory());
+    let server = rig::ScriptedServer::new(advertised(), script);
+    let recorder = server.clone();
+    let (client, _served) = rig::boot(server).await;
+    let record = execute_workflow(&validated, &client, cancel)
+        .await
+        .expect("the executor returns the run record for every scripted outcome");
+    (record, recorder)
+}
+
+/// The run record's per-step statuses, in declaration order.
+fn statuses(record: &RunRecord) -> Vec<StepStatus> {
+    record.steps.iter().map(|step| step.status).collect()
+}
+
 // ============================================================================
 // Acceptance scenarios
 // ============================================================================
 
+/// Card acceptance 1: steps apply in declaration (topological) order and
+/// the exports environment materializes — proven by behavior. The scale
+/// step's spec carries only a `$from` reference where `replicas` goes,
+/// so a dispatched `replicas: 3` can only have come from capturing the
+/// state step's result; likewise `verify`'s `expected_replicas: 6` can
+/// only have come from capturing scale's result.
 #[tokio::test]
 async fn success_steps_apply_in_order_and_exports_captured() {
-    todo!()
+    let cancel = CancellationToken::new();
+    let workflow = json!({
+        "goal": "scale payments and verify",
+        "steps": [
+            state_step(json!(null)),
+            {
+                "id": "scale",
+                "dependencies": ["state"],
+                "tool": "ops_scale_app",
+                "args": {"app": "payments",
+                         "replicas": {"$from": "state.current_replicas", "min": 1, "max": 20}},
+                "exports": {"applied": "$.replicas"},
+                "rollback": bound_scale_rollback()
+            },
+            {
+                "id": "verify",
+                "dependencies": ["scale"],
+                "tool": "ops_get_cluster_state",
+                "args": {"app": "verify", "expected_replicas": {"$from": "scale.applied"}},
+                "exports": {},
+                "rollback": null
+            }
+        ]
+    });
+    let (record, server) = run(
+        |name, args| match name {
+            "ops_get_cluster_state" => Ok(read_result()),
+            "ops_scale_app" if args.get("replicas") != Some(&json!(3)) => Err(format!(
+                "scale dispatched with {args}; expected the captured replicas 3"
+            )),
+            "ops_scale_app" => Ok(scaled_result()),
+            other => Err(format!("unexpected tool call {other}")),
+        },
+        workflow,
+        &cancel,
+    )
+    .await;
+
+    assert_eq!(record.goal, "scale payments and verify");
+    assert_eq!(
+        statuses(&record),
+        vec![
+            StepStatus::Applied,
+            StepStatus::Applied,
+            StepStatus::Applied
+        ]
+    );
+    assert!(matches!(record.outcome, RunOutcome::Complete));
+
+    // The dispatch order and the resolved arguments: the apply ran
+    // state -> scale -> verify, and both `$from` bindings substituted
+    // the values captured from the earlier steps' results.
+    let log = server.calls().await;
+    assert_eq!(
+        log,
+        vec![
+            (
+                "ops_get_cluster_state".to_owned(),
+                json!({"app": "payments"})
+            ),
+            (
+                "ops_scale_app".to_owned(),
+                json!({"app": "payments", "replicas": 3})
+            ),
+            (
+                "ops_get_cluster_state".to_owned(),
+                json!({"app": "verify", "expected_replicas": 6})
+            ),
+        ]
+    );
 }
 
+/// Card acceptance 2: a scripted step failure runs the declared rollback
+/// of the completed step (the unwind walks completion order backwards —
+/// here the only completed step is the first), and the record shows the
+/// failing step `Failed`, the earlier step `Unwound`, with no residual.
 #[tokio::test]
 async fn step_failure_runs_reverse_order_unwind() {
-    todo!()
+    let cancel = CancellationToken::new();
+    let workflow = json!({
+        "goal": "scale payments",
+        "steps": [
+            state_step(state_rollback()),
+            {
+                "id": "scale",
+                "dependencies": ["state"],
+                "tool": "ops_scale_app",
+                "args": {"app": "payments", "replicas": 6},
+                "exports": {},
+                "rollback": bound_scale_rollback()
+            }
+        ]
+    });
+    let (record, server) = run(
+        |name, args| match name {
+            "ops_get_cluster_state" => Ok(read_result()),
+            "ops_scale_app" if args.get("replicas") == Some(&json!(6)) => {
+                Err("the cluster rejected the scale to 6".to_owned())
+            }
+            // The unwind's rollback call.
+            "ops_scale_app" => Ok(scaled_result()),
+            other => Err(format!("unexpected tool call {other}")),
+        },
+        workflow,
+        &cancel,
+    )
+    .await;
+
+    assert_eq!(
+        statuses(&record),
+        vec![StepStatus::Unwound, StepStatus::Failed]
+    );
+    match &record.outcome {
+        RunOutcome::Failed {
+            step,
+            rollback_failure,
+            residual,
+            ..
+        } => {
+            assert_eq!(step.as_str(), "scale");
+            assert!(rollback_failure.is_none(), "the unwind itself succeeded");
+            assert!(residual.is_empty(), "every applied step was unwound");
+        }
+        other => panic!("expected a Failed outcome, got {other:?}"),
+    }
+    assert_eq!(record.steps[0].rollback, Some(RollbackOutcome::Success));
+    assert_eq!(
+        record.steps[1].rollback, None,
+        "only applied steps unwind; the failing step has no rollback attempt"
+    );
+
+    let log = server.calls().await;
+    assert_eq!(
+        log,
+        vec![
+            (
+                "ops_get_cluster_state".to_owned(),
+                json!({"app": "payments"})
+            ),
+            (
+                "ops_scale_app".to_owned(),
+                json!({"app": "payments", "replicas": 6})
+            ),
+            // The unwind: state's declared rollback dispatched after the failure.
+            (
+                "ops_scale_app".to_owned(),
+                json!({"app": "payments", "replicas": 99})
+            ),
+        ]
+    );
 }
 
+/// Card acceptance 3: with two steps applied, a third-step failure
+/// starts the unwind at the most recently applied step (reverse
+/// completion order). That rollback fails loudly; the unwind STOPS —
+/// the first step's rollback is never dispatched, proven by the call
+/// log — and the outcome carries both failures plus the residual
+/// applied set naming step one.
 #[tokio::test]
 async fn rollback_failure_reports_both_failures_and_residual_set() {
-    todo!()
+    let cancel = CancellationToken::new();
+    let workflow = json!({
+        "goal": "scale payments and verify",
+        "steps": [
+            state_step(state_rollback()),
+            {
+                "id": "scale",
+                "dependencies": ["state"],
+                "tool": "ops_scale_app",
+                "args": {"app": "payments", "replicas": 6},
+                "exports": {},
+                "rollback": bound_scale_rollback()
+            },
+            {
+                "id": "verify",
+                "dependencies": ["scale"],
+                "tool": "ops_get_cluster_state",
+                "args": {"app": "verify"},
+                "exports": {},
+                "rollback": null
+            }
+        ]
+    });
+    let (record, server) = run(
+        |name, args| match name {
+            "ops_get_cluster_state" if args.get("app") == Some(&json!("verify")) => {
+                Err("verification exploded".to_owned())
+            }
+            "ops_get_cluster_state" => Ok(read_result()),
+            "ops_scale_app" if args.get("replicas") == Some(&json!(6)) => Ok(scaled_result()),
+            // The scale rollback (bound to the captured 3) fails loudly.
+            "ops_scale_app" if args.get("replicas") == Some(&json!(3)) => {
+                Err("the cluster refused the rollback rescale".to_owned())
+            }
+            // If the unwind kept going past the failed rollback, the
+            // state rollback (99) would arrive; fail loud if it ever does.
+            "ops_scale_app" => Err("state rollback dispatched after the unwind stopped".to_owned()),
+            other => Err(format!("unexpected tool call {other}")),
+        },
+        workflow,
+        &cancel,
+    )
+    .await;
+
+    assert_eq!(
+        statuses(&record),
+        vec![
+            StepStatus::NotUnwound,
+            StepStatus::RollbackFailed,
+            StepStatus::Failed
+        ]
+    );
+    match &record.outcome {
+        RunOutcome::Failed {
+            step,
+            error: _,
+            rollback_failure,
+            residual,
+        } => {
+            assert_eq!(step.as_str(), "verify");
+            let (rollback_step, _rollback_error) = rollback_failure
+                .as_ref()
+                .expect("the rollback failure is reported alongside the step failure");
+            assert_eq!(rollback_step.as_str(), "scale");
+            assert_eq!(
+                residual.iter().map(StepId::as_str).collect::<Vec<_>>(),
+                vec!["state"],
+                "the residual set names the applied step whose rollback never ran"
+            );
+        }
+        other => panic!("expected a Failed outcome, got {other:?}"),
+    }
+    assert!(matches!(
+        record.steps[1].rollback,
+        Some(RollbackOutcome::Failed { .. })
+    ));
+    assert_eq!(
+        record.steps[0].rollback, None,
+        "the unwind stopped before step one's rollback was attempted"
+    );
+
+    // Reverse completion order: the unwind's first (and only) attempt is
+    // the most recently applied step's rollback. Nothing follows it.
+    let log = server.calls().await;
+    assert_eq!(
+        log,
+        vec![
+            (
+                "ops_get_cluster_state".to_owned(),
+                json!({"app": "payments"})
+            ),
+            (
+                "ops_scale_app".to_owned(),
+                json!({"app": "payments", "replicas": 6})
+            ),
+            ("ops_get_cluster_state".to_owned(), json!({"app": "verify"})),
+            (
+                "ops_scale_app".to_owned(),
+                json!({"app": "payments", "replicas": 3})
+            ),
+        ]
+    );
 }
 
+/// Card acceptance 4: a `$from` binding whose captured value violates
+/// the declared bounds is a step failure at resolve time — the failing
+/// step's tool call is never dispatched (the call log proves it) — and
+/// the prior applied step unwinds.
 #[tokio::test]
 async fn bounds_rejection_unwinds_prior_steps() {
-    todo!()
+    let cancel = CancellationToken::new();
+    let workflow = json!({
+        "goal": "scale payments inside a tight envelope",
+        "steps": [
+            state_step(state_rollback()),
+            {
+                "id": "scale",
+                "dependencies": ["state"],
+                "tool": "ops_scale_app",
+                "args": {"app": "payments",
+                         "replicas": {"$from": "state.current_replicas", "min": 5, "max": 20}},
+                "exports": {},
+                "rollback": bound_scale_rollback()
+            }
+        ]
+    });
+    let (record, server) = run(
+        |name, args| match name {
+            "ops_get_cluster_state" => Ok(read_result()),
+            // Only the unwind's 99 may arrive; the rejected apply must not.
+            "ops_scale_app" if args.get("replicas") == Some(&json!(99)) => Ok(scaled_result()),
+            other => Err(format!("unexpected tool call {other}: {args:?}")),
+        },
+        workflow,
+        &cancel,
+    )
+    .await;
+
+    assert_eq!(
+        statuses(&record),
+        vec![StepStatus::Unwound, StepStatus::Failed]
+    );
+    match &record.outcome {
+        RunOutcome::Failed {
+            step,
+            error,
+            rollback_failure,
+            residual,
+        } => {
+            assert_eq!(step.as_str(), "scale");
+            assert!(
+                matches!(
+                    error,
+                    ExecuteError::Resolve(ResolveError::BoundsViolation { .. })
+                ),
+                "the bounds rejection is a resolve-time failure, not a tool failure: {error:?}"
+            );
+            assert!(rollback_failure.is_none());
+            assert!(residual.is_empty());
+        }
+        other => panic!("expected a Failed outcome, got {other:?}"),
+    }
+
+    let log = server.calls().await;
+    assert_eq!(
+        log,
+        vec![
+            (
+                "ops_get_cluster_state".to_owned(),
+                json!({"app": "payments"})
+            ),
+            (
+                "ops_scale_app".to_owned(),
+                json!({"app": "payments", "replicas": 99})
+            ),
+        ],
+        "the rejected step is never dispatched; only the prior step's rollback runs"
+    );
 }
 
+/// Card acceptance 5: a declared export path the step's own result does
+/// not carry is a step failure — the tool call went out and returned,
+/// but the capture missed — and the prior applied step unwinds.
 #[tokio::test]
 async fn binding_miss_missing_path_is_a_step_failure() {
-    todo!()
+    let cancel = CancellationToken::new();
+    let workflow = json!({
+        "goal": "scale payments and capture the applied count",
+        "steps": [
+            state_step(state_rollback()),
+            {
+                "id": "scale",
+                "dependencies": ["state"],
+                "tool": "ops_scale_app",
+                "args": {"app": "payments", "replicas": 6},
+                "exports": {"applied": "$.replicas"},
+                "rollback": bound_scale_rollback()
+            }
+        ]
+    });
+    let (record, server) = run(
+        |name, _args| match name {
+            "ops_get_cluster_state" => Ok(read_result()),
+            // The scale result deliberately carries no `replicas` key:
+            // the declared export path misses.
+            "ops_scale_app" => Ok(json!({"status": "scaled"})),
+            other => Err(format!("unexpected tool call {other}")),
+        },
+        workflow,
+        &cancel,
+    )
+    .await;
+
+    assert_eq!(
+        statuses(&record),
+        vec![StepStatus::Unwound, StepStatus::Failed]
+    );
+    match &record.outcome {
+        RunOutcome::Failed {
+            step,
+            error,
+            rollback_failure,
+            residual,
+        } => {
+            assert_eq!(step.as_str(), "scale");
+            assert!(
+                matches!(
+                    error,
+                    ExecuteError::Resolve(ResolveError::ExportPathMissing { .. })
+                ),
+                "the binding miss is a missing-export-path failure: {error:?}"
+            );
+            assert!(rollback_failure.is_none());
+            assert!(residual.is_empty());
+        }
+        other => panic!("expected a Failed outcome, got {other:?}"),
+    }
+
+    let log = server.calls().await;
+    assert_eq!(
+        log,
+        vec![
+            (
+                "ops_get_cluster_state".to_owned(),
+                json!({"app": "payments"})
+            ),
+            (
+                "ops_scale_app".to_owned(),
+                json!({"app": "payments", "replicas": 6})
+            ),
+            // The step call went out before the capture missed; then the unwind.
+            (
+                "ops_scale_app".to_owned(),
+                json!({"app": "payments", "replicas": 99})
+            ),
+        ]
+    );
 }
 
+/// Card acceptance 6 (D11): cancelling mid-apply — the scripted server
+/// cancels the token while the second step's call is in flight — halts
+/// dispatch. No rollback runs, the outcome is `Cancelled` enumerating
+/// the applied residual, and the unstarted step stays `NotStarted`.
 #[tokio::test]
 async fn cancellation_mid_apply_halts_and_records_residual_state() {
-    todo!()
+    let cancel = CancellationToken::new();
+    let script_token = cancel.clone();
+    let workflow = json!({
+        "goal": "scale payments and verify",
+        "steps": [
+            state_step(state_rollback()),
+            {
+                "id": "scale",
+                "dependencies": ["state"],
+                "tool": "ops_scale_app",
+                "args": {"app": "payments", "replicas": 6},
+                "exports": {},
+                "rollback": bound_scale_rollback()
+            },
+            {
+                "id": "verify",
+                "dependencies": ["scale"],
+                "tool": "ops_get_cluster_state",
+                "args": {"app": "verify"},
+                "exports": {},
+                "rollback": null
+            }
+        ]
+    });
+    let (record, server) = run(
+        move |name, _args| {
+            if name == "ops_scale_app" {
+                // Deterministic cancel point: strictly after step one
+                // completed and strictly before this call's response
+                // reaches the executor, so the check before the next
+                // dispatch cannot miss it.
+                script_token.cancel();
+            }
+            match name {
+                "ops_get_cluster_state" => Ok(read_result()),
+                "ops_scale_app" => Ok(scaled_result()),
+                other => Err(format!("unexpected tool call {other}")),
+            }
+        },
+        workflow,
+        &cancel,
+    )
+    .await;
+
+    assert_eq!(
+        statuses(&record),
+        vec![
+            StepStatus::Applied,
+            StepStatus::Applied,
+            StepStatus::NotStarted
+        ]
+    );
+    match &record.outcome {
+        RunOutcome::Cancelled { residual } => {
+            assert_eq!(
+                residual.iter().map(StepId::as_str).collect::<Vec<_>>(),
+                vec!["state", "scale"],
+                "the residual enumerates the steps still applied"
+            );
+        }
+        other => panic!("expected a Cancelled outcome, got {other:?}"),
+    }
+
+    let log = server.calls().await;
+    assert_eq!(
+        log,
+        vec![
+            (
+                "ops_get_cluster_state".to_owned(),
+                json!({"app": "payments"})
+            ),
+            (
+                "ops_scale_app".to_owned(),
+                json!({"app": "payments", "replicas": 6})
+            ),
+        ],
+        "apply halts after the in-flight step: no verify dispatch, no rollback"
+    );
 }

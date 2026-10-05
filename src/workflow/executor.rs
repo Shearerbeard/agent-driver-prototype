@@ -6,15 +6,18 @@
 //! stops the unwind and reports both failures. Cancellation mid-apply
 //! halts dispatch and records residual applied steps without unwinding.
 
-#![expect(unused_variables)]
-#![allow(clippy::unused_async)]
+use std::collections::BTreeMap;
 
 use serde_json::Value;
 use tokio_util::sync::CancellationToken;
 
-use crate::mcp_client::{SidecarClient, SidecarError};
-use crate::workflow::plan::{StepId, ValidatedWorkflowSpec};
-use crate::workflow::resolve::ResolveError;
+use crate::mcp_client::{SidecarClient, SidecarError, SidecarToolArgs};
+use crate::workflow::plan::{
+    ExportName, RollbackSpec, StepId, ValidatedWorkflowSpec, WorkflowStep,
+};
+use crate::workflow::resolve::{
+    ExportEnvironment, ResolveError, capture_exports, parse_tool_result, resolve_arguments,
+};
 
 /// The status of one step in the run record vocabulary.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -112,11 +115,206 @@ pub enum ExecuteError {
 /// Execute a validated workflow against the sidecar.
 ///
 /// Steps apply one at a time in declaration order. Cancellation is
-/// checked before each dispatch.
+/// checked before each dispatch: a cancelled run halts without unwinding
+/// and reports the steps already applied as its residual state. A failed
+/// step unwinds the completed steps in reverse completion order; a
+/// rollback that itself fails stops the unwind, and both failures plus
+/// the steps still applied come back in the run record. Every terminal
+/// state — success, failure, cancellation — is an `Ok` run record, the
+/// tool observation the coordinator replans from.
 pub async fn execute_workflow(
     spec: &ValidatedWorkflowSpec,
     client: &SidecarClient,
     cancel: &CancellationToken,
 ) -> Result<RunRecord, ExecuteError> {
-    todo!()
+    let spec = spec.spec();
+    let steps = &spec.steps[..];
+    // Every step starts NotStarted; only a dispatched step's record ever
+    // changes, so the unstarted records hold this status by construction.
+    let mut records: Vec<StepRecord> = steps
+        .iter()
+        .map(|step| StepRecord {
+            id: step.id.clone(),
+            status: StepStatus::NotStarted,
+            result: None,
+            rollback: None,
+        })
+        .collect();
+    let mut env = ExportEnvironment::new();
+    // Applied step positions in completion order. Apply is sequential, so
+    // this coincides with declaration order restricted to the applied
+    // steps, but the unwind's rule is pinned as reverse *completion*
+    // order, so the run records the completion sequence explicitly
+    // rather than leaning on the coincidence.
+    let mut completed: Vec<usize> = Vec::new();
+
+    for (position, step) in steps.iter().enumerate() {
+        // Between dispatches: a cancellation here halts the run without
+        // unwinding. The steps never dispatched hold NotStarted; the
+        // applied ones are the residual state the coordinator replans
+        // against.
+        if cancel.is_cancelled() {
+            return Ok(RunRecord {
+                goal: spec.goal.clone(),
+                steps: records,
+                outcome: RunOutcome::Cancelled {
+                    residual: completed
+                        .iter()
+                        .map(|&applied| steps[applied].id.clone())
+                        .collect(),
+                },
+            });
+        }
+        match apply_step(step, &env, client).await {
+            Ok((result, exports)) => {
+                // Completed steps' exports stay in the environment for the
+                // rest of the run — later steps and every rollback resolve
+                // against them; the unwind does not prune.
+                env.insert(step.id.clone(), exports);
+                completed.push(position);
+                records[position] = StepRecord {
+                    id: step.id.clone(),
+                    status: StepStatus::Applied,
+                    result: Some(result),
+                    rollback: None,
+                };
+            }
+            Err(error) => {
+                records[position].status = StepStatus::Failed;
+                let (rollback_failure, residual) =
+                    unwind_completed_steps(steps, &mut records, &completed, &env, client).await;
+                return Ok(RunRecord {
+                    goal: spec.goal.clone(),
+                    steps: records,
+                    outcome: RunOutcome::Failed {
+                        step: step.id.clone(),
+                        error,
+                        rollback_failure,
+                        residual,
+                    },
+                });
+            }
+        }
+    }
+
+    Ok(RunRecord {
+        goal: spec.goal.clone(),
+        steps: records,
+        outcome: RunOutcome::Complete,
+    })
+}
+
+/// Apply one step: resolve its arguments against the exports of the
+/// completed steps, call its tool, parse the result text as JSON, and
+/// capture its declared exports.
+///
+/// Every failure on this path — a missing `$from` target, a bounds
+/// violation, a non-JSON result, an export path that lifts nothing, or
+/// the tool-call round trip itself — is the step's failure.
+async fn apply_step(
+    step: &WorkflowStep,
+    env: &ExportEnvironment,
+    client: &SidecarClient,
+) -> Result<(Value, BTreeMap<ExportName, Value>), ExecuteError> {
+    let args = resolve_arguments(&step.args, env, &step.id)?;
+    let args = SidecarToolArgs::from_value(args)?;
+    let content = client.call_tool(&step.tool, &args).await?;
+    let result = parse_tool_result(&content)?;
+    let exports = capture_exports(&step.id, &step.exports, &result)?;
+    Ok((result, exports))
+}
+
+/// Run one completed step's declared rollback.
+///
+/// The compensating arguments resolve against the same export environment
+/// as the apply path — it still holds every completed step's exports, the
+/// owning step's own included. The rollback's result text is not parsed:
+/// nothing consumes it, and a compensating call succeeded when its round
+/// trip reports success.
+async fn run_rollback(
+    owner: &StepId,
+    rollback: &RollbackSpec,
+    env: &ExportEnvironment,
+    client: &SidecarClient,
+) -> Result<(), ExecuteError> {
+    let args = resolve_arguments(&rollback.args, env, owner)?;
+    let args = SidecarToolArgs::from_value(args)?;
+    client.call_tool(&rollback.tool, &args).await?;
+    Ok(())
+}
+
+/// Unwind the completed steps in reverse completion order after a step
+/// failure, marking each step's record as the unwind passes it.
+///
+/// A completed step without a declared rollback is read-only: there is
+/// nothing to undo, so nothing of it remains in effect and the unwind
+/// records it [`StepStatus::Unwound`] with `rollback: None` — no attempt
+/// was made.
+///
+/// A rollback that itself fails stops the unwind: that step records
+/// [`StepStatus::RollbackFailed`] with the attempt's outcome, every
+/// completed step the stopped unwind never reached records
+/// [`StepStatus::NotUnwound`], and the failure comes back as the run's
+/// `rollback_failure` beside the step failure that started the unwind.
+/// All rollback failures — a failed compensating tool call as much as a
+/// resolution failure in the rollback's own arguments — surface as the
+/// one loud [`ExecuteError::RollbackFailed`] shape.
+///
+/// Returns the first failed rollback, if any, and the residual set: the
+/// completed steps still applied after the unwind stopped —
+/// [`StepStatus::NotUnwound`] and [`StepStatus::RollbackFailed`] both, in
+/// completion order.
+async fn unwind_completed_steps(
+    steps: &[WorkflowStep],
+    records: &mut [StepRecord],
+    completed: &[usize],
+    env: &ExportEnvironment,
+    client: &SidecarClient,
+) -> (Option<(StepId, ExecuteError)>, Vec<StepId>) {
+    let mut rollback_failure = None;
+    for &position in completed.iter().rev() {
+        let step = &steps[position];
+        let Some(rollback) = &step.rollback else {
+            records[position].status = StepStatus::Unwound;
+            continue;
+        };
+        match run_rollback(&step.id, rollback, env, client).await {
+            Ok(()) => {
+                records[position].status = StepStatus::Unwound;
+                records[position].rollback = Some(RollbackOutcome::Success);
+            }
+            Err(error) => {
+                let message = error.to_string();
+                records[position].status = StepStatus::RollbackFailed;
+                records[position].rollback = Some(RollbackOutcome::Failed {
+                    error: message.clone(),
+                });
+                rollback_failure = Some((
+                    step.id.clone(),
+                    ExecuteError::RollbackFailed {
+                        step: step.id.clone(),
+                        message,
+                    },
+                ));
+                break;
+            }
+        }
+    }
+    // Whatever the unwind never reached still holds the Applied status it
+    // carried before the unwind started: those steps record NotUnwound and
+    // form the residual set — the applied steps whose rollbacks never ran
+    // (the plan's wording). A RollbackFailed step is still applied too, but
+    // its rollback DID run and failed; it is reported as the run's
+    // rollback_failure and in its own step record, so it does not double
+    // into the residual set the coordinator replans against.
+    let mut residual = Vec::new();
+    for &position in completed {
+        if records[position].status == StepStatus::Applied {
+            records[position].status = StepStatus::NotUnwound;
+        }
+        if records[position].status == StepStatus::NotUnwound {
+            residual.push(steps[position].id.clone());
+        }
+    }
+    (rollback_failure, residual)
 }
