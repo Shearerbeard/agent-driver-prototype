@@ -100,6 +100,19 @@ truth). Nothing else; stop and report instead.
   (pinned: a repeat does not move the cutoff). 124 tests green, clippy
   zero, fmt clean. Range extends 6d8afd6..1152056; packet regenerates
   for round 2. Board owner.
+- 2026-10-05 Gate A round 2 (same seat, session
+  ses_ef28eed6cffeIZ9NsoI6LT3E): all three round-1 dispositions
+  CONFIRMED-REPAIRED; two new MINOR: the failed-scale regression test
+  could not pin the ordering (its ghost app never matched the
+  remediation predicate, so it passed under the old ordering too), and
+  review-ledger narration had leaked into source comments. Fixed in
+  1d6be81: the test now builds a scenario whose remediation target is
+  deliberately unknown to the world - the predicate matches (action,
+  app, any replicas) while the mutation fails at the unknown-app gate,
+  and the registry state is asserted unset directly, so record-before-
+  mutation ordering would fail it; narration moved out of source. 124
+  tests green, clippy zero. Range extends 6d8afd6..1d6be81; round 3
+  verifies the minors only. Board owner.
 
 ## Branch
 

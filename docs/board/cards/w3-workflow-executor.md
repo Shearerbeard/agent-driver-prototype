@@ -8,7 +8,7 @@ lineage: isolated-branch
 executor: smart
 gates: "S -> A -> U(code-review)"
 user-gates: [code-review]
-commit-range: d3f4a89^..c9c8a5c
+commit-range: d3f4a89^..5a3afe5
 ---
 
 # W3: Deterministic workflow executor - resolve, apply, unwind, residual reporting
@@ -123,6 +123,15 @@ Plus `cargo fmt --check`, `cargo clippy --all-targets --locked`,
   fmt clean. commit-range extends to d3f4a89^..c9c8a5c; the packet
   regenerates for the round-2 re-review per the fix-commit duty.
   Board owner.
+- 2026-10-05 Gate A round 2 (same seat, session
+  ses_ef28eed7dffeAek18bi1bSl5u9): all four round-1 dispositions
+  CONFIRMED-REPAIRED with evidence; one new MINOR (fix-introduced
+  comment/doc inaccuracies: an orphaned exactness sentence, a
+  test comment contradicting its own assertion, the Cancelled doc
+  saying "before every step applied"). Fixed in 5a3afe5: comments now
+  match behavior; review-ledger narration moved out of source; 468
+  tests green, clippy zero. Range extends to d3f4a89^..5a3afe5; round
+  3 verifies the minors only. Board owner.
 
 ## Branch
 
