@@ -151,12 +151,8 @@ impl Tool for ProposeWorkflowTool {
         // Approval-gated mode: the human must approve this exact instance
         // before the W3 executor applies it.
         let rendered = render_digest(&validated);
-        let payload = ApprovalPayload::new(
-            validated.spec().clone(),
-            rendered,
-            self.session_id.clone(),
-            client.decision_id_policy(),
-        );
+        let payload =
+            ApprovalPayload::new(validated.spec().clone(), rendered, self.session_id.clone());
 
         // The notify POST rides under the request's cancellation: a
         // cancellation observed during the POST is a Cancelled observation

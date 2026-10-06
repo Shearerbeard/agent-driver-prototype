@@ -10,6 +10,12 @@
 //!
 //! Wire semantics pinned at this seam:
 //!
+//! - The decision id is minted fresh per proposal as a UUID v7 string
+//!   (Mike's ruling at the U(wire-contract) gate, 2026-10-06: a decision
+//!   needs a unique id in the standard-aura shape, and the digest is not
+//!   reused for it). The digest remains the binding of the approval to
+//!   the exact proposed bytes; the two identifiers carry distinct roles -
+//!   routing and binding.
 //! - Re-POST idempotency follows the governance mirror's contract: a
 //!   re-POST of the same decision id updates a still-pending row and never
 //!   reopens a decided one - the first decision on an id is final, so a
@@ -17,15 +23,15 @@
 //! - The status URL is a base ending in `/`; the poll leg joins
 //!   `<status_url><decision_id>/status` onto it.
 //! - A client clone may notify again (it is a handle); each notify mints a
-//!   fresh [`ApprovalHold`], and a hold is awaited at most once because
-//!   [`ApprovalHold::outcome`] consumes it.
+//!   fresh [`ApprovalHold`] with a fresh decision id, and a hold is
+//!   awaited at most once because [`ApprovalHold::outcome`] consumes it.
 
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime};
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tokio_util::sync::CancellationToken;
+use uuid::Uuid;
 
 use crate::mcp_client::SidecarClient;
 use crate::workflow::executor::{ExecuteError, RunRecord};
@@ -45,13 +51,19 @@ pub const POLL_INTERVAL_SECONDS: u64 = 2;
 /// an unbounded wait.
 pub const REQUEST_TIMEOUT_SECS: u64 = 10;
 
-/// Counter making generated decision ids unique within a process even when
-/// the wall clock has not ticked.
-static GENERATED_SEQ: AtomicU64 = AtomicU64::new(0);
-
 /// Lowercase hex alphabet for [`compute_digest`]'s encoding of the sha256
 /// output.
 const HEX_DIGITS: [u8; 16] = *b"0123456789abcdef";
+
+/// Mint the identifier for one approval decision: a UUID v7 string.
+///
+/// Mike's U(wire-contract) ruling (2026-10-06): the decision id is a
+/// unique id per decision in the standard-aura shape; the digest is not
+/// reused. v7 matches aura's `DecisionId` (time-ordered, registry-key
+/// friendly).
+fn new_decision_id() -> String {
+    Uuid::now_v7().to_string()
+}
 
 /// The terminal result of awaiting an approval hold.
 ///
@@ -134,12 +146,12 @@ pub struct ApprovalPayload {
     ///
     /// The digest binds the approval to the exact proposed instance.
     digest: String,
-    /// The identifier the receiver keys its approval row by, realized from
-    /// the [`DecisionId`] policy at construction.
+    /// The identifier the receiver keys its approval row by: a fresh UUID
+    /// v7 minted at construction.
     ///
-    /// Reading A (digest-as-id) leaves this equal to `digest`; Reading B
-    /// mints a distinct per-proposal id.  The U(wire-contract) gate
-    /// adjudicates which reading ships.
+    /// Distinct from `digest` by ruling: the digest binds the approval to
+    /// the exact proposed bytes, while the decision id routes the row and
+    /// the human's decision to it.
     decision_id: String,
     /// The human digest rendered at propose time.
     ///
@@ -150,21 +162,16 @@ pub struct ApprovalPayload {
 }
 
 impl ApprovalPayload {
-    /// Build the payload from the validated spec, rendered digest, session
-    /// id, and the decision-identifier policy.
+    /// Build the payload from the validated spec, rendered digest, and
+    /// session id, minting a fresh decision id.
     ///
     /// The digest is the binding: the approver authorizes the exact bytes
-    /// that produced it.  The decision id is realized here, once per
-    /// proposal, so a generated policy cannot collapse two proposals onto
-    /// one row.
-    pub fn new(
-        workflow: WorkflowSpec,
-        rendered: String,
-        session_id: String,
-        policy: &DecisionId,
-    ) -> Self {
+    /// that produced it.  The decision id is a fresh UUID v7 minted here,
+    /// once per proposal, keeping routing (decision id) distinct from
+    /// binding (digest) per the U(wire-contract) ruling.
+    pub fn new(workflow: WorkflowSpec, rendered: String, session_id: String) -> Self {
         let digest = compute_digest(&workflow);
-        let decision_id = policy.assign(&digest);
+        let decision_id = new_decision_id();
         Self {
             workflow,
             digest,
@@ -222,49 +229,6 @@ fn compute_digest(workflow: &WorkflowSpec) -> String {
         hex.push(HEX_DIGITS[(byte & 0x0f) as usize] as char);
     }
     hex
-}
-
-/// The decision-identifier seam.
-///
-/// The governance mirror keys approval rows by a `decision_id` read from the
-/// POST body, while the minted payload carries the instance digest.  This
-/// enum is the single policy from which the payload's decision id is
-/// realized, once per proposal:
-///
-/// - Reading A (digest-as-id): the sha256 digest doubles as the decision id,
-///   so re-posting the same proposal addresses the same row.
-/// - Reading B (distinct field): a fresh id is minted per proposal, keeping
-///   binding (digest) and routing (decision id) separate.
-///
-/// The user gate `U(wire-contract)` adjudicates which reading wins; the
-/// production choice is made at exactly one call site (`workflow_tool_for`).
-#[derive(Clone, Debug, Default)]
-pub enum DecisionId {
-    /// The digest is the decision id.
-    #[default]
-    Digest,
-    /// A distinct id is minted per proposal.
-    Generated,
-}
-
-impl DecisionId {
-    /// Realize the wire identifier for one proposal.
-    ///
-    /// Called once per [`ApprovalPayload::new`], never per client, so a
-    /// generated policy distinguishes every proposal.
-    pub fn assign(&self, digest: &str) -> String {
-        match self {
-            Self::Digest => digest.to_owned(),
-            Self::Generated => {
-                let nanos = SystemTime::now()
-                    .duration_since(UNIX_EPOCH)
-                    .map(|d| d.as_nanos())
-                    .unwrap_or_default();
-                let seq = GENERATED_SEQ.fetch_add(1, Ordering::Relaxed);
-                format!("wf-{nanos:x}-{seq:x}")
-            }
-        }
-    }
 }
 
 /// A consumable typestate representing a pending approval hold.
@@ -367,10 +331,6 @@ impl ApprovalHold {
 }
 
 /// The runtime client for the approval receiver.
-///
-/// Owns the decision-identifier policy so it is chosen at exactly one
-/// construction site ([`ApprovalClient::for_section`] via
-/// `workflow_tool_for`); the payload realizes it per proposal.
 #[derive(Clone, Debug)]
 #[allow(dead_code)]
 pub struct ApprovalClient {
@@ -378,7 +338,6 @@ pub struct ApprovalClient {
     notify_url: reqwest::Url,
     status_url: reqwest::Url,
     hold_secs: u64,
-    decision_id: DecisionId,
 }
 
 /// Why the approval wire failed.
@@ -413,19 +372,12 @@ async fn diagnostic_body(response: reqwest::Response) -> String {
 }
 
 impl ApprovalClient {
-    /// Build a client from explicit notify/status URLs, a hold budget, and
-    /// the decision-identifier policy.
+    /// Build a client from explicit notify/status URLs and a hold budget.
     ///
     /// `status_url` must end in `/`; the poll leg joins
-    /// `<status_url><decision_id>/status`.  Tests and the Layer-2 fill use
-    /// this constructor; production call sites use [`Self::for_section`],
-    /// which is the decision-identifier seam's single decision point.
-    pub fn new(
-        notify_url: reqwest::Url,
-        status_url: reqwest::Url,
-        hold_secs: u64,
-        decision_id: DecisionId,
-    ) -> Self {
+    /// `<status_url><decision_id>/status`.  Tests use this constructor;
+    /// production call sites use [`Self::for_section`].
+    pub fn new(notify_url: reqwest::Url, status_url: reqwest::Url, hold_secs: u64) -> Self {
         Self {
             http: reqwest::Client::builder()
                 .timeout(Duration::from_secs(REQUEST_TIMEOUT_SECS))
@@ -434,13 +386,7 @@ impl ApprovalClient {
             notify_url,
             status_url,
             hold_secs,
-            decision_id,
         }
-    }
-
-    /// The decision-identifier policy this client realizes per proposal.
-    pub fn decision_id_policy(&self) -> &DecisionId {
-        &self.decision_id
     }
 
     /// Create a client from the configured approval URL and hold budget.
@@ -449,15 +395,7 @@ impl ApprovalClient {
     /// `/governance/workflow/authorize`); the status base derives from it
     /// by appending a trailing `/`, so the poll leg reads
     /// `<notify_url>/<decision_id>/status`.
-    ///
-    /// This is the decision-identifier seam: the notify and status URLs are
-    /// derived from the base URL together with the chosen identifier
-    /// policy.
-    pub fn for_section(
-        approval_url: &str,
-        hold_secs: u64,
-        decision_id: DecisionId,
-    ) -> Result<Self, ApprovalError> {
+    pub fn for_section(approval_url: &str, hold_secs: u64) -> Result<Self, ApprovalError> {
         let notify_url = reqwest::Url::parse(approval_url)
             .map_err(|error| ApprovalError::InvalidUrl(error.to_string()))?;
         let path = notify_url.path();
@@ -468,15 +406,14 @@ impl ApprovalClient {
         };
         let mut status_url = notify_url.clone();
         status_url.set_path(&status_path);
-        Ok(Self::new(notify_url, status_url, hold_secs, decision_id))
+        Ok(Self::new(notify_url, status_url, hold_secs))
     }
 
     /// Post the notify payload and return a hold that can be awaited.
     ///
-    /// The decision identifier applied to the wire comes from the policy
-    /// this client was constructed with, realized into the payload at its
-    /// construction.  A re-POST of an already-decided id returns the
-    /// existing decision; it never reopens the row.
+    /// The decision identifier riding the wire was minted into the payload
+    /// at its construction.  A re-POST of an already-decided id returns
+    /// the existing decision; it never reopens the row.
     pub async fn notify(&self, payload: ApprovalPayload) -> Result<ApprovalHold, ApprovalError> {
         let body = serde_json::to_vec(&payload)
             .map_err(|error| ApprovalError::Transport(error.to_string()))?;

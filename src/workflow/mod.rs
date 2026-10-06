@@ -9,9 +9,9 @@
 //!
 //! W4 note: the approval wire is gated on the `[workflow]` config section.
 //! When `approval_url` is present the tool blocks on a human decision;
-//! when it is absent the tool stays propose-only.  The `decision_id` vs
-//! digest seam lives in `approval::DecisionId` and is adjudicated at the
-//! `U(wire-contract)` gate, not by the executor.
+//! when it is absent the tool stays propose-only.  The decision id is a
+//! fresh UUID v7 per proposal (Mike's U(wire-contract) ruling), distinct
+//! from the digest that binds the approval to the proposed bytes.
 
 mod approval;
 mod error;
@@ -24,7 +24,7 @@ mod tool;
 
 pub use approval::{
     ApprovalClient, ApprovalError, ApprovalHold, ApprovalOutcome, ApprovalPayload, Approved,
-    DecisionId, POLL_INTERVAL_SECONDS, REQUEST_TIMEOUT_SECS, apply_authorized,
+    POLL_INTERVAL_SECONDS, REQUEST_TIMEOUT_SECS, apply_authorized,
 };
 pub use error::WorkflowError;
 pub use executor::{
@@ -64,7 +64,7 @@ pub fn workflow_tool_for(
         let hold_secs = section
             .hold_secs
             .expect("[workflow].hold_secs is required and validated when the section is enabled");
-        let client = ApprovalClient::for_section(url, hold_secs, DecisionId::Digest)
+        let client = ApprovalClient::for_section(url, hold_secs)
             .expect("validated approval_url must parse into an approval client");
         tool = tool.with_approval(client);
     }

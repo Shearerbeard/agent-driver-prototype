@@ -13,8 +13,8 @@
 
 use agent_driver_prototype::mcp_client::{SidecarTool, SidecarToolName};
 use agent_driver_prototype::workflow::{
-    ApprovalClient, ApprovalOutcome, ApprovalPayload, DecisionId, ExecuteError,
-    ProposeWorkflowTool, ResolveError, RollbackOutcome, RunOutcome, RunRecord, StepId, StepStatus,
+    ApprovalClient, ApprovalOutcome, ApprovalPayload, ExecuteError, ProposeWorkflowTool,
+    ResolveError, RollbackOutcome, RunOutcome, RunRecord, StepId, StepStatus,
     ValidatedWorkflowSpec, WorkflowSpec, execute_workflow,
 };
 use agent_driver_rs::tool::{Tool, ToolContext, ToolInput};
@@ -1087,6 +1087,26 @@ mod approval_rig {
             map.get(decision_id).map(|row| row.body.digest.clone())
         }
 
+        /// The id of the receiver's single pending row.
+        ///
+        /// The decision id is minted inside the proposer under the uuid
+        /// ruling, so an approving test discovers the row here rather than
+        /// pre-computing it. None while no row has landed; panics if two
+        /// rows are somehow pending (no test notifies twice).
+        pub async fn sole_pending_decision_id(&self) -> Option<String> {
+            let map = self.state.decisions.lock().await;
+            let pending: Vec<&String> = map
+                .iter()
+                .filter(|(_, row)| matches!(row.status, DecisionStatus::Pending))
+                .map(|(id, _)| id)
+                .collect();
+            match pending.as_slice() {
+                [] => None,
+                [only] => Some((*only).clone()),
+                many => panic!("expected one pending row, saw {many:?}"),
+            }
+        }
+
         /// The poll base: ends in `/` so the client joins
         /// `<status_url><decision_id>/status` onto it without dropping the
         /// last segment. Deliberately a different convention from
@@ -1222,7 +1242,6 @@ fn approval_payload(workflow: JsonValue) -> ApprovalPayload {
         workflow,
         "rendered digest".to_owned(),
         "test-session".to_owned(),
-        &DecisionId::Digest,
     )
 }
 
@@ -1244,12 +1263,7 @@ const PAYLOAD_BINDING_DIGEST: &str =
 #[tokio::test]
 async fn approve_leg_decides_approved() {
     let server = approval_rig::boot().await;
-    let client = ApprovalClient::new(
-        server.notify_url(),
-        server.status_url(),
-        60,
-        DecisionId::Digest,
-    );
+    let client = ApprovalClient::new(server.notify_url(), server.status_url(), 60);
     let payload = approval_payload(json!({ "goal": "g", "steps": [] }));
     let decision_id = payload.decision_id().to_owned();
 
@@ -1275,12 +1289,7 @@ async fn approve_leg_decides_approved() {
 #[tokio::test]
 async fn deny_leg_decides_denied_with_reason() {
     let server = approval_rig::boot().await;
-    let client = ApprovalClient::new(
-        server.notify_url(),
-        server.status_url(),
-        60,
-        DecisionId::Digest,
-    );
+    let client = ApprovalClient::new(server.notify_url(), server.status_url(), 60);
     let payload = approval_payload(json!({ "goal": "g", "steps": [] }));
     let decision_id = payload.decision_id().to_owned();
 
@@ -1309,12 +1318,7 @@ async fn deny_leg_decides_denied_with_reason() {
 #[tokio::test]
 async fn deny_leg_without_reason_decides_denied() {
     let server = approval_rig::boot().await;
-    let client = ApprovalClient::new(
-        server.notify_url(),
-        server.status_url(),
-        60,
-        DecisionId::Digest,
-    );
+    let client = ApprovalClient::new(server.notify_url(), server.status_url(), 60);
     let payload = approval_payload(json!({ "goal": "g", "steps": [] }));
     let decision_id = payload.decision_id().to_owned();
 
@@ -1341,12 +1345,7 @@ async fn deny_leg_without_reason_decides_denied() {
 #[tokio::test]
 async fn hold_timeout_leg_decides_timed_out() {
     let server = approval_rig::boot_with_pending_status(axum::http::StatusCode::MULTI_STATUS).await;
-    let client = ApprovalClient::new(
-        server.notify_url(),
-        server.status_url(),
-        1,
-        DecisionId::Digest,
-    );
+    let client = ApprovalClient::new(server.notify_url(), server.status_url(), 1);
     let payload = approval_payload(json!({ "goal": "g", "steps": [] }));
 
     let hold = client.notify(payload).await.expect("notify returns a hold");
@@ -1369,12 +1368,7 @@ async fn hold_timeout_leg_decides_timed_out() {
 #[tokio::test]
 async fn cancel_hold_leg_decides_cancelled() {
     let server = approval_rig::boot().await;
-    let client = ApprovalClient::new(
-        server.notify_url(),
-        server.status_url(),
-        60,
-        DecisionId::Digest,
-    );
+    let client = ApprovalClient::new(server.notify_url(), server.status_url(), 60);
     let payload = approval_payload(json!({ "goal": "g", "steps": [] }));
     let cancel = CancellationToken::new();
 
@@ -1399,19 +1393,19 @@ async fn cancel_hold_leg_decides_cancelled() {
 #[tokio::test]
 async fn payload_binding_verifies() {
     let server = approval_rig::boot().await;
-    let client = ApprovalClient::new(
-        server.notify_url(),
-        server.status_url(),
-        60,
-        DecisionId::Digest,
-    );
+    let client = ApprovalClient::new(server.notify_url(), server.status_url(), 60);
     let payload = approval_payload(json!({ "goal": "g", "steps": [] }));
     let decision_id = payload.decision_id().to_owned();
     let expected = PAYLOAD_BINDING_DIGEST;
 
     assert_eq!(payload.digest(), expected);
     assert!(payload.verify_binding());
-    assert_eq!(payload.decision_id(), expected);
+    assert_ne!(
+        payload.decision_id(),
+        expected,
+        "the decision id is a fresh uuid, distinct from the binding digest"
+    );
+    uuid::Uuid::parse_str(payload.decision_id()).expect("decision id parses as a uuid");
 
     let hold = client.notify(payload).await.expect("notify returns a hold");
     let captured = server
@@ -1439,7 +1433,6 @@ async fn end_to_end_approval_gates_apply() {
         approval_server.notify_url(),
         approval_server.status_url(),
         60,
-        DecisionId::Digest,
     );
     let tool = ProposeWorkflowTool::new(sidecar).with_approval(approval_client);
 
@@ -1459,21 +1452,20 @@ async fn end_to_end_approval_gates_apply() {
     });
     let input = ToolInput::from_value(json!({ "workflow": workflow })).unwrap();
 
-    // The payload's decision id is deterministic under the Digest policy,
-    // so the approver can pre-compute the row it will approve.
-    let parsed: agent_driver_prototype::workflow::WorkflowSpec =
-        serde_json::from_value(workflow).expect("workflow parses");
-    let probe = ApprovalPayload::new(parsed, String::new(), "e2e".to_owned(), &DecisionId::Digest);
-    let decision_id = probe.decision_id().to_owned();
-
     // execute blocks inside the approval hold; the decision lands only
     // after a poll was actually served, so the hold is provably pending.
+    // The decision id is a fresh uuid minted inside the tool, so the
+    // approver discovers the row from the receiver's pending stack.
     let executing = tokio::spawn(async move {
         tool.execute(&input, &ToolContext::new(CancellationToken::new()))
             .await
             .expect("propose_workflow returns every outcome as an observation")
     });
     approval_server.await_pending_polls(1).await;
+    let decision_id = approval_server
+        .sole_pending_decision_id()
+        .await
+        .expect("the notify row landed");
     approval_server.approve(&decision_id).await;
     let result = tokio::time::timeout(std::time::Duration::from_secs(10), executing)
         .await
