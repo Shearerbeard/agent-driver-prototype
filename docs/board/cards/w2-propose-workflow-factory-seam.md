@@ -330,3 +330,11 @@ on `integration/workflow` after its second Gate U. Worktree:
   (proposal-quality) - the stage-1 loop, unblocked, first pass
   read-only until W5 lands. Card stays in-review until that gate.
   Board owner.
+- 2026-10-06 Cross-reference: Mike ruled W4 (sync approval wire)
+  pullable ahead of this card's remaining U(proposal-quality) gate -
+  the W3 precedent - because that gate judges proposal quality, which
+  does not gate W4's offline wire legs. The stage-2
+  approval-to-accuracy loop rides W6 and later. This card's gate and
+  status are unchanged by the ruling; recorded here so the dependency
+  question a fresh session asks is answered on the board. Board
+  owner.

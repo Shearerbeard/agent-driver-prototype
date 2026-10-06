@@ -83,4 +83,18 @@ Gate T.
 - 2026-10-05 Mint-drift hygiene (same pass as W2's Gate U tick):
   `lineage` corrected `none` -> `isolated-branch`, Branch section
   re-based `off main` -> `off integration/workflow` per the standing
-  evaluation ruling. Still backlog. Board owner.
+  evaluation ruling; the card remains backlog. Board owner.
+- 2026-10-06 Cross-board note: the demo-harness augmentation Mike
+  asked for with W4's pull rulings - the governance mirror
+  (aura-sandbox `hitl-governance/gov-mirror.py`) extended with a
+  simple human UI for approving workflows - lands in aura-sandbox,
+  which carries its own board, so that work is minted there by a
+  session owning that board (charter admission test: where does the
+  diff land; ai-experiments has no board, aura-sandbox does - the W5
+  precedent does not transfer). This card consumes the harness as its
+  human approval surface for live run one but does not depend on it
+  for scheduling; a `refs` entry can be added once the aura-sandbox
+  card id exists. The mirror already speaks this board's wire (POST
+  authorize keyed by decision_id, 207-pending/200-decided poll,
+  900-second sync hold; an admin UI exists at `/__admin/ui`). Board
+  owner.

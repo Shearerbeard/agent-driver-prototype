@@ -74,7 +74,7 @@ example rows show the shape.
 
 | Board owner (harness) | Executor pool | Gate A reviewer | Gate F route | Defers |
 | --- | --- | --- | --- | --- |
-| OpenCode | in-harness pinned subagents: `rust-write` (Kimi-family per the live pin; Mike ratified Kimi+GLM writers 2026-09-29), `rust-fill` (GLM-5.3-flash, fill units), `general` (research/multi-step); `python-reviewer`/`python-write` for `.py` legs | in-harness `rust-reviewer` (gpt-5.6-sol-fast) loading `rust-review`; reviewer-differs-from-author holds against the GLM executor pool | `kimi-frontier` route: kimi CLI on K3 (see Tools below); `codex-reviewer` as fallback (billable — ask first) | nothing |
+| OpenCode | in-harness pinned subagents: `rust-write` (Kimi-family per the live pin; Mike ratified Kimi+GLM writers 2026-09-29), `rust-fill` (GLM-5.3-flash, fill units), `general` (research/multi-step); `python-reviewer`/`python-write` for `.py` legs | in-harness `rust-reviewer` (gpt-5.6-sol-fast) loading `rust-review`; reviewer-differs-from-author holds against the GLM executor pool | `kimi-frontier` route: kimi CLI on K3 (see Tools below); `codex-reviewer` as fallback (billable - ask first) | nothing |
 <!-- | codex | codex subagents | per pre-vet; reviewer-differs-from-author invariant applies unchanged | a Claude Code frontier subagent | handoff or log writing, if this repo has one | -->
 <!-- codex is a known-working board-owner harness, deferred here only because
      this repo has not wired it yet. Uncomment and fill in once it is. -->
@@ -98,7 +98,7 @@ entirely; it ships empty on purpose.
    already K3 (`~/.kimi-code/config.toml`). Caller-owned deadline via
    `perl -e 'alarm N; exec @ARGV' --` (15 minutes cleared the workflow-mvp
    plan vet). A session resumes with `kimi -r SESSION_ID`.
-3. **codex CLI (fallback frontier / code review)**: billable — no dispatch
+3. **codex CLI (fallback frontier / code review)**: billable - no dispatch
    without explicit user approval in the current session. Load the
    `codex-cli` skill for the invocation contract before use.
 
@@ -229,7 +229,7 @@ Codex is metered: no codex dispatch without explicit user approval in the
 current session, per-card if the wave plans more than one. Kimi-K3 and the
 in-harness OpenCode pool run on existing subscriptions; no per-dispatch
 approval needed, but a frontier round that returns empty is a failed
-delegation — re-route, do not re-spend against the same lane.
+delegation - re-route, do not re-spend against the same lane.
 
 ## Wave-close cost record
 
@@ -239,20 +239,23 @@ delegation — re-route, do not re-spend against the same lane.
 - kimi CLI runs: duration from the wrapper's wall time plus the transcript
   in the kimi session store (`kimi session list`); the resumable session id
   is printed at the end of every `-p` run.
-- codex runs: only with approval, and the approval exchange is the record —
+- codex runs: only with approval, and the approval exchange is the record -
   log the model and round count on the card.
 
 ## Machine bootstrap appendix
 
 What a second machine needs to reach a dispatch-ready board, stated as
-kinds. The checkout mechanics live in the README quick start; the lane
+kinds. The kit checkout mechanics live in `AGENTS.md`'s read order
+(step 5: a local boardkit checkout reached through `BOARDKIT_HOME`,
+run via `uv run --project "${BOARDKIT_HOME:-../boardkit}"`; the kit is
+not published to an index, so every machine clones it); the lane
 verification procedure is the pre-vet checklist in MODEL-CLASSES.md.
 This appendix owns the lane inventory between them.
 
 - Per-harness config trees, by kind: the opencode config group
   (dotfiles-managed: `~/.config/opencode/`, including the pinned agent
   definitions the harness-bindings table names), the sibling skills install
-  (`~/.agents/skills/` — rust-review, gate-probes, board-hygiene,
+  (`~/.agents/skills/` - rust-review, gate-probes, board-hygiene,
   delegating-work, plan-discipline), the kimi-code tree (`~/.kimi-code/`),
   and the codex config tree where that lane is approved. None of these
   ship with a clone; each machine brings or rebuilds its own.

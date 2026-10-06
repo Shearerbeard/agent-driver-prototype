@@ -1,7 +1,7 @@
 ---
 id: W3
 title: Deterministic workflow executor - resolve, apply, unwind, residual reporting
-status: in-review
+status: done
 depends: [W2]
 serialize-with: [W4]
 lineage: isolated-branch
@@ -64,7 +64,7 @@ scripted-server rig (`SidecarClient::connect_stream`), all passing:
 4. bounds rejection -> unwind of prior steps;
 5. binding-miss (missing path) -> step failure;
 6. cancellation mid-apply -> halt + residual state recorded.
-(Deny is a W4 wire leg, not an executor scenario - K3 finding.)
+(The deny leg belongs to W4's approval wire, per the K3 finding.)
 
 Plus `cargo fmt --check`, `cargo clippy --all-targets --locked`,
 `cargo test --locked` green.
@@ -148,6 +148,13 @@ Plus `cargo fmt --check`, `cargo clippy --all-targets --locked`,
   ledger and the testing record; the checklist box stays unticked
   until his approval lands (his stated review surface is GH). Board
   owner.
+- [x] Gate U (code-review): approved by Mike's merge of PR #20
+      (2026-10-06, merge commit `5175820`, card/w3 ->
+      integration/workflow) - the GitHub PR being his chosen review
+      surface per the gate-open line above. The unticked box that line
+      referenced was never minted as a checklist entry; this ticked
+      line lands at approval as the shape repair (W2's checklist
+      shape). Board owner.
 
 ## Branch
 
@@ -198,3 +205,14 @@ tool wiring).
   U(code-review) inserted per PROCESS (every code card carries it after
   Gate A) and commit-range recorded. Gate A next, in-harness
   rust-reviewer. Board owner.
+- 2026-10-06 Done: Gate U (code-review) approved via Mike's merge of
+  PR #20 (merge commit `5175820`, card/w3 -> integration/workflow,
+  21:17 UTC) per the pre-recorded handoff ruling that the merge is the
+  approval. Every gate has now passed - S (468 tests, fmt/clippy
+  clean), A (four rounds on the 5.6-sol seat, ledger above),
+  U(code-review) - and the acceptance record stands from Gate S.
+  Checklist tick and this line land in the same turn; the unticked-box
+  shape repair is noted on the tick line. Status done this turn.
+  Branch cleanup (worktree `../agent-driver-prototype-w3`, local and
+  remote `card/w3`) follows in the same session, ancestry-verified.
+  Board owner.

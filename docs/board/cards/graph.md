@@ -23,7 +23,7 @@ flowchart TD
   end
   W1["W1 Workflow type skeleton - spec, bi…"]:::done
   W2["W2 propose_workflow through the fact…"]:::inreview
-  W3["W3 Deterministic workflow executor -…"]:::inreview
+  W3["W3 Deterministic workflow executor -…"]:::done
   W4["W4 Sync approval wire - notify POST,…"]:::backlog
   W5["W5 Mock-mcp ops surface - three reme…"]:::inreview
   W6["W6 End-to-end demo - investigate, pr…"]:::backlog
