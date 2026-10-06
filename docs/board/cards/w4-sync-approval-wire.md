@@ -28,8 +28,9 @@ reconciled onto the card 2026-10-06: `src/workflow/mod.rs` (module
 mount and re-exports - landing any new module requires them, and the
 session-id threading the design panel demanded lives in
 `workflow_tool_for`), `Cargo.toml` (`sha2 = "0.10"`, the dependency
-the sha256 digest deliverable requires - logged at pull),
-`src/sse_shim/server.rs` and `src/bin/server.rs` (the per-request
+the sha256 digest deliverable requires - logged at pull) with its
+`Cargo.lock` lockstep update, `src/sse_shim/server.rs` and
+`src/bin/server.rs` (the per-request
 mount passes the real session id; the startup preamble-derivation
 instance passes a named placeholder), and `src/tool_truth_tests.rs`
 (the two `workflow_tool_for` call sites compile against the threaded
@@ -226,3 +227,11 @@ line on the integration branch), after W3 lands; serialized against W3
   range for the round-2 re-review per the fix-commit duty. 475 tests
   green with clippy and fmt clean over the extended range. Board
   owner.
+- 2026-10-06 Gate A round 2 (same seat, session
+  ses_eec846c77ffe5dL0iTmR8wWBgD): findings 1-6 all
+  CONFIRMED-REPAIRED with file:line evidence; finding 7 NOT-REPAIRED
+  on a narrow re-raise - Cargo.lock changed in the range but the
+  Scope amendment did not name it. Fixed this turn: the Scope now
+  names Cargo.lock with its lockstep reason. No regressions found;
+  no fix-introduced defects. Packet regenerates for round 3 to
+  verify the one-line doc repair. Board owner.
