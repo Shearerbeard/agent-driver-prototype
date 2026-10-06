@@ -6,7 +6,7 @@ depends: [W2]
 serialize-with: [W3]
 lineage: isolated-branch
 executor: smart
-commit-range: d2eb850^..d695880
+commit-range: d2eb850^..2646298
 gates: "S -> A -> U(code-review) -> U(wire-contract)"
 user-gates: [code-review, wire-contract]
 ---
@@ -22,8 +22,18 @@ governance or the aura-sandbox approvals; no park until needed). Context:
 
 ## Scope
 
-`src/workflow/approval.rs` (new), `src/workflow/tool.rs` (approval
-wiring), `tests/workflow.rs`. Nothing else; stop and report instead.
+`src/workflow/{approval,tool}.rs` and `tests/workflow.rs` (the minted
+scope), plus the integration surface the Gate A round-1 review
+reconciled onto the card 2026-10-06: `src/workflow/mod.rs` (module
+mount and re-exports - landing any new module requires them, and the
+session-id threading the design panel demanded lives in
+`workflow_tool_for`), `Cargo.toml` (`sha2 = "0.10"`, the dependency
+the sha256 digest deliverable requires - logged at pull),
+`src/sse_shim/server.rs` and `src/bin/server.rs` (the per-request
+mount passes the real session id; the startup preamble-derivation
+instance passes a named placeholder), and `src/tool_truth_tests.rs`
+(the two `workflow_tool_for` call sites compile against the threaded
+signature). Nothing beyond that; stop and report instead.
 
 ## Deliverable
 
@@ -186,3 +196,33 @@ line on the integration branch), after W3 lands; serialized against W3
   far: Kimi (skeleton) + GLM board owner (repairs, integration) +
   GLM-flash (fills); the Gate A reviewer must differ from every
   author family, which the gpt-5.6-sol seat satisfies. Board owner.
+- 2026-10-06 Gate A round 1 (in-harness rust-reviewer, bedrock
+  gpt-5.6-sol seat, session ses_eec8b804fffeBibk9fSw7YCn0Y, after
+  Mike's SSO refresh re-passed the contract-shaped pre-vet on a fresh
+  nonce): FAIL - 2 BLOCKING plus 4 MAJOR and 1 MINOR, all seven
+  ACCEPTED and
+  repaired in 2646298. (1) BLOCKING: the Approved witness was
+  forgeable (the public Approved variant plus public into_approved
+  minted one freely) - the witness now rides inside the variant with
+  a module-private field, minted only by outcome(); (2) BLOCKING:
+  polls were awaited outside the select, so cancellation and the
+  deadline could not fire during an in-flight request (a 1s hold
+  could stretch to the 10s request timeout) - the loop now gates on
+  the tick and awaits every poll under cancel and deadline; (3) MAJOR:
+  the cancel leg cancelled before outcome() began - it now cancels
+  while a pending poll has provably been served; (4) MAJOR: neither
+  pending status was proven polled and decisions were not proven to
+  land mid-hold - the rig counts pending polls served and every
+  decide-carrying leg waits for one first (202 on the deciding legs,
+  207 asserted-served on the timeout leg); (5) MAJOR: the binding
+  proof was circular - it pins an out-of-band sha256 constant (python
+  hashlib over the compact serialization) and asserts the receiver's
+  captured wire digest equals it; (6) MINOR: unexpected-status bodies
+  swallowed read failures - the diagnostic names them now; (7) MAJOR:
+  six files sat outside the minted three-file scope - reconciled by
+  amending the Scope section above (module mount, sha2 dep, session-id
+  threading call sites), each named with its reason. commit-range
+  extends to d2eb850^..2646298; the packet regenerates over the full
+  range for the round-2 re-review per the fix-commit duty. 475 tests
+  green with clippy and fmt clean over the extended range. Board
+  owner.
