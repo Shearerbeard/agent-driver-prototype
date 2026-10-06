@@ -288,3 +288,17 @@ line on the integration branch), after W3 lands; serialized against W3
   1ac673f (one doc paragraph now naming the uuid mint); commit-range
   extends to d2eb850^..1ac673f; round 5 verifies the doc line. Board
   owner.
+- 2026-10-06 Gate A passed over the ruled range (round 5, session
+  ses_eec6aa116ffeNY8OOkdi4AH4Ok): the doc paragraph
+  CONFIRMED-REPAIRED and matching the code, no stale policy
+  references (the aura DecisionId citation is the intentional v7
+  precedent), 1ac673f exactly the one-paragraph change, zero
+  regressions. Five rounds total across the card's life on the
+  5.6-sol seat (rounds 1-3 over the original range, rounds 4-5 over
+  the ruling commits per the fix-commit duty); authors Kimi + GLM
+  board owner + GLM-flash, reviewer GPT throughout - the invariant
+  holds across every commit in the final range d2eb850^..1ac673f.
+  Cumulative Gate A reviewer spend: five in-harness dispatches on
+  the bedrock gpt-5.6-sol seat. The card's open gates are exactly its
+  two user gates: U(code-review) on Mike's chosen surface, and the
+  remaining U(wire-contract) adjudications. Board owner.
