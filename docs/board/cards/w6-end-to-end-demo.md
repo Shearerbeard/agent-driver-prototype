@@ -98,3 +98,10 @@ Gate T.
   authorize keyed by decision_id, 207-pending/200-decided poll,
   900-second sync hold; an admin UI exists at `/__admin/ui`). Board
   owner.
+- 2026-10-06 Convention inherited from W4's U(wire-contract) ruling:
+  the demo config's `[workflow]` section carries `hold_secs = 300`
+  (Mike's 5-minute approval-hold convention; the mirror's own 900s
+  hold is the receiver-side rig default, not what this repo's config
+  ships). W4's decision_id is a fresh uuid v7 per proposal, so the
+  demo's approval surface discovers decisions by the receiver's
+  pending stack, exactly as W4's e2e leg does. Board owner.

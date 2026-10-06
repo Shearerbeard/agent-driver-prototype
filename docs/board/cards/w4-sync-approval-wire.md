@@ -87,10 +87,21 @@ signature). Nothing beyond that; stop and report instead.
       Log section.)
 - [ ] Gate U (code-review): board owner presents the review packet and
       stops.
-- [ ] Gate U (wire-contract): Mike adjudicates the realized wire
+- [x] Gate U (wire-contract): Mike adjudicates the realized wire
       contract - the notify payload shape, the poll/pending semantics,
       and the decision_id-vs-digest seam his 2026-10-06 ruling left to
-      this gate.
+      this gate. (Passed 2026-10-06 in three rulings: decision_id is a
+      fresh uuid v7 per proposal, the digest is not reused (implemented
+      as ad28915, Gate A rounds 4-5 PASS); the execute_workflow-public
+      residual behind the Approved witness is accepted with narrowing
+      deferred to later work; the wire conventions are ratified - a
+      300-second (5-minute) hold budget as this repo's configured
+      convention, replacing the mirror's 900s precedent as the number
+      to ship in configs, alongside the implemented 2s poll interval,
+      10s per-request timeout, trailing-slash status URL derivation,
+      and receiver-side immutability of decided rows. The hold budget
+      stays config-required with no code default per the card's
+      deliverable; W6's demo config carries hold_secs = 300.)
 
 ## Branch
 
@@ -302,3 +313,19 @@ line on the integration branch), after W3 lands; serialized against W3
   the bedrock gpt-5.6-sol seat. The card's open gates are exactly its
   two user gates: U(code-review) on Mike's chosen surface, and the
   remaining U(wire-contract) adjudications. Board owner.
+- 2026-10-06 U(wire-contract) closed, Mike's final two rulings: (1)
+  the execute_workflow-public residual behind the Approved witness is
+  accepted as documented - narrowing the executor's visibility is
+  deferred to later work (a post-demo cleanup candidate; not carded
+  now, per Mike's "narrow later"); (2) the wire conventions are
+  ratified with one change from the presented defaults: the hold
+  budget convention is 300 seconds (5 minutes) for approvals,
+  replacing the mirror's 900s precedent as the number this repo's
+  configs ship. The 2s poll interval, 10s per-request timeout,
+  trailing-slash status URL derivation, and receiver-side immutability
+  of decided rows are ratified as implemented. The hold budget stays
+  config-required with no code default (the card's no-invented-default
+  deliverable stands); the convention lands in configs - W6's demo
+  config carries hold_secs = 300, cross-noted on W6's log this turn.
+  Checklist box ticked this turn; the card's only remaining gate is
+  U(code-review). Board owner, recording Mike's rulings.
