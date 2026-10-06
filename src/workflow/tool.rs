@@ -18,8 +18,7 @@ use serde::Deserialize;
 
 use crate::mcp_client::SidecarClient;
 
-use super::approval::{ApprovalClient, ApprovalOutcome, ApprovalPayload};
-use super::executor::execute_workflow;
+use super::approval::{ApprovalClient, ApprovalOutcome, ApprovalPayload, apply_authorized};
 use super::plan::WorkflowSpec;
 use super::render::render_digest;
 
@@ -152,31 +151,60 @@ impl Tool for ProposeWorkflowTool {
         // Approval-gated mode: the human must approve this exact instance
         // before the W3 executor applies it.
         let rendered = render_digest(&validated);
-        let payload =
-            ApprovalPayload::new(validated.spec().clone(), rendered, self.session_id.clone());
-        let hold = match client.notify(payload).await {
-            Ok(hold) => hold,
-            Err(error) => return Ok(ToolResult::error(error.to_string())),
+        let payload = ApprovalPayload::new(
+            validated.spec().clone(),
+            rendered,
+            self.session_id.clone(),
+            client.decision_id_policy(),
+        );
+
+        // The notify POST rides under the request's cancellation: a
+        // cancellation observed during the POST is a Cancelled observation
+        // (never an unbounded wait on a stalled transport - the client's
+        // request timeout bounds the wire independently).
+        let hold = tokio::select! {
+            biased;
+            () = ctx.cancellation.cancelled() => {
+                return Ok(ToolResult::error("workflow approval cancelled".to_owned()));
+            }
+            notified = client.notify(payload) => match notified {
+                Ok(hold) => hold,
+                Err(error) => return Ok(ToolResult::error(error.to_string())),
+            },
         };
 
+        // Cancellation-classification note: a cancel during the hold is an
+        // error observation, while a cancel during the apply leg surfaces
+        // as W3's RunRecord (RunOutcome::Cancelled) text observation.
+        // The asymmetry is deliberate - the hold has no run to report,
+        // the apply leg does.
         match hold.outcome(&ctx.cancellation).await {
-            Ok(ApprovalOutcome::Approved) => {
-                match execute_workflow(&validated, &self.sidecar, &ctx.cancellation).await {
-                    Ok(record) => Ok(ToolResult::text(format!("{record:?}"))),
-                    Err(error) => Ok(ToolResult::error(error.to_string())),
+            Ok(outcome) => match outcome.clone().into_approved() {
+                Some(approved) => {
+                    match apply_authorized(approved, &validated, &self.sidecar, &ctx.cancellation)
+                        .await
+                    {
+                        Ok(record) => Ok(ToolResult::text(format!("{record:?}"))),
+                        Err(error) => Ok(ToolResult::error(error.to_string())),
+                    }
                 }
-            }
-            Ok(ApprovalOutcome::Denied { reason }) => {
-                Ok(ToolResult::error(format!("workflow denied: {reason}")))
-            }
-            Ok(ApprovalOutcome::TimedOut) => {
-                Ok(ToolResult::error("workflow approval timed out".to_owned()))
-            }
-            Ok(ApprovalOutcome::Cancelled) => {
-                Ok(ToolResult::error("workflow approval cancelled".to_owned()))
-            }
+                None => Ok(ToolResult::error(approval_observation(outcome))),
+            },
             Err(error) => Ok(ToolResult::error(error.to_string())),
         }
+    }
+}
+
+/// Render a non-approved terminal outcome as the coordinator observation.
+fn approval_observation(outcome: ApprovalOutcome) -> String {
+    match outcome {
+        ApprovalOutcome::Approved => unreachable!("the approved arm is handled by the witness"),
+        ApprovalOutcome::Denied { reason } => match reason {
+            Some(reason) => format!("workflow denied: {reason}"),
+            None => "workflow denied: no reason given".to_owned(),
+        },
+        ApprovalOutcome::TimedOut => "workflow approval timed out".to_owned(),
+        ApprovalOutcome::Cancelled => "workflow approval cancelled".to_owned(),
     }
 }
 

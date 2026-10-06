@@ -351,7 +351,7 @@ impl ShimState {
         //    claims derive from, so claims and registration cannot
         //    disagree; the sidecar client it needs is already in scope.
         let propose_workflow: Option<Arc<ProposeWorkflowTool>> =
-            workflow_tool_for(&self.workflow, &self.sidecar);
+            workflow_tool_for(&self.workflow, &self.sidecar, &session_id.as_str());
         let loop_config = CoordinatorLoopConfig {
             provider: Arc::clone(&metered),
             model: self.model.clone(),

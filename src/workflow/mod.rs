@@ -23,8 +23,8 @@ mod schema;
 mod tool;
 
 pub use approval::{
-    ApprovalClient, ApprovalError, ApprovalHold, ApprovalOutcome, ApprovalPayload, DecisionId,
-    POLL_INTERVAL_SECONDS,
+    ApprovalClient, ApprovalError, ApprovalHold, ApprovalOutcome, ApprovalPayload, Approved,
+    DecisionId, POLL_INTERVAL_SECONDS, REQUEST_TIMEOUT_SECS, apply_authorized,
 };
 pub use error::WorkflowError;
 pub use executor::{
@@ -48,14 +48,18 @@ pub use tool::ProposeWorkflowTool;
 ///
 /// When `[workflow].approval_url` is present the tool is wired for the
 /// blocking approval hold; otherwise it stays in W2 propose-only mode.
+/// `session_id` is the proposing request's shim session id, threaded here
+/// so the notify payload correlates with the conversation that proposed
+/// (the mount is per-request, which is where the id lives).
 pub fn workflow_tool_for(
     section: &crate::shim_config::WorkflowSection,
     sidecar: &crate::mcp_client::SidecarClient,
+    session_id: &str,
 ) -> Option<std::sync::Arc<ProposeWorkflowTool>> {
     if !section.enabled {
         return None;
     }
-    let mut tool = ProposeWorkflowTool::new(sidecar.clone());
+    let mut tool = ProposeWorkflowTool::new(sidecar.clone()).with_session_id(session_id.to_owned());
     if let Some(url) = &section.approval_url {
         let hold_secs = section
             .hold_secs
