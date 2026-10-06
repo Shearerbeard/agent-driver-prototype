@@ -6,7 +6,7 @@ depends: [W2]
 serialize-with: [W3]
 lineage: isolated-branch
 executor: smart
-commit-range: d2eb850^..ad28915
+commit-range: d2eb850^..1ac673f
 gates: "S -> A -> U(code-review) -> U(wire-contract)"
 user-gates: [code-review, wire-contract]
 ---
@@ -276,7 +276,15 @@ line on the integration branch), after W3 lands; serialized against W3
   clippy and fmt clean. commit-range extends to d2eb850^..ad28915;
   the packet regenerates and a fresh Gate A round covers the ruling
   commit per the fix-commit duty. The gate stays open on its two
-  remaining adjudications (the execute_workflow-public residual
+  remaining adjudications   (the execute_workflow-public residual
   behind the Approved witness, and the poll-pacing / hold-budget /
   URL-derivation / receiver-immutability conventions). Board owner,
   recording Mike's ruling.
+- 2026-10-06 Gate A round 4 (same seat, session
+  ses_eec6c9f90ffeW8Fp8y7QME0Cpz): the ruling commit verified -
+  collapse complete in code, uuid dep declared and scoped, tests hold,
+  no regressions - with one MINOR NOT-CONFIRMED: the ApprovalPayload
+  struct doc still named the deleted identifier policy. Fixed in
+  1ac673f (one doc paragraph now naming the uuid mint); commit-range
+  extends to d2eb850^..1ac673f; round 5 verifies the doc line. Board
+  owner.
