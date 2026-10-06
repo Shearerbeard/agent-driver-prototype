@@ -1,8 +1,14 @@
 //! The `propose_workflow` coordinator tool.
 //!
-//! Propose-only: validate a workflow against the discovered MCP tool
-//! inventory (W1 rules), render the human digest, and return it as the tool
-//! observation. Nothing applies; the apply path is W3.
+//! When the `[workflow]` section has no `approval_url`, the tool is
+//! propose-only: validate a workflow against the discovered MCP tool
+//! inventory (W1 rules), render the human digest, and return it as the
+//! tool observation.
+//!
+//! When `approval_url` is present, the tool additionally POSTs the notify
+//! payload, blocks on the approval hold, and drives the W3 executor only
+//! on [`ApprovalOutcome::Approved`].  Deny, timeout, and cancellation all
+//! return as ordinary tool observations the coordinator replans against.
 
 use agent_driver_rs::ToolError;
 use agent_driver_rs::tool::{Tool, ToolContext, ToolDefinition, ToolInput, ToolResult, ToolSchema};
@@ -12,8 +18,11 @@ use serde::Deserialize;
 
 use crate::mcp_client::SidecarClient;
 
+use super::approval::{ApprovalClient, ApprovalOutcome, ApprovalPayload};
+use super::executor::execute_workflow;
 use super::plan::WorkflowSpec;
 use super::render::render_digest;
+
 /// The wire arguments for `propose_workflow`.
 ///
 /// The workflow itself arrives as the `workflow` property so the tool schema
@@ -31,6 +40,8 @@ pub struct ProposeWorkflowArgs {
 pub struct ProposeWorkflowTool {
     definition: ToolDefinition,
     sidecar: SidecarClient,
+    approval: Option<ApprovalClient>,
+    session_id: String,
 }
 
 impl ProposeWorkflowTool {
@@ -49,7 +60,28 @@ impl ProposeWorkflowTool {
         Self {
             definition: Self::definition(),
             sidecar,
+            approval: None,
+            session_id: "unknown".to_owned(),
         }
+    }
+
+    /// Attach the approval-wire client.
+    ///
+    /// This is the seam that turns propose-only mode into the blocking
+    /// approval path.  Call sites that do not set an approval client keep
+    /// the W2 propose-only behavior.
+    pub fn with_approval(mut self, approval: ApprovalClient) -> Self {
+        self.approval = Some(approval);
+        self
+    }
+
+    /// Set the shim session id that appears in the notify payload.
+    ///
+    /// The default `"unknown"` is the seam for production call sites that
+    /// know the request's session id.
+    pub fn with_session_id(mut self, session_id: String) -> Self {
+        self.session_id = session_id;
+        self
     }
 
     /// The `propose_workflow` definition.
@@ -88,11 +120,7 @@ impl Tool for ProposeWorkflowTool {
         &self.definition
     }
 
-    async fn execute(
-        &self,
-        input: &ToolInput,
-        _ctx: &ToolContext,
-    ) -> Result<ToolResult, ToolError> {
+    async fn execute(&self, input: &ToolInput, ctx: &ToolContext) -> Result<ToolResult, ToolError> {
         let args: ProposeWorkflowArgs = match input.parse() {
             Ok(args) => args,
             Err(error) => {
@@ -111,8 +139,42 @@ impl Tool for ProposeWorkflowTool {
             }
         };
 
-        match args.workflow.validate(&tools) {
-            Ok(validated) => Ok(ToolResult::text(render_digest(&validated))),
+        let validated = match args.workflow.validate(&tools) {
+            Ok(validated) => validated,
+            Err(error) => return Ok(ToolResult::error(error.to_string())),
+        };
+
+        let Some(client) = &self.approval else {
+            // Propose-only mode: W2 behavior, unchanged.
+            return Ok(ToolResult::text(render_digest(&validated)));
+        };
+
+        // Approval-gated mode: the human must approve this exact instance
+        // before the W3 executor applies it.
+        let rendered = render_digest(&validated);
+        let payload =
+            ApprovalPayload::new(validated.spec().clone(), rendered, self.session_id.clone());
+        let hold = match client.notify(payload).await {
+            Ok(hold) => hold,
+            Err(error) => return Ok(ToolResult::error(error.to_string())),
+        };
+
+        match hold.outcome(&ctx.cancellation).await {
+            Ok(ApprovalOutcome::Approved) => {
+                match execute_workflow(&validated, &self.sidecar, &ctx.cancellation).await {
+                    Ok(record) => Ok(ToolResult::text(format!("{record:?}"))),
+                    Err(error) => Ok(ToolResult::error(error.to_string())),
+                }
+            }
+            Ok(ApprovalOutcome::Denied { reason }) => {
+                Ok(ToolResult::error(format!("workflow denied: {reason}")))
+            }
+            Ok(ApprovalOutcome::TimedOut) => {
+                Ok(ToolResult::error("workflow approval timed out".to_owned()))
+            }
+            Ok(ApprovalOutcome::Cancelled) => {
+                Ok(ToolResult::error("workflow approval cancelled".to_owned()))
+            }
             Err(error) => Ok(ToolResult::error(error.to_string())),
         }
     }

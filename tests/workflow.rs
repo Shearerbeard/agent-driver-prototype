@@ -5,14 +5,19 @@
 //! step failure with reverse-order unwind; rollback failure with a loud
 //! stop and a residual set; bounds rejection at resolve time; a binding
 //! miss on a missing export path; and cancellation mid-apply.
+//!
+//! W4 adds four approval-wire legs and one end-to-end approval-gates-apply
+//! leg against an in-process axum approval receiver.
 
 #![allow(clippy::unused_async)]
 
 use agent_driver_prototype::mcp_client::{SidecarTool, SidecarToolName};
 use agent_driver_prototype::workflow::{
-    ExecuteError, ResolveError, RollbackOutcome, RunOutcome, RunRecord, StepId, StepStatus,
+    ApprovalClient, ApprovalOutcome, ApprovalPayload, DecisionId, ExecuteError,
+    ProposeWorkflowTool, ResolveError, RollbackOutcome, RunOutcome, RunRecord, StepId, StepStatus,
     ValidatedWorkflowSpec, WorkflowSpec, execute_workflow,
 };
+use agent_driver_rs::tool::{Tool, ToolContext, ToolInput};
 use serde_json::{Value as JsonValue, json};
 use tokio_util::sync::CancellationToken;
 
@@ -975,5 +980,312 @@ async fn cancellation_during_the_final_call_records_the_interrupt() {
             ),
         ],
         "nothing follows the interrupted apply: no rollback on cancel"
+    );
+}
+
+// ============================================================================
+// Approval wire rig
+// ============================================================================
+
+mod approval_rig {
+    use std::collections::HashMap;
+    use std::sync::Arc;
+
+    use agent_driver_prototype::workflow::{ApprovalPayload, DecisionId};
+    use axum::{
+        Json, Router,
+        extract::{Path, State},
+        http::StatusCode,
+        response::IntoResponse,
+        routing::{get, post},
+    };
+    use serde::Deserialize;
+    use serde_json::json;
+    use tokio::net::TcpListener;
+    use tokio::sync::Mutex;
+
+    #[derive(Clone, Default)]
+    pub struct ServerState {
+        decisions: Arc<Mutex<HashMap<String, DecisionRow>>>,
+    }
+
+    struct DecisionRow {
+        #[allow(dead_code)]
+        payload: ApprovalPayload,
+        status: DecisionStatus,
+    }
+
+    #[derive(Clone)]
+    enum DecisionStatus {
+        Pending,
+        Approved,
+        Denied(String),
+    }
+
+    pub struct ApprovalServerHandle {
+        base_url: reqwest::Url,
+        state: ServerState,
+    }
+
+    impl ApprovalServerHandle {
+        pub fn notify_url(&self) -> reqwest::Url {
+            self.base_url.join("/decisions").unwrap()
+        }
+
+        pub fn status_url(&self) -> reqwest::Url {
+            self.base_url.join("/decisions").unwrap()
+        }
+
+        pub async fn approve(&self, decision_id: &str) {
+            let mut map = self.state.decisions.lock().await;
+            if let Some(row) = map.get_mut(decision_id) {
+                row.status = DecisionStatus::Approved;
+            }
+        }
+
+        pub async fn deny(&self, decision_id: &str, reason: &str) {
+            let mut map = self.state.decisions.lock().await;
+            if let Some(row) = map.get_mut(decision_id) {
+                row.status = DecisionStatus::Denied(reason.to_owned());
+            }
+        }
+    }
+
+    pub async fn boot() -> ApprovalServerHandle {
+        let state = ServerState::default();
+        let app = Router::new()
+            .route("/decisions", post(notify))
+            .route("/decisions/{id}/status", get(status))
+            .route("/admin/decisions/{id}/approve", post(admin_approve))
+            .route("/admin/decisions/{id}/deny", post(admin_deny))
+            .with_state(state.clone());
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        tokio::task::yield_now().await;
+        ApprovalServerHandle {
+            base_url: reqwest::Url::parse(&format!("http://127.0.0.1:{port}")).unwrap(),
+            state,
+        }
+    }
+
+    async fn notify(
+        State(state): State<ServerState>,
+        Json(payload): Json<ApprovalPayload>,
+    ) -> impl IntoResponse {
+        let id = DecisionId::Digest.for_payload(&payload);
+        state.decisions.lock().await.insert(
+            id,
+            DecisionRow {
+                payload,
+                status: DecisionStatus::Pending,
+            },
+        );
+        StatusCode::ACCEPTED
+    }
+
+    async fn status(State(state): State<ServerState>, Path(id): Path<String>) -> impl IntoResponse {
+        let map = state.decisions.lock().await;
+        let (status, body) = match map.get(&id) {
+            Some(row) => match &row.status {
+                DecisionStatus::Pending => (StatusCode::ACCEPTED, json!({"pending": true})),
+                DecisionStatus::Approved => {
+                    (StatusCode::OK, json!({"approved": true, "reason": null}))
+                }
+                DecisionStatus::Denied(reason) => {
+                    (StatusCode::OK, json!({"approved": false, "reason": reason}))
+                }
+            },
+            None => (StatusCode::NOT_FOUND, json!({"error": "not found"})),
+        };
+        (status, Json(body))
+    }
+
+    async fn admin_approve(State(state): State<ServerState>, Path(id): Path<String>) {
+        let mut map = state.decisions.lock().await;
+        if let Some(row) = map.get_mut(&id) {
+            row.status = DecisionStatus::Approved;
+        }
+    }
+
+    #[derive(Deserialize)]
+    struct DenyBody {
+        reason: String,
+    }
+
+    async fn admin_deny(
+        State(state): State<ServerState>,
+        Path(id): Path<String>,
+        Json(body): Json<DenyBody>,
+    ) {
+        let mut map = state.decisions.lock().await;
+        if let Some(row) = map.get_mut(&id) {
+            row.status = DecisionStatus::Denied(body.reason);
+        }
+    }
+}
+
+// ============================================================================
+// Approval wire helpers
+// ============================================================================
+
+fn approval_payload(workflow: JsonValue) -> ApprovalPayload {
+    ApprovalPayload {
+        workflow: serde_json::from_value(workflow).expect("workflow parses"),
+        digest: "test-digest".to_owned(),
+        rendered: "rendered digest".to_owned(),
+        session_id: "test-session".to_owned(),
+    }
+}
+
+// ============================================================================
+// W4 acceptance scenarios
+// ============================================================================
+
+/// W4 offline: an approved decision resolves the hold to
+/// [`ApprovalOutcome::Approved`].
+#[tokio::test]
+async fn approve_leg_decides_approved() {
+    let server = approval_rig::boot().await;
+    let client = ApprovalClient::new(
+        server.notify_url(),
+        server.status_url(),
+        60,
+        DecisionId::Digest,
+    );
+    let payload = approval_payload(json!({ "goal": "g", "steps": [] }));
+    let decision_id = DecisionId::Digest.for_payload(&payload);
+    server.approve(&decision_id).await;
+
+    let hold = client.notify(payload).await.expect("notify returns a hold");
+    let outcome = hold
+        .outcome(&CancellationToken::new())
+        .await
+        .expect("outcome resolves");
+
+    assert_eq!(outcome, ApprovalOutcome::Approved);
+}
+
+/// W4 offline: a denied decision resolves the hold to
+/// [`ApprovalOutcome::Denied`] and carries the receiver's reason.
+#[tokio::test]
+async fn deny_leg_decides_denied_with_reason() {
+    let server = approval_rig::boot().await;
+    let client = ApprovalClient::new(
+        server.notify_url(),
+        server.status_url(),
+        60,
+        DecisionId::Digest,
+    );
+    let payload = approval_payload(json!({ "goal": "g", "steps": [] }));
+    let decision_id = DecisionId::Digest.for_payload(&payload);
+    server.deny(&decision_id, "not today").await;
+
+    let hold = client.notify(payload).await.expect("notify returns a hold");
+    let outcome = hold
+        .outcome(&CancellationToken::new())
+        .await
+        .expect("outcome resolves");
+
+    assert_eq!(
+        outcome,
+        ApprovalOutcome::Denied {
+            reason: "not today".to_owned()
+        }
+    );
+}
+
+/// W4 offline: if no decision arrives before the hold budget expires,
+/// the hold resolves to [`ApprovalOutcome::TimedOut`].
+#[tokio::test]
+async fn hold_timeout_leg_decides_timed_out() {
+    let server = approval_rig::boot().await;
+    let client = ApprovalClient::new(
+        server.notify_url(),
+        server.status_url(),
+        1,
+        DecisionId::Digest,
+    );
+    let payload = approval_payload(json!({ "goal": "g", "steps": [] }));
+
+    let hold = client.notify(payload).await.expect("notify returns a hold");
+    let outcome = hold
+        .outcome(&CancellationToken::new())
+        .await
+        .expect("outcome resolves");
+
+    assert_eq!(outcome, ApprovalOutcome::TimedOut);
+}
+
+/// W4 offline: if the request cancellation token fires while the hold
+/// is pending, the hold resolves to [`ApprovalOutcome::Cancelled`] and
+/// never hangs.
+#[tokio::test]
+async fn cancel_hold_leg_decides_cancelled() {
+    let server = approval_rig::boot().await;
+    let client = ApprovalClient::new(
+        server.notify_url(),
+        server.status_url(),
+        60,
+        DecisionId::Digest,
+    );
+    let payload = approval_payload(json!({ "goal": "g", "steps": [] }));
+    let cancel = CancellationToken::new();
+    cancel.cancel();
+
+    let hold = client.notify(payload).await.expect("notify returns a hold");
+    let outcome = hold.outcome(&cancel).await.expect("outcome resolves");
+
+    assert_eq!(outcome, ApprovalOutcome::Cancelled);
+}
+
+/// W4 end-to-end: a proposed workflow is validated, the approval hold is
+/// approved, and the W3 executor applies the steps.
+#[tokio::test]
+async fn end_to_end_approval_gates_apply() {
+    let server = rig::ScriptedServer::new(advertised(), |name, _args| match name {
+        "ops_get_cluster_state" => Ok(read_result()),
+        "ops_scale_app" => Ok(scaled_result()),
+        other => Err(format!("unexpected tool call {other}")),
+    });
+    let (sidecar, _served) = rig::boot(server).await;
+
+    let approval_server = approval_rig::boot().await;
+    let approval_client = ApprovalClient::new(
+        approval_server.notify_url(),
+        approval_server.status_url(),
+        60,
+        DecisionId::Digest,
+    );
+    let tool = ProposeWorkflowTool::new(sidecar).with_approval(approval_client);
+
+    let workflow = json!({
+        "goal": "scale payments",
+        "steps": [
+            state_step(json!(null)),
+            {
+                "id": "scale",
+                "dependencies": ["state"],
+                "tool": "ops_scale_app",
+                "args": {"app": "payments", "replicas": 6},
+                "exports": {},
+                "rollback": bound_scale_rollback()
+            }
+        ]
+    });
+    let input = ToolInput::from_value(json!({ "workflow": workflow })).unwrap();
+
+    let result = tool
+        .execute(&input, &ToolContext::new(CancellationToken::new()))
+        .await
+        .expect("propose_workflow returns every outcome as an observation");
+
+    assert!(result.is_success(), "{result:?}");
+    assert!(
+        result.content().contains("Complete") || result.content().contains("Applied"),
+        "expected a successful run record, got: {}",
+        result.content()
     );
 }
