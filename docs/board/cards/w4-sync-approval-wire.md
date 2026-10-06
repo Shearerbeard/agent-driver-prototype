@@ -75,8 +75,14 @@ signature). Nothing beyond that; stop and report instead.
       driving the W3 executor through the scripted-server rig);
       clippy zero warnings; fmt clean; no snapshot changes over the
       range. Board owner re-ran every command itself.)
-- [ ] Gate A: fresh cross-family review (code-review role) of the full
-      commit range against the acceptance criteria.
+- [x] Gate A: fresh cross-family review (code-review role) of the full
+      commit range against the acceptance criteria. (Passed 2026-10-06
+      round 3 on the bedrock gpt-5.6-sol seat: round 1 FAIL (2 BLOCKING
+      plus 4 MAJOR and 1 MINOR, all repaired in 2646298), round 2 findings
+      1-6 CONFIRMED-REPAIRED and finding 7 re-raised narrowly (Cargo.lock
+      unnamed in Scope; fixed as a card doc repair), round 3 PASS with a
+      clean file-by-file scope check and zero regressions; ledger in the
+      Log section.)
 - [ ] Gate U (code-review): board owner presents the review packet and
       stops.
 - [ ] Gate U (wire-contract): Mike adjudicates the realized wire
@@ -235,3 +241,19 @@ line on the integration branch), after W3 lands; serialized against W3
   names Cargo.lock with its lockstep reason. No regressions found;
   no fix-introduced defects. Packet regenerates for round 3 to
   verify the one-line doc repair. Board owner.
+- 2026-10-06 Gate A passed (round 3, session ses_eec82a31fffeACsoguvhiXKrCS):
+  finding 7 CONFIRMED-REPAIRED (Cargo.lock named with its lockstep
+  reason), the file-by-file scope check clean across all nine changed
+  files, zero regressions, and the card's ledgers mutually consistent.
+  Three rounds total on the 5.6-sol seat; authors Kimi + GLM board
+  owner + GLM-flash, reviewer GPT - the invariant holds across every
+  commit in the range. Cumulative Gate A reviewer spend: three
+  in-harness dispatches on the bedrock gpt-5.6-sol seat (plus the
+  SSO-refresh pre-vet re-probe). Gate A checklist box ticked this
+  turn. Card remains in-review for its two user gates: U(code-review)
+  - Mike's choice of surface, the packet at docs/board/reviews/W4/
+  (local-only, regenerable) or a PR on card/w4 ->
+  integration/workflow - and U(wire-contract), where the queued
+  adjudications are the digest-vs-decision_id reading, the
+  execute_workflow-public residual behind the Approved witness, and
+  the poll-pacing and hold-budget conventions. Board owner.
