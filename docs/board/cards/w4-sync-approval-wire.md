@@ -6,7 +6,7 @@ depends: [W2]
 serialize-with: [W3]
 lineage: isolated-branch
 executor: smart
-commit-range: d2eb850^..2646298
+commit-range: d2eb850^..ad28915
 gates: "S -> A -> U(code-review) -> U(wire-contract)"
 user-gates: [code-review, wire-contract]
 ---
@@ -27,9 +27,11 @@ scope), plus the integration surface the Gate A round-1 review
 reconciled onto the card 2026-10-06: `src/workflow/mod.rs` (module
 mount and re-exports - landing any new module requires them, and the
 session-id threading the design panel demanded lives in
-`workflow_tool_for`), `Cargo.toml` (`sha2 = "0.10"`, the dependency
-the sha256 digest deliverable requires - logged at pull) with its
-`Cargo.lock` lockstep update, `src/sse_shim/server.rs` and
+`workflow_tool_for`), `Cargo.toml` (`sha2 = "0.10"` for the digest and
+`uuid = { version = "1", features = ["v7"] }` for the ruled
+decision-id mint - the uuid package was already in the lock
+transitively, so no new code enters the tree) with its `Cargo.lock`
+lockstep update, `src/sse_shim/server.rs` and
 `src/bin/server.rs` (the per-request
 mount passes the real session id; the startup preamble-derivation
 instance passes a named placeholder), and `src/tool_truth_tests.rs`
@@ -257,3 +259,24 @@ line on the integration branch), after W3 lands; serialized against W3
   adjudications are the digest-vs-decision_id reading, the
   execute_workflow-public residual behind the Approved witness, and
   the poll-pacing and hold-budget conventions. Board owner.
+- 2026-10-06 U(wire-contract) partial ruling, Mike: the decision_id
+  question is ruled for Reading B - a decision needs a unique id in
+  the standard-aura shape (a uuid); the digest is not reused. The
+  board owner presented the identifier hierarchy (sources and
+  destinations across the shim, the payload, the mirror's row key,
+  the poll path, and every decide surface; working record at
+  .review/w4/identifier-map.md) with Reading A recommended, and Mike
+  overruled the recommendation. Implemented as ad28915: the
+  DecisionId policy enum is collapsed away, decision_id mints as a
+  uuid v7 per proposal (uuid direct dep, v7 feature, package already
+  in the lock transitively - scope above records it), the digest
+  stays the binding, the binding leg asserts the two differ and the
+  id parses as a uuid, and the e2e leg discovers the pending row from
+  the receiver instead of pre-computing the id. 475 tests green with
+  clippy and fmt clean. commit-range extends to d2eb850^..ad28915;
+  the packet regenerates and a fresh Gate A round covers the ruling
+  commit per the fix-commit duty. The gate stays open on its two
+  remaining adjudications (the execute_workflow-public residual
+  behind the Approved witness, and the poll-pacing / hold-budget /
+  URL-derivation / receiver-immutability conventions). Board owner,
+  recording Mike's ruling.
