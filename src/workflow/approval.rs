@@ -132,9 +132,9 @@ pub async fn apply_authorized(
 /// render the proposal and the approver needs to bind the decision to the
 /// instance.
 ///
-/// The digest and decision id are computed by the constructor over the
-/// workflow bytes and the configured identifier policy; they cannot be set
-/// to disagree with the payload by construction (there is no public field
+/// The digest is computed by the constructor over the workflow bytes and
+/// the decision id minted fresh as a uuid v7; they cannot be set to
+/// disagree with the payload by construction (there is no public field
 /// access, and no `Deserialize`).  The type is intentionally independent of
 /// runtime handles (`reqwest` client, cancellation token) so it can be
 /// logged, replayed, or persisted without capturing process-local state.
