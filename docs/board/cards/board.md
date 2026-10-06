@@ -15,12 +15,12 @@ kanban-plugin: board
 	Depends: none. Gates: S -> A -> U(code-review) @ S. Executor: smart.
 
 ## In Progress
-- [ ] **W4** [Sync approval wire - notify POST, status poll with blocking hold](w4-sync-approval-wire.md)
-	Depends: W2. Gates: S -> A -> U(code-review) -> U(wire-contract) @ S. Executor: smart.
 
 ## In Review
 - [ ] **W2** [propose_workflow through the factory - coordinator tools land, propose-only](w2-propose-workflow-factory-seam.md)
 	Depends: W1. Gates: S -> A -> U(code-review) -> U(proposal-quality) @ U. Executor: smart.
+- [ ] **W4** [Sync approval wire - notify POST, status poll with blocking hold](w4-sync-approval-wire.md)
+	Depends: W2. Gates: S -> A -> U(code-review) -> U(wire-contract) @ A. Executor: smart.
 - [ ] **W5** [Mock-mcp ops surface - three remediation tools, per-session healing, ground truth](w5-mock-mcp-ops-surface.md)
 	Depends: none. Gates: S -> A -> U(code-review) @ U. Executor: smart.
 

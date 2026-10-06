@@ -18,7 +18,7 @@ Admission test: where does the diff land.
 | [W1](w1-workflow-type-skeleton.md) | Workflow type skeleton - spec, bindings, validation, $.-path subset | - | done | - | smart | S -> A -> U(code-review) -> U(type-surface) |
 | [W2](w2-propose-workflow-factory-seam.md) | propose_workflow through the factory - coordinator tools land, propose-only | - | in-review | W1 | smart | S -> A -> U(code-review) -> U(proposal-quality) @ U |
 | [W3](w3-workflow-executor.md) | Deterministic workflow executor - resolve, apply, unwind, residual reporting | - | done | W2 | smart | S -> A -> U(code-review) |
-| [W4](w4-sync-approval-wire.md) | Sync approval wire - notify POST, status poll with blocking hold | - | in-progress | W2 | smart | S -> A -> U(code-review) -> U(wire-contract) @ S |
+| [W4](w4-sync-approval-wire.md) | Sync approval wire - notify POST, status poll with blocking hold | - | in-review | W2 | smart | S -> A -> U(code-review) -> U(wire-contract) @ A |
 | [W5](w5-mock-mcp-ops-surface.md) | Mock-mcp ops surface - three remediation tools, per-session healing, ground truth | - | in-review | - | smart | S -> A -> U(code-review) @ U |
 | [W6](w6-end-to-end-demo.md) | End-to-end demo - investigate, propose, approve, apply, heal, unwind | - | backlog | W2, W3, W4, W5 | any | S -> A -> M -> T |
 | [W7](w7-jev-rubric-research-spike.md) | JEV rubric research spike - synthetic edge corpus, sealed rubric, accuracy + latency read | jev | ready | - | smart | S -> A -> D -> U(rubric) @ S |

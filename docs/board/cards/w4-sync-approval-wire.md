@@ -1,11 +1,12 @@
 ---
 id: W4
 title: Sync approval wire - notify POST, status poll with blocking hold
-status: backlog
+status: in-review
 depends: [W2]
 serialize-with: [W3]
 lineage: isolated-branch
 executor: smart
+commit-range: d2eb850^..d695880
 gates: "S -> A -> U(code-review) -> U(wire-contract)"
 user-gates: [code-review, wire-contract]
 ---
@@ -51,10 +52,18 @@ wiring), `tests/workflow.rs`. Nothing else; stop and report instead.
 
 ## Gate checklist
 
-- [ ] Gate S: gate-probes; `cargo fmt --check`,
-      `cargo clippy --all-targets --locked`, `cargo test --locked`
-      green; approve / deny / hold-timeout / cancel-hold legs pass
-      offline against the in-process approval server.
+- [x] Gate S: gate-probes; `cargo fmt --check`,
+      `cargo clippy --all-targets --locked`,
+      `cargo test --locked` green; approve / deny / hold-timeout /
+      cancel-hold legs pass offline against the in-process approval
+      server. (Passed 2026-10-06 in the worktree: 475 tests green
+      repo-wide (461 at the W3 merge baseline plus the seven W4 legs:
+      approve, deny with reason, deny without reason, 207-pending
+      hold-timeout, mid-flight cancel-hold, payload binding
+      verification, and the end-to-end approval-gates-apply leg
+      driving the W3 executor through the scripted-server rig);
+      clippy zero warnings; fmt clean; no snapshot changes over the
+      range. Board owner re-ran every command itself.)
 - [ ] Gate A: fresh cross-family review (code-review role) of the full
       commit range against the acceptance criteria.
 - [ ] Gate U (code-review): board owner presents the review packet and
@@ -105,3 +114,75 @@ line on the integration branch), after W3 lands; serialized against W3
   (wire-contract), all unticked) - the card predated its checklist,
   which lands at pull. Card remains backlog until pulled. Board
   owner.
+- 2026-10-06 Pulled in-progress: promoted from backlog per Mike's
+  2026-10-06 ruling recorded above (ahead of W2's remaining
+  U(proposal-quality) gate, the W3 precedent; cross-referenced on
+  W2's card). Worktree `../agent-driver-prototype-w4` on `card/w4`
+  off `integration/workflow` at `5175820` - W3's merged executor is
+  the surface the approve leg drives, and serialize-with W3 cleared
+  when W3 went done this session. Routing per the harness-bindings
+  table: rust-write (Kimi) authors the skeleton, rust-fill (GLM) the
+  fill units, Gate A to in-harness rust-reviewer (bedrock gpt-5.6-sol
+  per Mike's standing ruling; the seat's contract-shaped read probe
+  runs before the gate depends on it). WIP count after this pull: one
+  card in-progress. Board owner.
+- 2026-10-06 Layer-1 skeleton delivered by rust-write (Kimi, session
+  ses_eecbc5dbaffeeoeL0w1F1z51DS) and landed as d2eb850 after
+  board-owner integration: sha2 = 0.10 added (the card names sha256
+  for the digest; the executor stopped at the dependency boundary as
+  briefed - logged as the board owner's at-pull ruling), and the
+  decision-id policy moved from notify's argument into ApprovalClient
+  so the seam has exactly one decision point. The five acceptance
+  legs red on their todo!() holes as designed; 461 baseline tests
+  green; clippy zero; fmt applied. Board owner.
+- 2026-10-06 Two-seat adversarial design panel on the skeleton (the
+  typed-holes discipline between Layer 1 and Layer 2): seat 1
+  in-harness `general` (GLM 5.3, session
+  ses_eecacd2dbffeBA7zUZWD1Xl5i), seat 2 in-harness `explore`
+  (deepseek flash, session ses_eecacd2c2ffedl9o40m2hXs5i) - both
+  cross-family to the Kimi author. Both seats FAIL with converging
+  findings: the rig sequenced decide-before-notify (the approve, deny,
+  and e2e legs were no-ops that could never pass), Reading B of the
+  decision-id seam was structurally unimplementable (no payload
+  field, and Generated minted per client rather than per proposal),
+  session_id never threaded (every production payload would have
+  carried "unknown"), notify rode outside the cancellation regime
+  with no request timeout (a stalled POST hung the tool unbounded),
+  the digest binding was unenforced (pub fields, hardcoded
+  test-digest), apply-outside-Approved had no type gate, and re-POST
+  semantics were unpinned with a hazardous rig default. Board owner.
+- 2026-10-06 Panel repairs landed as 2c0372f (board-owner repair, the
+  W2/W3 precedent): an Approved witness type gates apply_authorized
+  (into_approved is its only constructor; W3's execute_workflow stays
+  public for its own test contract - residual recorded for the
+  U(wire-contract) gate); ApprovalPayload fields went private with the
+  digest and decision id computed by constructor (Deserialize
+  dropped; verify_binding recomputes for the receiver) and the
+  realized decision_id field makes both seam readings
+  wire-representable; DecisionId::Generated mints per proposal; the
+  notify POST rides under the request cancellation with a 10s client
+  request timeout; session_id threads through workflow_tool_for's
+  per-request mount; the rig keys rows by the wire body's
+  decision_id, inserts-if-absent (a re-POST never reopens a decided
+  row), serves 207-pending on the timeout leg, and sequences
+  decisions after notify. Seven legs red on todo!() by design;
+  clippy zero; fmt applied. Board owner.
+- 2026-10-06 Layer-2 fills delivered by rust-fill (GLM 5.3-flash,
+  session ses_eeca3c054ffezu9dQjFifzdVbk) and landed as d695880
+  after board-owner verification: the five bodies (compute_digest,
+  for_section, notify, poll, outcome) with the transient-retry rule
+  pinned in-source (Transport retries at the next interval while
+  budget remains; UnexpectedStatus is terminal). The fill verified
+  its bodies in a scratch cargo project (13/13 behavioral probes,
+  clippy -D warnings clean) since the staged tree cannot build; the
+  board owner's landed cargo run is the Gate S record. Gate S ticked
+  this turn, card in-review: 475 tests green with clippy and fmt
+  clean, no snapshot changes over d2eb850^..d695880. Frontmatter at Gate S:
+  commit-range recorded. Gate A next: the bedrock gpt-5.6-sol seat
+  FAILED its contract-shaped pre-vet this session (AWS SSO session
+  expired - the reachability pre-vet caught it before any gate
+  depended on the seat); Mike's `aws sso login` refresh reopens the
+  lane, then the packet generates and Gate A dispatches. Authors so
+  far: Kimi (skeleton) + GLM board owner (repairs, integration) +
+  GLM-flash (fills); the Gate A reviewer must differ from every
+  author family, which the gpt-5.6-sol seat satisfies. Board owner.
