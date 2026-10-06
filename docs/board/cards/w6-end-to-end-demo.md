@@ -108,3 +108,15 @@ Gate T.
   per proposal, so the demo's approval surface discovers decisions by
   the receiver's pending stack, exactly as W4's e2e leg does. Board
   owner.
+- 2026-10-06 Cross-board linkage recorded (Mike's ask): the
+  demo-harness augmentation this card consumes is SB23 (gov-mirror
+  human UI and poll-fault verbs) on the aura-sandbox board - repo
+  \`aura-sandbox\`, card at
+  \`docs/board/cards/sb23-gov-mirror-ui-and-faults.md\` there, id
+  prefix SB - currently in-review on an S -> A -> S -> A -> M ->
+  U(code-review) -> T gate chain. A \`refs\` short-code entry is not
+  mintable from this repo: the family registry (the aura family
+  manifest) carries no aura-sandbox row, so a qualified ref would
+  not resolve - the fully-qualified mention above is the linkage of
+  record until the family owner registers the board. Check SB23's
+  state before this card's demo-config work starts. Board owner.

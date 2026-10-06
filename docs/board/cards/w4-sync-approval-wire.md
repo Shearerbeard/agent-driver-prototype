@@ -336,6 +336,12 @@ line on the integration branch), after W3 lands; serialized against W3
   `--hold-timeout` default is 60s and governs only its sync-hold
   mode, which this board's poll wire never enters; 900s is the sync
   contract's documented budget. Presented with the three true
-  numbers, Mike kept the 300s convention. The checklist summary and
+  numbers, Mike kept the   300s convention. The checklist summary and
   W6's cross-note are corrected this turn; the ruling itself is
   unchanged. Board owner.
+- 2026-10-06 Gate U (code-review) opened for Mike's review on GitHub:
+  PR #21 (card/w4 -> integration/workflow) presented with the Gate A
+  ledger (five rounds, PASS over d2eb850^..1ac673f), the testing
+  record, and the wire-contract rulings; the checklist box stays
+  unticked until his approval lands (his chosen review surface is
+  the PR, the W3 precedent). Board owner.
