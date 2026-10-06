@@ -24,6 +24,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use tokio_util::sync::CancellationToken;
 
 use crate::mcp_client::SidecarClient;
@@ -47,6 +48,10 @@ pub const REQUEST_TIMEOUT_SECS: u64 = 10;
 /// Counter making generated decision ids unique within a process even when
 /// the wall clock has not ticked.
 static GENERATED_SEQ: AtomicU64 = AtomicU64::new(0);
+
+/// Lowercase hex alphabet for [`compute_digest`]'s encoding of the sha256
+/// output.
+const HEX_DIGITS: [u8; 16] = *b"0123456789abcdef";
 
 /// The terminal result of awaiting an approval hold.
 ///
@@ -203,8 +208,17 @@ impl ApprovalPayload {
 /// Compute the instance digest: sha256 over the serde_json bytes of the
 /// workflow spec.
 fn compute_digest(workflow: &WorkflowSpec) -> String {
-    let _ = workflow;
-    todo!()
+    let bytes = serde_json::to_vec(workflow)
+        .expect("WorkflowSpec is plain serde data: serialization cannot fail");
+    let mut hasher = Sha256::new();
+    hasher.update(&bytes);
+    let digest = hasher.finalize();
+    let mut hex = String::with_capacity(digest.len() * 2);
+    for byte in digest {
+        hex.push(HEX_DIGITS[(byte >> 4) as usize] as char);
+        hex.push(HEX_DIGITS[(byte & 0x0f) as usize] as char);
+    }
+    hex
 }
 
 /// The decision-identifier seam.
@@ -277,8 +291,53 @@ impl ApprovalHold {
         self,
         cancel: &CancellationToken,
     ) -> Result<ApprovalOutcome, ApprovalError> {
-        let _ = (self, cancel);
-        todo!()
+        let ApprovalHold {
+            client,
+            payload,
+            deadline,
+        } = self;
+        let decision_id = payload.decision_id().to_owned();
+        // Transient-retry rule: a poll that fails with `Transport` is
+        // retried at the next poll interval while budget remains - a single
+        // transient hiccup during a long hold does not kill the hold.
+        // `UnexpectedStatus` is terminal and returns immediately: the
+        // client notified this decision id, so a receiver answering
+        // off-contract is a violation polling cannot repair.
+        let budget = deadline
+            .duration_since(SystemTime::now())
+            .unwrap_or(Duration::ZERO);
+        // The wall-clock deadline is a SystemTime; tokio's timer takes its
+        // own Instant and the two do not interconvert (`Instant::from_std`
+        // accepts a std Instant only), so the remaining budget is
+        // re-anchored at the runtime's now.
+        let deadline_at = tokio::time::Instant::now() + budget;
+        let mut ticker = tokio::time::interval(Duration::from_secs(POLL_INTERVAL_SECONDS));
+        // A slow poll does not mint catch-up ticks: the next poll waits a
+        // full interval.
+        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        loop {
+            tokio::select! {
+                biased;
+                () = cancel.cancelled() => return Ok(ApprovalOutcome::Cancelled),
+                () = tokio::time::sleep_until(deadline_at) => {
+                    return Ok(ApprovalOutcome::TimedOut);
+                }
+                _ = ticker.tick() => match client.poll(&decision_id).await {
+                    Ok(Some(response)) => {
+                        return Ok(if response.approved {
+                            ApprovalOutcome::Approved
+                        } else {
+                            ApprovalOutcome::Denied {
+                                reason: response.reason,
+                            }
+                        });
+                    }
+                    Ok(None) => continue,
+                    Err(ApprovalError::Transport(_)) => continue,
+                    Err(other) => return Err(other),
+                },
+            }
+        }
     }
 
     /// The wall-clock deadline against which the hold is bounded.
@@ -357,6 +416,11 @@ impl ApprovalClient {
 
     /// Create a client from the configured approval URL and hold budget.
     ///
+    /// The configured URL IS the notify endpoint (the governance mirror's
+    /// `/governance/workflow/authorize`); the status base derives from it
+    /// by appending a trailing `/`, so the poll leg reads
+    /// `<notify_url>/<decision_id>/status`.
+    ///
     /// This is the decision-identifier seam: the notify and status URLs are
     /// derived from the base URL together with the chosen identifier
     /// policy.
@@ -365,8 +429,17 @@ impl ApprovalClient {
         hold_secs: u64,
         decision_id: DecisionId,
     ) -> Result<Self, ApprovalError> {
-        let _ = (approval_url, hold_secs, decision_id);
-        todo!()
+        let notify_url = reqwest::Url::parse(approval_url)
+            .map_err(|error| ApprovalError::InvalidUrl(error.to_string()))?;
+        let path = notify_url.path();
+        let status_path = if path.ends_with('/') {
+            path.to_owned()
+        } else {
+            format!("{path}/")
+        };
+        let mut status_url = notify_url.clone();
+        status_url.set_path(&status_path);
+        Ok(Self::new(notify_url, status_url, hold_secs, decision_id))
     }
 
     /// Post the notify payload and return a hold that can be awaited.
@@ -376,22 +449,71 @@ impl ApprovalClient {
     /// construction.  A re-POST of an already-decided id returns the
     /// existing decision; it never reopens the row.
     pub async fn notify(&self, payload: ApprovalPayload) -> Result<ApprovalHold, ApprovalError> {
-        let _ = payload;
-        todo!()
+        let body = serde_json::to_vec(&payload)
+            .map_err(|error| ApprovalError::Transport(error.to_string()))?;
+        let response = self
+            .http
+            .post(self.notify_url.clone())
+            .header(reqwest::header::CONTENT_TYPE, "application/json")
+            .body(body)
+            .send()
+            .await
+            .map_err(|error| ApprovalError::Transport(error.to_string()))?;
+        let status = response.status();
+        if !status.is_success() {
+            let text = response.text().await.unwrap_or_default();
+            return Err(ApprovalError::UnexpectedStatus {
+                status: status.as_u16(),
+                body: text,
+            });
+        }
+        Ok(ApprovalHold {
+            client: self.clone(),
+            payload,
+            deadline: self.deadline(),
+        })
     }
 
     /// Poll the status endpoint once.
     ///
     /// Returns the decoded decision for `200`, [`None`] for `202`/`207`
     /// pending, and an error for any other status.
-    #[expect(dead_code)]
     async fn poll(&self, decision_id: &str) -> Result<Option<DecisionResponse>, ApprovalError> {
-        let _ = decision_id;
-        todo!()
+        let url = self
+            .status_url
+            .join(&format!("{decision_id}/status"))
+            .map_err(|error| ApprovalError::InvalidUrl(error.to_string()))?;
+        let response = self
+            .http
+            .get(url)
+            .send()
+            .await
+            .map_err(|error| ApprovalError::Transport(error.to_string()))?;
+        let status = response.status();
+        match status {
+            reqwest::StatusCode::OK => {
+                let text = response
+                    .text()
+                    .await
+                    .map_err(|error| ApprovalError::Transport(error.to_string()))?;
+                serde_json::from_str::<DecisionResponse>(&text)
+                    .map(Some)
+                    .map_err(|error| {
+                        ApprovalError::Transport(format!("decision body did not parse: {error}"))
+                    })
+            }
+            reqwest::StatusCode::ACCEPTED | reqwest::StatusCode::MULTI_STATUS => Ok(None),
+            _ => {
+                let body = response.text().await.unwrap_or_default();
+                Err(ApprovalError::UnexpectedStatus {
+                    status: status.as_u16(),
+                    body,
+                })
+            }
+        }
     }
 
     /// The configured wall-clock deadline from now.
-    #[expect(dead_code)]
     fn deadline(&self) -> SystemTime {
         SystemTime::now() + Duration::from_secs(self.hold_secs)
     }
