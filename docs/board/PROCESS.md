@@ -334,6 +334,11 @@ checklist that repeats it at the gate is the one that fires.
   card is itself the milestone.
 - Gate U, user: stop. Present diffs, findings, and risks. Do not proceed
   without explicit user approval.
+  - Standing gates subsection: a user gate whose subject is a proposal,
+    rubric, or architecture (not a code diff) is presented as a rendered
+    artifact with a numbered adjudication checklist; the checklist and
+    the user's per-item ruling are filed as an evidence record the card
+    links, on the same footing as the canary key/answers/grade.
 - Gate T, user testing: stop. The user exercises the behavior by hand;
   the board owner's deliverable is the handout that makes that possible:
   the exact run commands, a reference prompt or script, the expected

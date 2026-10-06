@@ -103,6 +103,10 @@ failed pre-vet, not a surprise to debug.
 
 ## Log
 
+- 2026-10-06 STANDING GATE LIFTED: the user approved the v3.2 proposal
+  render against its 12-item adjudication checklist ("This looks right -
+  I approve it"); adjudication recorded in the plan note. Card is
+  dispatchable. Board owner.
 - 2026-10-02 Amended per plan v3.2: preamble gains a soft size target for
   evidence blocks (unenforced; measured by W13's watch-list). Board owner.
 

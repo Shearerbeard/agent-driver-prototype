@@ -112,7 +112,10 @@ W10 reruns these columns identically on the treatment arm.
   reported number.
 - [ ] Gate D: lower-cost drift audit of the evidence file vs the results
   dir before the user gate.
-- [ ] Gate U (code-review): packet presented. STOPS.
+- [ ] Gate U (code-review): packet presented. STOPS. Includes the
+  watch-list binding ruling: the task-length distribution reviewed and
+  the user rules whether a `bounding.rs` cap is justified; the ruling
+  is logged on this card.
 
 ## Log
 

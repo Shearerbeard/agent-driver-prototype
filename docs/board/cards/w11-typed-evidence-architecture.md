@@ -62,7 +62,10 @@ resolution.
 ## Gate checklist
 
 - [ ] Gate S: architecture doc complete (type inventory, seam table,
-  adversarial-test acceptance criteria, golden-migration plan).
+  adversarial-test acceptance criteria, golden-migration plan). Names
+  whether the coordinator task-text bound (footgun 7) lands in
+  `bounding.rs` or in typed contracts, citing W13's measured task-length
+  distribution.
 - [ ] Gate A: adversarial review by a different family than the author
   (codex route for Kimi-authored - metered, approval recorded;
   kimi-frontier otherwise).

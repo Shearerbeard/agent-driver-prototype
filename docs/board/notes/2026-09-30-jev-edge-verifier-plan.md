@@ -1317,3 +1317,56 @@ disagreement - the same shape as v3.1's closure. Per the round-bound
 rule the next action goes to the user: adjudicate v3.2 as amended (the
 v3.1 precedent), or accept the plan as-is with these two fixes verified
 at the U(rubric) gate.
+
+## Adjudication (2026-10-06)
+
+The user reviewed the v3.2 proposal render
+(`.review/jev-plan/jev-edge-verifier-proposal-v32.html` - local-only
+artifact, not in git) against its 12-item checklist and said "This
+looks right - I approve it." The standing gate lifts: W7 and W8 are
+dispatchable. All 12 checklist items accepted, including closing
+without a fourth codex round. Same turn, the user directed a
+frontier-reviewer pass on a follow-on question: whether the boardkit
+flow itself (gates, checklists, dispatch briefs, review packets)
+adequately enforces the eight footguns and the adjudication points, or
+whether that mapping needs hardening - "unless that is already well
+planned and documented." The workflow line (W4 and related undocumented
+items) is owned by a parallel agent this session; the board-owner
+session stays on the jev lane.
+
+### Frontier pass: boardkit flow vs the footguns (2026-10-06)
+
+Dispatched same-day per the user's approval instruction: the frontier
+reviewer seat (`amazon-bedrock/us.moonshotai.kimi-k3`; first dispatch
+failed on an expired AWS SSO session, refreshed, re-dispatched) audited
+whether the boardkit flow enforces the eight footguns and the
+adjudication points. Charter at
+`.review/jev-plan-v32/FRONTIER-PROMPT.md` (local-only).
+
+Verdict: **FAIL - needs hardening, but narrowly.** The enforcement
+structure mostly exists at the cards; six gaps, all closable in
+existing-flow mechanics, none needing a boardkit CLI change:
+
+1. Footgun 7's binding decision (bound `bounding.rs`/W11 only if W13's
+   data justifies) had no gate owner - the W13 watch-list measured but
+   nothing forced the ruling. Fixed: W13's U(code-review) now carries
+   the binding ruling; W11's Gate S must name where the bound lands,
+   citing W13's distribution.
+2. W9's U(type-surface) was sequenced after fill (the W1 precedent puts
+   the design-panel gate between skeleton and fill). Fixed: W9's gate
+   string resequenced to `S(skeleton) -> A(design panel) ->
+   U(type-surface) -> S(fill) -> A -> D -> U(code-review)`, checklist
+   split to match.
+3. The render-checklist-adjudicate pattern (used for v3.1 and the v3.2
+   approval) was session memory. Fixed: standing-gates paragraph added
+   to PROCESS.md's Gate U - proposal/rubric/architecture user gates are
+   presented as a rendered artifact with a numbered checklist, filed as
+   evidence.
+4. W10's evidence-file columns were method prose. Fixed: Gate S now
+   names the evidence file and its required columns; a missing column
+   is a Gate S failure.
+5. The W9 provisional-threshold re-check could fall through the W13
+   seam. Fixed: W9's fill Gate S carries the re-check-or-deferral duty
+   with the same-turn rule named.
+6. The standing-gate lift was recorded in plan prose but not on the W7
+   and W8 card logs the process reads. Fixed: log lines added to both.

@@ -78,7 +78,12 @@ go/no-go recommendation for W11 (typed evidence architecture) and W12.
 ## Gate checklist
 
 - [ ] Gate S: artifacts present per the method; analysis reproduces;
-  numbers traced; deviations logged.
+  numbers traced; deviations logged. Evidence file
+  `docs/board/evidence/<date>-w10-verifier-experiment.md` carries the
+  required columns (per-edge state size, truncation flags,
+  INSUFFICIENT_EVIDENCE rate) AND the W13 watch-list columns rerun on
+  the treatment arm; absence of any column is a Gate S failure, not a
+  report caveat.
 - [ ] Gate A: reviewer audits the analysis against the raw data.
 - [ ] Gate M: board owner re-runs one scenario arm and reproduces one
   number.

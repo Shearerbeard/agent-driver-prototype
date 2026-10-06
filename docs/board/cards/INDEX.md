@@ -18,12 +18,12 @@ Admission test: where does the diff land.
 | [W1](w1-workflow-type-skeleton.md) | Workflow type skeleton - spec, bindings, validation, $.-path subset | - | done | - | smart | S -> A -> U(code-review) -> U(type-surface) |
 | [W2](w2-propose-workflow-factory-seam.md) | propose_workflow through the factory - coordinator tools land, propose-only | - | in-review | W1 | smart | S -> A -> U(code-review) -> U(proposal-quality) @ U |
 | [W3](w3-workflow-executor.md) | Deterministic workflow executor - resolve, apply, unwind, residual reporting | - | done | W2 | smart | S -> A -> U(code-review) |
-| [W4](w4-sync-approval-wire.md) | Sync approval wire - notify POST, status poll with blocking hold | - | backlog | W2 | smart | S -> A -> U(code-review) -> U(wire-contract) |
+| [W4](w4-sync-approval-wire.md) | Sync approval wire - notify POST, status poll with blocking hold | - | in-progress | W2 | smart | S -> A -> U(code-review) -> U(wire-contract) @ S |
 | [W5](w5-mock-mcp-ops-surface.md) | Mock-mcp ops surface - three remediation tools, per-session healing, ground truth | - | in-review | - | smart | S -> A -> U(code-review) @ U |
 | [W6](w6-end-to-end-demo.md) | End-to-end demo - investigate, propose, approve, apply, heal, unwind | - | backlog | W2, W3, W4, W5 | any | S -> A -> M -> T |
 | [W7](w7-jev-rubric-research-spike.md) | JEV rubric research spike - synthetic edge corpus, sealed rubric, accuracy + latency read | jev | ready | - | smart | S -> A -> D -> U(rubric) @ S |
 | [W8](w8-prototype-rca-harness.md) | Prototype RCA harness - contract-retrofitted config, runner wrapper, single-scenario smoke | jev | ready | - | smart | S -> A -> D -> U(code-review) @ S |
-| [W9](w9-edge-verifier-seam.md) | EdgeVerifier seam + JevEdgeVerifier - observe-only verdict artifacts per submitted edge | jev | backlog | W7 | smart | S -> A -> D -> U(code-review) -> U(type-surface) |
+| [W9](w9-edge-verifier-seam.md) | EdgeVerifier seam + JevEdgeVerifier - observe-only verdict artifacts per submitted edge | jev | backlog | W7 | smart | S(skeleton) -> A(design panel) -> U(type-surface) -> S(fill) -> A -> D -> U(code-review) |
 | [W10](w10-rca-verifier-experiment.md) | RCA verifier experiment - verdict/outcome correlation, score deltas, latency and cost report | jev | backlog | W13, W9 | smart | S -> A -> M -> D -> U(findings) |
 | [W11](w11-typed-evidence-architecture.md) | Typed evidence artifacts + JEV-ranked context assembly - architecture | jev | backlog | W10 | smart | S -> A -> D -> U(architecture) |
 | [W12](w12-edge-gating-policy.md) | Edge gating policy - verifier verdicts affect control flow (deferred; own plan after W10) | jev | backlog | W10 | smart | S -> A -> D -> U(code-review) |

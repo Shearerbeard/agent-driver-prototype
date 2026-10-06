@@ -7,7 +7,7 @@ serialize-with: [S107, S104, W12]
 lane: jev
 lineage: none
 executor: smart
-gates: "S -> A -> D -> U(code-review) -> U(type-surface)"
+gates: "S(skeleton) -> A(design panel) -> U(type-surface) -> S(fill) -> A -> D -> U(code-review)"
 user-gates: [code-review, type-surface]
 ---
 
@@ -174,12 +174,22 @@ rust-reviewer + the codex route (metered, approval recorded);
 
 ## Gate checklist
 
-- [ ] Gate S: all acceptance commands above, outputs verbatim.
+- [ ] Gate S (skeleton): layer-1 skeleton compiles clean (todo!() bodies),
+  whole-frame golden tests fail on arrival; outputs verbatim.
+- [ ] Gate A (design panel): two-reviewer panel on the type surface,
+  before any fill.
+- [ ] Gate U (type-surface): sealed rubric + verdict schema presented
+  after the design panel closes and before any fill commit lands; fill
+  commits carry the `Card: W9` trailer only after this box is ticked.
+  STOPS.
+- [ ] Gate S (fill): fill lands; all acceptance commands above, outputs
+  verbatim. Includes the provisional-threshold re-check: executed
+  because W13 landed, or its deferral logged on this card AND inserted
+  into W10's method section in the same turn (same-turn rule,
+  PROCESS.md).
 - [ ] Gate A: rust-reviewer on the full commit range.
 - [ ] Gate D: drift audit incl. the README scope-limits line.
 - [ ] Gate U (code-review): packet presented. STOPS.
-- [ ] Gate U (type-surface): sealed rubric + verdict schema presented.
-  STOPS.
 
 ## Log
 

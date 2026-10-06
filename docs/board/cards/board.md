@@ -15,6 +15,8 @@ kanban-plugin: board
 	Depends: none. Gates: S -> A -> U(code-review) @ S. Executor: smart.
 
 ## In Progress
+- [ ] **W4** [Sync approval wire - notify POST, status poll with blocking hold](w4-sync-approval-wire.md)
+	Depends: W2. Gates: S -> A -> U(code-review) -> U(wire-contract) @ S. Executor: smart.
 
 ## In Review
 - [ ] **W2** [propose_workflow through the factory - coordinator tools land, propose-only](w2-propose-workflow-factory-seam.md)
@@ -23,12 +25,10 @@ kanban-plugin: board
 	Depends: none. Gates: S -> A -> U(code-review) @ U. Executor: smart.
 
 ## Backlog
-- [ ] **W4** [Sync approval wire - notify POST, status poll with blocking hold](w4-sync-approval-wire.md)
-	Depends: W2. Gates: S -> A -> U(code-review) -> U(wire-contract). Executor: smart.
 - [ ] **W6** [End-to-end demo - investigate, propose, approve, apply, heal, unwind](w6-end-to-end-demo.md)
 	Depends: W2, W3, W4, W5. Gates: S -> A -> M -> T. Executor: any.
 - [ ] **W9** [EdgeVerifier seam + JevEdgeVerifier - observe-only verdict artifacts per submitted edge](w9-edge-verifier-seam.md)
-	Depends: W7. Gates: S -> A -> D -> U(code-review) -> U(type-surface). Executor: smart. Lane: jev.
+	Depends: W7. Gates: S(skeleton) -> A(design panel) -> U(type-surface) -> S(fill) -> A -> D -> U(code-review). Executor: smart. Lane: jev.
 - [ ] **W10** [RCA verifier experiment - verdict/outcome correlation, score deltas, latency and cost report](w10-rca-verifier-experiment.md)
 	Depends: W13, W9. Gates: S -> A -> M -> D -> U(findings). Executor: smart. Lane: jev.
 - [ ] **W11** [Typed evidence artifacts + JEV-ranked context assembly - architecture](w11-typed-evidence-architecture.md)
