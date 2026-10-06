@@ -100,8 +100,11 @@ Gate T.
   owner.
 - 2026-10-06 Convention inherited from W4's U(wire-contract) ruling:
   the demo config's `[workflow]` section carries `hold_secs = 300`
-  (Mike's 5-minute approval-hold convention; the mirror's own 900s
-  hold is the receiver-side rig default, not what this repo's config
-  ships). W4's decision_id is a fresh uuid v7 per proposal, so the
-  demo's approval surface discovers decisions by the receiver's
-  pending stack, exactly as W4's e2e leg does. Board owner.
+  (Mike's 5-minute approval-hold convention, held after the
+  mirror-number correction: the mirror's own `--hold-timeout` default
+  is 60s and only governs its sync-hold mode, which this board's
+  poll wire never enters; the 900s figure is the sync contract's
+  budget, not a mirror setting). W4's decision_id is a fresh uuid v7
+  per proposal, so the demo's approval surface discovers decisions by
+  the receiver's pending stack, exactly as W4's e2e leg does. Board
+  owner.

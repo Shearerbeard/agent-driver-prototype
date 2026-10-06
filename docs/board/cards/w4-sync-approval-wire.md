@@ -96,8 +96,8 @@ signature). Nothing beyond that; stop and report instead.
       residual behind the Approved witness is accepted with narrowing
       deferred to later work; the wire conventions are ratified - a
       300-second (5-minute) hold budget as this repo's configured
-      convention, replacing the mirror's 900s precedent as the number
-      to ship in configs, alongside the implemented 2s poll interval,
+      convention, replacing the sync contract's 900s precedent as the
+      number to ship in configs, alongside the implemented 2s poll interval,
       10s per-request timeout, trailing-slash status URL derivation,
       and receiver-side immutability of decided rows. The hold budget
       stays config-required with no code default per the card's
@@ -329,3 +329,13 @@ line on the integration branch), after W3 lands; serialized against W3
   config carries hold_secs = 300, cross-noted on W6's log this turn.
   Checklist box ticked this turn; the card's only remaining gate is
   U(code-review). Board owner, recording Mike's rulings.
+- 2026-10-06 Hold-budget correction, ruling held at 300: Mike first
+  revised to "match the governance mirror's settings" on the board
+  owner's note, which had misattributed the 900s figure to the
+  mirror. Verified in the mirror's code and docs: its
+  `--hold-timeout` default is 60s and governs only its sync-hold
+  mode, which this board's poll wire never enters; 900s is the sync
+  contract's documented budget. Presented with the three true
+  numbers, Mike kept the 300s convention. The checklist summary and
+  W6's cross-note are corrected this turn; the ruling itself is
+  unchanged. Board owner.
