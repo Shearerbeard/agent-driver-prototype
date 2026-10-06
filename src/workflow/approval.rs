@@ -55,14 +55,16 @@ const HEX_DIGITS: [u8; 16] = *b"0123456789abcdef";
 
 /// The terminal result of awaiting an approval hold.
 ///
-/// Fail-closed is structural: only the [`Approved`] witness carried by
-/// [`ApprovalOutcome::Approved`] can drive an apply through
-/// [`apply_authorized`].  Every other variant is an ordinary tool
-/// observation the coordinator replans against.
+/// Fail-closed is structural: the [`Approved`] witness rides inside the
+/// `Approved` variant, constructible only inside this module (its field is
+/// private), so no caller can forge an approval outcome - only
+/// [`ApprovalHold::outcome`] minting one from a receiver's decision creates
+/// it.  [`apply_authorized`] requires the witness, and every other variant
+/// is an ordinary tool observation the coordinator replans against.
 #[derive(Clone, Debug, PartialEq)]
 pub enum ApprovalOutcome {
     /// The human approved the exact proposed instance; the executor may apply.
-    Approved,
+    Approved(Approved),
     /// The human denied the proposal.  `reason` is the receiver's explanation
     /// when it gave one.
     Denied {
@@ -78,24 +80,25 @@ pub enum ApprovalOutcome {
 impl ApprovalOutcome {
     /// Consume the outcome into the apply authorization it carries.
     ///
-    /// This is the only constructor of [`Approved`] reachable from an
-    /// outcome, which is what makes fail-closed structural at this seam.
+    /// This extracts the witness a receiver's decision produced; it cannot
+    /// forge one, which is what makes fail-closed structural at this seam.
     pub fn into_approved(self) -> Option<Approved> {
         match self {
-            Self::Approved => Some(Approved { _private: () }),
+            Self::Approved(approved) => Some(approved),
             _ => None,
         }
     }
 }
 
-/// The apply authorization only [`ApprovalOutcome::Approved`] can produce.
+/// The apply authorization only a receiver's approval decision can produce.
 ///
-/// [`apply_authorized`] requires this witness, so the approval-gated apply
+/// The field is private, so the type cannot be constructed outside this
+/// module; [`apply_authorized`] requires it, so the approval-gated apply
 /// path cannot be reached without a terminal approval.  (W3's
 /// `execute_workflow` remains public for its own test contract; production
 /// apply goes through this witness.  The residual is recorded on the card
 /// for the U(wire-contract) gate.)
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Approved {
     _private: (),
 }
@@ -316,26 +319,43 @@ impl ApprovalHold {
         // full interval.
         ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
+            // Interval gate: the first tick fires immediately (starting
+            // the first poll without a delay), later ticks pace one poll
+            // per interval. Cancellation and the deadline stay selectable
+            // while waiting for the tick.
             tokio::select! {
                 biased;
                 () = cancel.cancelled() => return Ok(ApprovalOutcome::Cancelled),
                 () = tokio::time::sleep_until(deadline_at) => {
                     return Ok(ApprovalOutcome::TimedOut);
                 }
-                _ = ticker.tick() => match client.poll(&decision_id).await {
-                    Ok(Some(response)) => {
-                        return Ok(if response.approved {
-                            ApprovalOutcome::Approved
-                        } else {
-                            ApprovalOutcome::Denied {
-                                reason: response.reason,
-                            }
-                        });
-                    }
-                    Ok(None) => continue,
-                    Err(ApprovalError::Transport(_)) => continue,
-                    Err(other) => return Err(other),
-                },
+                _ = ticker.tick() => {}
+            }
+            // Poll phase: the request is awaited under cancellation and
+            // the deadline, so an in-flight poll can neither outlive the
+            // hold budget (bounded further by the client's request
+            // timeout) nor delay cancellation.
+            let polled = tokio::select! {
+                biased;
+                () = cancel.cancelled() => return Ok(ApprovalOutcome::Cancelled),
+                () = tokio::time::sleep_until(deadline_at) => {
+                    return Ok(ApprovalOutcome::TimedOut);
+                }
+                polled = client.poll(&decision_id) => polled,
+            };
+            match polled {
+                Ok(Some(response)) => {
+                    return Ok(if response.approved {
+                        ApprovalOutcome::Approved(Approved { _private: () })
+                    } else {
+                        ApprovalOutcome::Denied {
+                            reason: response.reason,
+                        }
+                    });
+                }
+                Ok(None) => continue,
+                Err(ApprovalError::Transport(_)) => continue,
+                Err(other) => return Err(other),
             }
         }
     }
@@ -381,6 +401,15 @@ pub enum ApprovalError {
     /// Building the approval URL failed.
     #[error("approval URL is invalid: {0}")]
     InvalidUrl(String),
+}
+
+/// Read a response body for an error diagnostic, naming a read failure
+/// instead of silently replacing it with an empty body.
+async fn diagnostic_body(response: reqwest::Response) -> String {
+    match response.text().await {
+        Ok(text) => text,
+        Err(error) => format!("<body unreadable: {error}>"),
+    }
 }
 
 impl ApprovalClient {
@@ -461,7 +490,7 @@ impl ApprovalClient {
             .map_err(|error| ApprovalError::Transport(error.to_string()))?;
         let status = response.status();
         if !status.is_success() {
-            let text = response.text().await.unwrap_or_default();
+            let text = diagnostic_body(response).await;
             return Err(ApprovalError::UnexpectedStatus {
                 status: status.as_u16(),
                 body: text,
@@ -504,7 +533,7 @@ impl ApprovalClient {
             }
             reqwest::StatusCode::ACCEPTED | reqwest::StatusCode::MULTI_STATUS => Ok(None),
             _ => {
-                let body = response.text().await.unwrap_or_default();
+                let body = diagnostic_body(response).await;
                 Err(ApprovalError::UnexpectedStatus {
                     status: status.as_u16(),
                     body,

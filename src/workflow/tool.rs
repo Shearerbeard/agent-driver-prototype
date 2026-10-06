@@ -179,17 +179,14 @@ impl Tool for ProposeWorkflowTool {
         // The asymmetry is deliberate - the hold has no run to report,
         // the apply leg does.
         match hold.outcome(&ctx.cancellation).await {
-            Ok(outcome) => match outcome.clone().into_approved() {
-                Some(approved) => {
-                    match apply_authorized(approved, &validated, &self.sidecar, &ctx.cancellation)
-                        .await
-                    {
-                        Ok(record) => Ok(ToolResult::text(format!("{record:?}"))),
-                        Err(error) => Ok(ToolResult::error(error.to_string())),
-                    }
+            Ok(ApprovalOutcome::Approved(approved)) => {
+                match apply_authorized(approved, &validated, &self.sidecar, &ctx.cancellation).await
+                {
+                    Ok(record) => Ok(ToolResult::text(format!("{record:?}"))),
+                    Err(error) => Ok(ToolResult::error(error.to_string())),
                 }
-                None => Ok(ToolResult::error(approval_observation(outcome))),
-            },
+            }
+            Ok(other) => Ok(ToolResult::error(approval_observation(other))),
             Err(error) => Ok(ToolResult::error(error.to_string())),
         }
     }
@@ -198,7 +195,7 @@ impl Tool for ProposeWorkflowTool {
 /// Render a non-approved terminal outcome as the coordinator observation.
 fn approval_observation(outcome: ApprovalOutcome) -> String {
     match outcome {
-        ApprovalOutcome::Approved => unreachable!("the approved arm is handled by the witness"),
+        ApprovalOutcome::Approved(_) => unreachable!("the approved arm is handled by the witness"),
         ApprovalOutcome::Denied { reason } => match reason {
             Some(reason) => format!("workflow denied: {reason}"),
             None => "workflow denied: no reason given".to_owned(),

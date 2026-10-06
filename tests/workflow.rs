@@ -1023,6 +1023,7 @@ mod approval_rig {
     pub struct ServerState {
         decisions: Arc<Mutex<HashMap<String, DecisionRow>>>,
         pending_status: StatusCode,
+        pending_polls_served: Arc<std::sync::atomic::AtomicUsize>,
     }
 
     impl Default for ServerState {
@@ -1030,6 +1031,7 @@ mod approval_rig {
             Self {
                 decisions: Arc::new(Mutex::new(HashMap::new())),
                 pending_status: StatusCode::ACCEPTED,
+                pending_polls_served: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             }
         }
     }
@@ -1055,6 +1057,34 @@ mod approval_rig {
     impl ApprovalServerHandle {
         pub fn notify_url(&self) -> reqwest::Url {
             self.base_url.join("/decisions").unwrap()
+        }
+
+        /// Pending status responses actually served to polling clients.
+        pub fn pending_polls(&self) -> usize {
+            self.state
+                .pending_polls_served
+                .load(std::sync::atomic::Ordering::SeqCst)
+        }
+
+        /// Wait until the receiver has served `n` pending status polls -
+        /// proof the hold is actively polling before a decision lands.
+        pub async fn await_pending_polls(&self, n: usize) {
+            for _ in 0..2000 {
+                if self.pending_polls() >= n {
+                    return;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+            panic!(
+                "expected {n} pending polls served, saw {}",
+                self.pending_polls()
+            );
+        }
+
+        /// The digest the receiver captured on the wire for a decision id.
+        pub async fn wire_digest(&self, decision_id: &str) -> Option<String> {
+            let map = self.state.decisions.lock().await;
+            map.get(decision_id).map(|row| row.body.digest.clone())
         }
 
         /// The poll base: ends in `/` so the client joins
@@ -1084,25 +1114,6 @@ mod approval_rig {
             if let Some(row) = map.get_mut(decision_id) {
                 row.status = DecisionStatus::Denied(None);
             }
-        }
-
-        /// Decide `approved` once the notify POST has landed its row.
-        ///
-        /// For legs that drive the tool (whose execute call blocks inside
-        /// the hold): the decision must arrive while the hold is pending,
-        /// so this waits for the row instead of racing the POST.
-        pub async fn approve_when_present(&self, decision_id: &str) {
-            for _ in 0..500 {
-                {
-                    let mut map = self.state.decisions.lock().await;
-                    if let Some(row) = map.get_mut(decision_id) {
-                        row.status = DecisionStatus::Approved;
-                        return;
-                    }
-                }
-                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-            }
-            panic!("approval row {decision_id} never landed");
         }
     }
 
@@ -1158,7 +1169,12 @@ mod approval_rig {
         let map = state.decisions.lock().await;
         let (status, body) = match map.get(&id) {
             Some(row) => match &row.status {
-                DecisionStatus::Pending => (state.pending_status, json!({"pending": true})),
+                DecisionStatus::Pending => {
+                    state
+                        .pending_polls_served
+                        .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    (state.pending_status, json!({"pending": true}))
+                }
                 DecisionStatus::Approved => {
                     (StatusCode::OK, json!({"approved": true, "reason": null}))
                 }
@@ -1210,13 +1226,21 @@ fn approval_payload(workflow: JsonValue) -> ApprovalPayload {
     )
 }
 
+/// sha256 over `serde_json::to_vec` of the fixed binding-test workflow
+/// (`{"goal":"g","steps":[]}`), computed out of band (python hashlib over
+/// the compact serialization) and frozen here so the binding proof does not
+/// recompute the digest with the code under test.
+const PAYLOAD_BINDING_DIGEST: &str =
+    "76c7d61d884d78e256accd8ace8f32eb76f8d2954c2ddcfb4c872035e8fe39cb";
+
 // ============================================================================
 // W4 acceptance scenarios
 // ============================================================================
 
-/// W4 offline: an approved decision resolves the hold to
-/// [`ApprovalOutcome::Approved`]. The row is decided after the notify POST
-/// lands and while the hold is pending.
+/// W4 offline: an approved decision resolves the hold to an approved
+/// outcome. The decision lands only after the receiver has served a
+/// pending (202) poll, proving the hold was actively polling when the
+/// decision arrived.
 #[tokio::test]
 async fn approve_leg_decides_approved() {
     let server = approval_rig::boot().await;
@@ -1230,17 +1254,24 @@ async fn approve_leg_decides_approved() {
     let decision_id = payload.decision_id().to_owned();
 
     let hold = client.notify(payload).await.expect("notify returns a hold");
+    let waiting = tokio::spawn(async move {
+        hold.outcome(&CancellationToken::new())
+            .await
+            .expect("outcome resolves")
+    });
+    server.await_pending_polls(1).await;
     server.approve(&decision_id).await;
-    let outcome = hold
-        .outcome(&CancellationToken::new())
+    let outcome = tokio::time::timeout(std::time::Duration::from_secs(5), waiting)
         .await
-        .expect("outcome resolves");
+        .expect("outcome resolves within the join bound")
+        .expect("the spawned outcome does not panic");
 
-    assert_eq!(outcome, ApprovalOutcome::Approved);
+    assert!(matches!(outcome, ApprovalOutcome::Approved(_)));
 }
 
 /// W4 offline: a denied decision resolves the hold to
-/// [`ApprovalOutcome::Denied`] and carries the receiver's reason.
+/// [`ApprovalOutcome::Denied`] and carries the receiver's reason, with a
+/// pending (202) poll served before the decision lands.
 #[tokio::test]
 async fn deny_leg_decides_denied_with_reason() {
     let server = approval_rig::boot().await;
@@ -1254,18 +1285,22 @@ async fn deny_leg_decides_denied_with_reason() {
     let decision_id = payload.decision_id().to_owned();
 
     let hold = client.notify(payload).await.expect("notify returns a hold");
+    let waiting = tokio::spawn(async move {
+        hold.outcome(&CancellationToken::new())
+            .await
+            .expect("outcome resolves")
+    });
+    server.await_pending_polls(1).await;
     server.deny(&decision_id, "not today").await;
-    let outcome = hold
-        .outcome(&CancellationToken::new())
+    let outcome = tokio::time::timeout(std::time::Duration::from_secs(5), waiting)
         .await
-        .expect("outcome resolves");
+        .expect("outcome resolves within the join bound")
+        .expect("the spawned outcome does not panic");
 
-    assert_eq!(
-        outcome,
-        ApprovalOutcome::Denied {
-            reason: Some("not today".to_owned())
-        }
-    );
+    match outcome {
+        ApprovalOutcome::Denied { reason } => assert_eq!(reason.as_deref(), Some("not today")),
+        other => panic!("expected a denial, got {other:?}"),
+    }
 }
 
 /// W4 offline: a denial without a reason resolves to
@@ -1284,19 +1319,25 @@ async fn deny_leg_without_reason_decides_denied() {
     let decision_id = payload.decision_id().to_owned();
 
     let hold = client.notify(payload).await.expect("notify returns a hold");
+    let waiting = tokio::spawn(async move {
+        hold.outcome(&CancellationToken::new())
+            .await
+            .expect("outcome resolves")
+    });
+    server.await_pending_polls(1).await;
     server.deny_without_reason(&decision_id).await;
-    let outcome = hold
-        .outcome(&CancellationToken::new())
+    let outcome = tokio::time::timeout(std::time::Duration::from_secs(5), waiting)
         .await
-        .expect("outcome resolves");
+        .expect("outcome resolves within the join bound")
+        .expect("the spawned outcome does not panic");
 
     assert_eq!(outcome, ApprovalOutcome::Denied { reason: None });
 }
 
 /// W4 offline: if no decision arrives before the hold budget expires, the
 /// hold resolves to [`ApprovalOutcome::TimedOut`]. This leg boots the
-/// receiver with 207-pending so both halves of the pending contract are
-/// exercised (the other legs run 202).
+/// receiver with 207-pending so that half of the pending contract is the
+/// one actually polled (the other legs poll 202).
 #[tokio::test]
 async fn hold_timeout_leg_decides_timed_out() {
     let server = approval_rig::boot_with_pending_status(axum::http::StatusCode::MULTI_STATUS).await;
@@ -1315,12 +1356,16 @@ async fn hold_timeout_leg_decides_timed_out() {
         .expect("outcome resolves");
 
     assert_eq!(outcome, ApprovalOutcome::TimedOut);
+    assert!(
+        server.pending_polls() >= 1,
+        "the timeout must be observed through real 207-pending polls"
+    );
 }
 
 /// W4 offline: if the request cancellation token fires while the hold is
-/// pending, the hold resolves to [`ApprovalOutcome::Cancelled`] and never
-/// hangs. The token fires mid-flight (after notify, during the pending
-/// hold), not before it.
+/// actively polling, the hold resolves to [`ApprovalOutcome::Cancelled`]
+/// promptly - the cancellation interrupts a pending hold, including any
+/// in-flight poll request.
 #[tokio::test]
 async fn cancel_hold_leg_decides_cancelled() {
     let server = approval_rig::boot().await;
@@ -1334,25 +1379,52 @@ async fn cancel_hold_leg_decides_cancelled() {
     let cancel = CancellationToken::new();
 
     let hold = client.notify(payload).await.expect("notify returns a hold");
-    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    let token = cancel.clone();
+    let waiting =
+        tokio::spawn(async move { hold.outcome(&token).await.expect("outcome resolves") });
+    server.await_pending_polls(1).await;
     cancel.cancel();
-    let outcome = hold.outcome(&cancel).await.expect("outcome resolves");
+    let outcome = tokio::time::timeout(std::time::Duration::from_secs(5), waiting)
+        .await
+        .expect("cancellation must not hang on a pending hold")
+        .expect("the spawned outcome does not panic");
 
     assert_eq!(outcome, ApprovalOutcome::Cancelled);
 }
 
-/// W4 offline: the payload's digest binding verifies - the sha256 over the
-/// workflow bytes is the digest the approver authorizes.
+/// W4 offline: the payload's digest binding verifies against an
+/// independently pinned SHA-256 constant, and the digest the receiver
+/// captured on the wire is that same value - the binding is proven
+/// end-to-end, not by recomputing with the same function under test.
 #[tokio::test]
 async fn payload_binding_verifies() {
+    let server = approval_rig::boot().await;
+    let client = ApprovalClient::new(
+        server.notify_url(),
+        server.status_url(),
+        60,
+        DecisionId::Digest,
+    );
     let payload = approval_payload(json!({ "goal": "g", "steps": [] }));
+    let decision_id = payload.decision_id().to_owned();
+    let expected = PAYLOAD_BINDING_DIGEST;
 
+    assert_eq!(payload.digest(), expected);
     assert!(payload.verify_binding());
-    assert_eq!(payload.decision_id(), payload.digest());
+    assert_eq!(payload.decision_id(), expected);
+
+    let hold = client.notify(payload).await.expect("notify returns a hold");
+    let captured = server
+        .wire_digest(&decision_id)
+        .await
+        .expect("the receiver captured the notify row");
+    drop(hold);
+    assert_eq!(captured, expected);
 }
 
 /// W4 end-to-end: a proposed workflow is validated, the approval hold is
-/// approved while pending, and the W3 executor applies the steps.
+/// approved while a poll is in flight, and the W3 executor applies the
+/// steps.
 #[tokio::test]
 async fn end_to_end_approval_gates_apply() {
     let server = rig::ScriptedServer::new(advertised(), |name, _args| match name {
@@ -1394,15 +1466,19 @@ async fn end_to_end_approval_gates_apply() {
     let probe = ApprovalPayload::new(parsed, String::new(), "e2e".to_owned(), &DecisionId::Digest);
     let decision_id = probe.decision_id().to_owned();
 
-    // execute blocks inside the approval hold; the decision must land
-    // while it is pending.
+    // execute blocks inside the approval hold; the decision lands only
+    // after a poll was actually served, so the hold is provably pending.
     let executing = tokio::spawn(async move {
         tool.execute(&input, &ToolContext::new(CancellationToken::new()))
             .await
             .expect("propose_workflow returns every outcome as an observation")
     });
-    approval_server.approve_when_present(&decision_id).await;
-    let result = executing.await.expect("execute joins");
+    approval_server.await_pending_polls(1).await;
+    approval_server.approve(&decision_id).await;
+    let result = tokio::time::timeout(std::time::Duration::from_secs(10), executing)
+        .await
+        .expect("the approved apply resolves within the join bound")
+        .expect("the executing task does not panic");
 
     assert!(result.is_success(), "{result:?}");
     assert!(
