@@ -120,3 +120,14 @@ Gate T.
   not resolve - the fully-qualified mention above is the linkage of
   record until the family owner registers the board. Check SB23's
   state before this card's demo-config work starts. Board owner.
+- 2026-10-06 Wiki-less orientation canary run on Mike's portability
+  question; key, verbatim answers, grade (PASS 4/4), and the gaps it
+  surfaced are filed at
+  [evidence/2026-10-06-wiki-less-orientation-canary.md](../evidence/2026-10-06-wiki-less-orientation-canary.md).
+  The gap that touches this card: SB23's work lives on a local-only
+  aura-sandbox branch with no remote counterpart as of this date (six
+  remote heads, none carrying it; ten unpushed commits, dirty board
+  views there), so a second machine cannot fetch the harness card
+  this log cites until the aura-sandbox board owner pushes. This
+  board's record stands; the push is that board's operation. Board
+  owner.
