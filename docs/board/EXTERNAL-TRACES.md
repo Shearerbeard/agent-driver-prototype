@@ -54,6 +54,23 @@ and who owes the follow-up.
   (branch `w5-ops-surface`, pushed, tip logged on W5's card);
   visibility pushed; verified 2026-10-06; owed Mike's review on PR
   #21 and his PR decision on W5's branch.
+- Aura artifact reference graph - the published, frontier-reviewed
+  design for artifact relationships and searchability in aura's
+  orchestration mode (flat node store with mandatory pre-summaries,
+  nine typed edge kinds, one-hop worker read closure over ancestor
+  handoff, declared evidence, and forced ancestors); reference input
+  for this prototype's handoff and context model, which it mirrors -
+  the prototype is inspired by OSS aura; repo mezmo/aura @
+  `https://github.com/mezmo/aura` (local checkout
+  `aura-orchestration-mode/`, branch nightly @ a4dec712); path
+  published render
+  `https://shearerbeard.github.io/artifacts/artifact-reference-graph/`
+  (self-contained page; the two-round review ledger is a section on
+  it) and tracking card aura/P69 in the aura board's wiki checkout
+  (`boards/aura-orchestration-mode/docs/board/cards/p69-artifact-reference-graph-design.md`);
+  visibility public render / local-only card; verified 2026-10-07;
+  owed nothing by this board - adoption, if any, mints its own card
+  here (board owner).
 
 ## Entry grammar
 
