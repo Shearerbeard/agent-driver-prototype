@@ -126,6 +126,16 @@ truth). Nothing else; stop and report instead.
 Feature branch in ai-experiments (`w5-ops-surface` or the repo's
 convention), PR there; the card closes when that PR merges.
 
+## External traces
+
+- W5's feature branch - this card's work and its review surface; repo
+  `ai-experiments` @ `https://github.com/Shearerbeard/ai-experiments`;
+  path `mock-mcp-service/` + the scenario files named in Scope; branch
+  `w5-ops-surface`, tip `1d6be81` (range `6d8afd6..1d6be81`);
+  visibility pushed; verified 2026-10-06; owed Mike's PR decision at
+  the card's U(code-review) gate. Full list and grammar:
+  [EXTERNAL-TRACES.md](../EXTERNAL-TRACES.md).
+
 ## Log
 
 - 2026-09-29 Minted ready; opening wave with W1 (independent repo, and

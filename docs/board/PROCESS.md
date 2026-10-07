@@ -444,7 +444,9 @@ Before a session ends, the board owner runs board hygiene: every card the
 session touched has a dated log line for each state change, statuses reflect
 reality, the views regenerate and `boardkit check` passes, new evidence is
 linked from the card that produced it, every code card that entered
-`in-review` has its `commit-range` set and its packet generated, and prose
+`in-review` has its `commit-range` set and its packet generated, the
+`EXTERNAL-TRACES.md` index is updated for any trace the session touched
+(verified date and owed line current), and prose
 lint passes on every markdown file the session created or edited. Then the
 board owner commits the session's board and doc writes under the commit
 standards above. Board state is never left uncommitted across sessions.
@@ -498,7 +500,9 @@ than the one the board owner ran in, so the proof covers cross-harness
 legibility and not just the board owner's own reading. Give it only the
 cold-start surface a fresh board owner reads: the registry's `INDEX.md`,
 this file's recovery protocol and roles sections, `board.md`, and
-`deferred.md` with the cards it names. Include `deferred.md` in the brief
+`deferred.md` with the cards it names. Where the board keeps an
+`EXTERNAL-TRACES.md` index, include it too, so the canary's proof covers
+the locators of off-board material. Include `deferred.md` in the brief
 unconditionally. When the view is absent, the brief says so and states
 that absence reads as "no deferred gates" - then the canary answers the
 deferral question outright instead of abstaining. The generated views

@@ -1,8 +1,12 @@
 # External traces: a flag for facts that live outside this board
 
-Status: proposed 2026-10-06 by the board-owner session; awaiting Mike's
-ruling. Nothing in this document is implemented beyond what the Log
-already records.
+Status: ruled in by Mike 2026-10-06, implementing the same day: the
+index (`docs/board/EXTERNAL-TRACES.md`), the W5/W6 card sections, the
+AGENTS.md read-order step, and the PROCESS canary/close amendments.
+Rulings taken at implementation: the aura-sandbox locator is its public
+URL; the skills under `~/.agents/skills/` are assumed present on every
+working machine; the family registry is located by the `mezmo/aura`
+repo name and each machine finds its own local checkout.
 
 ## Problem
 

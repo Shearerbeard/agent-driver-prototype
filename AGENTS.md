@@ -44,6 +44,10 @@ file first.
    asked to act on. When resuming a dead or interrupted session, follow the
    Recovery protocol at the end of `PROCESS.md` instead of trusting the
    last chat transcript.
+7. Read `docs/board/EXTERNAL-TRACES.md`, the locators for material this
+   board depends on that lives outside this repo (other repos, the family
+   registry, working surfaces), before following any reference that points
+   off-board.
 
 Read `docs/board/REVIEW-TOOLING.md` before running any review or delegation
 tool; it pins the actual tools this repo uses and overrides generic

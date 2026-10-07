@@ -77,6 +77,17 @@ from the minted `off main` - the evaluation ruling keeps the workflow
 line on the integration branch; after W2, W3, W4, W5); closes at its
 Gate T.
 
+## External traces
+
+- SB23 harness - the gov-mirror human UI this card's live approval leg
+  consumes; repo `aura-sandbox` @
+  `https://github.com/answerbook/aura-sandbox` (public); path card
+  `docs/board/cards/sb23-gov-mirror-ui-and-faults.md` (board at repo
+  root, id prefix SB); visibility public repo / local-only branch (the
+  work is unpushed as of 2026-10-06); verified 2026-10-06; owed push
+  by the aura-sandbox board owner. Full list and grammar:
+  [EXTERNAL-TRACES.md](../EXTERNAL-TRACES.md).
+
 ## Log
 
 - 2026-09-29 Minted backlog behind W2/W3/W4/W5. Board owner.
