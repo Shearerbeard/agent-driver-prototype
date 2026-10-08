@@ -1,7 +1,7 @@
 ---
 id: W7
 title: JEV rubric research spike - synthetic edge corpus, sealed rubric, accuracy + latency read
-status: ready
+status: in-progress
 depends: []
 serialize-with: []
 lineage: none
@@ -177,6 +177,30 @@ prompt mid-dispatch is a failed pre-vet, not a surprise to debug.
 
 ## Log
 
+- 2026-10-08 Pulled in-progress. Session plan (W7 ∥ W8) vetted by the
+  frontier seat: PASS-WITH-CONDITIONS, all conditions applied (ledger
+  rides the plan artifact in `.review/jev-session-plan/`, working
+  material; this card is the durable record). Preflight green: local
+  gateway up (`kev-latest`, `jev-latest`); cloud probe 200
+  (`jev-1.13.0`); Bedrock judge probe 200 through the raw
+  bearer-token path (`AWS_BEARER_TOKEN_BEDROCK` against
+  bedrock-runtime) - DIVERGENCE from the v3.2 plan's env-default
+  SSO-chain assumption logged here: bearer-token auth is what ships
+  (vet finding 2). jev-driver workspace pulled to `62f0948`
+  (v0.1.0 published to crates.io as `jev-driver`; the third-party
+  `jev` crate on crates.io is unrelated). Board owner.
+- 2026-10-08 Ruling logged (user): the Leg-2 judge control runs on the
+  HELD-OUT half only - roughly 300 calls, 0.6-2M input tokens; the
+  dollar figure is surfaced at U(rubric), not just the call count.
+  Forfeits named (vet finding 1): the judge's co-calibration role on
+  the calibration half is dropped, and judge-vs-rubric agreement
+  exists on held-out data only. Board owner.
+- 2026-10-08 Ruling logged (user): live spend is staged - offline
+  legs green before any cloud call, then ONE frozen cloud run
+  produces the report numbers (that run is Gate S's one live scoring
+  run; staging breaks no acceptance clause, vet finding 9). On quota
+  exhaustion: halt and ping the user for a top-off, never retry-burn.
+  Board owner.
 - 2026-10-06 STANDING GATE LIFTED: the user approved the v3.2 proposal
   render against its 12-item adjudication checklist ("This looks right -
   I approve it"); adjudication recorded in the plan note. Card is

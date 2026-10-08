@@ -1,7 +1,7 @@
 ---
 id: W8
 title: Prototype RCA harness - contract-retrofitted config, runner wrapper, single-scenario smoke
-status: ready
+status: in-progress
 depends: []
 serialize-with: []
 lineage: none
@@ -84,7 +84,7 @@ smoke does not.
 ## Dispatch note
 
 The driving session needs `.opencode` `external_directory` grants for
-`~/workspace/ai-experiments` (including its gitignored `rca-results-*`
+`~/dev/ai-experiments` (including its gitignored `rca-results-*`
 directories) before dispatching any leg of this card. See the plan's
 execution-environment section; a permission prompt mid-dispatch is a
 failed pre-vet, not a surprise to debug.
@@ -103,6 +103,26 @@ failed pre-vet, not a surprise to debug.
 
 ## Log
 
+- 2026-10-08 Pulled in-progress (W7 ∥ W8 wave; plan vetted
+  PASS-WITH-CONDITIONS by the frontier seat, conditions applied).
+  Preflight green: zai coding-plan endpoint 200 with `glm-5.3` in the
+  model list. Ruling logged (user): the smoke coordinator is
+  `glm-5.3` via the zai coding-plan endpoint - the wrapper sets all
+  three env vars explicitly (`PROVIDER=openai`,
+  `OPENAI_BASE_URL=https://api.z.ai/api/coding/paas/v4`,
+  `OPENAI_API_KEY=$ZAI_API_KEY`, `OPENAI_MODEL=glm-5.3`) and never
+  inherits the ambient `OPENAI_API_KEY` (unknown target). Board
+  owner.
+- 2026-10-08 Ruling logged (user): Gate A prose/fallback route codex
+  -> the in-harness kimi-bedrock frontier seat for this run (codex
+  out); never-Kimi-on-Kimi enforced; code legs route to the GPT
+  rust-reviewer seat. Gate A packets: one per repo (configs here,
+  wrapper in ai-experiments) per the PROCESS `--repo`/`--suffix` flow
+  (vet finding 6). Board owner.
+- 2026-10-08 Dispatch-note path corrected `~/workspace/ai-experiments`
+  -> `~/dev/ai-experiments` (verified on disk this session; the v3.2
+  plan's execution-environment section diverges on the same fact -
+  logged here per vet finding 5). Board owner.
 - 2026-10-06 STANDING GATE LIFTED: the user approved the v3.2 proposal
   render against its 12-item adjudication checklist ("This looks right -
   I approve it"); adjudication recorded in the plan note. Card is
