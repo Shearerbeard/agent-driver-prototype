@@ -50,10 +50,11 @@ and who owes the follow-up.
   machine-bootstrap appendix.
 - Review surfaces - where the user's decisions are owed; repo
   `Shearerbeard/agent-driver-prototype`, PR #21 (card/w4 ->
-  integration/workflow) merged 2026-10-07 as `9f3dc4a`, so the W4
-  decision is settled; repo `Shearerbeard/ai-experiments`, branch
-  `w5-ops-surface` pushed (tip logged on W5's card); visibility
-  pushed; verified 2026-10-07; owed Mike's PR decision on W5's branch.
+  integration/workflow) merged 2026-10-07 as `9f3dc4a` and W2's
+  U(proposal-quality) accepted 2026-10-07 - both decisions settled;
+  repo `Shearerbeard/ai-experiments`, branch `w5-ops-surface` pushed
+  (tip logged on W5's card); visibility pushed; verified 2026-10-07;
+  owed Mike's PR decision on W5's branch.
 - Aura artifact reference graph - the published, frontier-reviewed
   design for artifact relationships and searchability in aura's
   orchestration mode (flat node store with mandatory pre-summaries,

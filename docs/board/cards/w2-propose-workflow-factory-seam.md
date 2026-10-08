@@ -1,7 +1,7 @@
 ---
 id: W2
 title: propose_workflow through the factory - coordinator tools land, propose-only
-status: in-review
+status: done
 depends: [W1]
 serialize-with: []
 lineage: isolated-branch
@@ -91,10 +91,16 @@ hold_secs required-when-enabled). Nothing else; stop and report instead.
       trait declaration in agent-driver-rs@2e6be4e (dyn-compatible boxed
       futures), not by any rust floor; no code change. No PR reply
       posted, per Mike's ruling.)
-- [ ] Gate U (proposal-quality): the stage-1 loop, user-ruled - run
+- [x] Gate U (proposal-quality): the stage-1 loop, user-ruled - run
       the world-based scenarios against this surface and iterate on
       proposal quality until Mike is satisfied; each round's evidence
       linked from this card. May loop any number of rounds.
+      (Passed 2026-10-07: Mike accepted the stage-1 rounds - the
+      post-fix digest plus its recorded quality notes (remediation
+      direction vs the scenario ground truth, the null-rollback
+      declarations) - and ruled that future rollback-declaration
+      scenarios stay under watch. Evidence:
+      [the stage-1 smoke record](../evidence/2026-10-07-w2-stage1-smoke.md).)
 
 ## Branch
 
@@ -397,3 +403,24 @@ on `integration/workflow` after its second Gate U. Worktree:
   model only through rejections - a plausible contributor. Evidence:
   [the stage-1 smoke record](../evidence/2026-10-07-w2-stage1-smoke.md).
   Gate stays open for Mike. Board owner.
+- 2026-10-07 U(proposal-quality) accepted, Mike's ruling: the card's
+  second gate passes on the stage-1 rounds - the post-fix digest is
+  the accepted artifact, and the recorded quality notes (direction vs
+  the ground truth; the null rollback declarations) stay visible
+  without blocking. Standing note from the ruling: future
+  rollback-declaration scenarios stay under watch; the
+  null-declaration gap is legal and gets revisited if a later round
+  surfaces it again. Card done; the stage-2 approval-to-accuracy loop
+  rides W6 per the standing plan. Board owner, recording Mike's
+  ruling.
+- 2026-10-07 Close orientation canary on the post-W2 surface, run
+  under the index-inclusive brief: PASS - a cold reader (in-harness
+  `python-reviewer` transport, kimi-k2.7-code pin, read-only,
+  cross-family to this session's board owner) named the in-review set
+  (W5), the done set (W1-W4), the next pull (W7), the no-deferred
+  state, all six traces with owed lines, and the immediate next
+  action; no fabricated facts, all findings by-design. The prior
+  close canary's depends-vs-done advisory dissolved with this close
+  (W2 done makes every done card's dependencies done). Evidence:
+  [the canary record](../evidence/2026-10-07-w2-close-orientation-canary.md).
+  Board owner.
