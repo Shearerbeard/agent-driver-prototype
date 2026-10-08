@@ -122,4 +122,4 @@ captured). The zai coding plan is subscription-priced, so these are
 quota-consumption figures rather than per-token charges.
 
 The gate stays with Mike: he can take the round as-is or ask for a
-quality iteration (for example, the schema guidance or the model).
+quality iteration on the schema guidance or the model.
