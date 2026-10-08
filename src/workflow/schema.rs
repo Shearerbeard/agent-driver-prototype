@@ -7,12 +7,21 @@
 //! stop-and-report rather than a quiet new dependency. The subset below
 //! covers the validation-relevant keywords the sidecar tools use —
 //! `type` (with `string`, `number`, `integer`, `boolean`, `object`,
-//! `array`, `null`), `properties`, `required`, `items`, and `enum`.
-//! Metadata keywords (`title`, `description`, `$schema`, `$id`,
-//! `default`, `examples`) are ignored. Any other validation-relevant
+//! `array`, `null`), `properties`, `required`, `items`, `enum`, and the
+//! numeric bounds `minimum` and `maximum`. Metadata keywords (`title`,
+//! `description`, `$schema`, `$id`, `default`, `examples`) and the
+//! annotation-only `format` are ignored. Any other validation-relevant
 //! keyword fails loud as [`SchemaCheck::Unsupported`] rather than
 //! passing silently: the approver-authorization rule (K3 finding 2)
 //! makes unearned validation confidence the worst outcome of the three.
+//!
+//! Known limit, from the 2026-10-07 stage-1 smoke: schemas that compose
+//! (`$ref`, `anyOf`, `oneOf`) or constrain object keys
+//! (`additionalProperties`) still refuse loud, and several read-only
+//! investigation tools declare those shapes. Widening the subset to
+//! resolve them is follow-up work; the ops verbs this board's
+//! remediation proposals step through (`ops_scale_app`,
+//! `ops_rollback_deploy`) stay within the extended subset.
 //!
 //! Reference nodes are structural here: a `{"$from": ...}` object
 //! occupies the position its property names, and its bounds (when
@@ -23,7 +32,9 @@
 use serde_json::Value;
 
 /// Keywords this validator recognizes without enforcing anything: they
-/// annotate the schema rather than constrain the instance.
+/// annotate the schema rather than constrain the instance. `format` is
+/// annotation-only under draft 2020-12; the served schemas carry the
+/// integer-width and date-time forms schemars emits.
 const METADATA_KEYWORDS: &[&str] = &[
     "title",
     "description",
@@ -31,11 +42,20 @@ const METADATA_KEYWORDS: &[&str] = &[
     "$id",
     "default",
     "examples",
+    "format",
 ];
 
 /// The validation-relevant keywords the W1 narrowing admits; any other
 /// keyword refuses as [`SchemaCheck::Unsupported`].
-const SUBSET_KEYWORDS: &[&str] = &["type", "enum", "required", "properties", "items"];
+const SUBSET_KEYWORDS: &[&str] = &[
+    "type",
+    "enum",
+    "required",
+    "properties",
+    "items",
+    "minimum",
+    "maximum",
+];
 
 /// The `type` names the subset admits.
 const TYPE_NAMES: &[&str] = &[
@@ -154,6 +174,13 @@ fn refuse_unsupported_schema(schema: &Value) -> Result<(), SchemaCheck> {
                 }
                 refuse_unsupported_schema(value)?;
             }
+            "minimum" | "maximum" => {
+                if !value.is_number() {
+                    return Err(SchemaCheck::Unsupported {
+                        keyword: keyword.clone(),
+                    });
+                }
+            }
             _ => {} // the remaining subset keywords hold no subschemas
         }
     }
@@ -176,8 +203,47 @@ fn enforce_subset(schema: &Value, instance: &Value) -> Result<(), SchemaCheck> {
             "required" => enforce_required(value, instance)?,
             "properties" => enforce_properties(value, instance)?,
             "items" => enforce_items(value, instance)?,
+            "minimum" => enforce_minimum(value, instance)?,
+            "maximum" => enforce_maximum(value, instance)?,
             _ => {} // metadata, already vetted
         }
+    }
+    Ok(())
+}
+
+/// Numeric bounds constrain numbers only: a non-numeric instance passes
+/// (the `type` keyword is what indicts it), matching the JSON Schema
+/// rule that `minimum`/`maximum` never fail a non-number.
+fn enforce_minimum(bound: &Value, instance: &Value) -> Result<(), SchemaCheck> {
+    let Some(bound) = bound.as_f64() else {
+        return Err(SchemaCheck::Unsupported {
+            keyword: "minimum".to_string(),
+        });
+    };
+    let Some(value) = instance.as_f64() else {
+        return Ok(());
+    };
+    if value < bound {
+        return Err(SchemaCheck::Mismatch {
+            message: format!("value {value} is less than the schema minimum {bound}"),
+        });
+    }
+    Ok(())
+}
+
+fn enforce_maximum(bound: &Value, instance: &Value) -> Result<(), SchemaCheck> {
+    let Some(bound) = bound.as_f64() else {
+        return Err(SchemaCheck::Unsupported {
+            keyword: "maximum".to_string(),
+        });
+    };
+    let Some(value) = instance.as_f64() else {
+        return Ok(());
+    };
+    if value > bound {
+        return Err(SchemaCheck::Mismatch {
+            message: format!("value {value} is greater than the schema maximum {bound}"),
+        });
     }
     Ok(())
 }
@@ -362,17 +428,63 @@ mod tests {
             "$schema": "https://json-schema.org/draft/2020-12/schema",
             "default": {},
             "examples": [],
+            "format": "date-time",
             "type": "object"
         });
         assert!(validate_instance(&schema, &json!({})).is_ok());
+    }
+
+    /// The shape the sidecar's `ops_scale_app` serves: an integer with a
+    /// schemars `format` annotation and a `minimum` bound. The form is
+    /// tolerated, the bound is enforced - the 2026-10-07 stage-1 smoke
+    /// failed every proposal on the annotation alone.
+    #[test]
+    fn integer_width_format_and_minimum_validate_like_the_ops_verb() {
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "app": {"type": "string"},
+                "replicas": {"type": "integer", "format": "uint32", "minimum": 0}
+            },
+            "required": ["app", "replicas"]
+        });
+        assert!(validate_instance(&schema, &json!({"app": "payments", "replicas": 6})).is_ok());
+        assert!(validate_instance(&schema, &json!({"app": "payments", "replicas": 0})).is_ok());
+        let below = validate_instance(&schema, &json!({"app": "payments", "replicas": -1}))
+            .expect_err("a negative replica count breaks the minimum");
+        assert!(matches!(below, SchemaCheck::Mismatch { .. }));
+        assert!(validate_instance(&schema, &json!({"app": "payments", "replicas": 1.5})).is_err());
+    }
+
+    #[test]
+    fn maximum_is_enforced_and_bounds_only_constrain_numbers() {
+        let schema = json!({"type": "object", "properties": {"limit": {"maximum": 5}}});
+        assert!(validate_instance(&schema, &json!({"limit": 5})).is_ok());
+        let over =
+            validate_instance(&schema, &json!({"limit": 6})).expect_err("6 breaks the maximum");
+        assert!(matches!(over, SchemaCheck::Mismatch { .. }));
+        // A non-number instance is not constrained by numeric bounds.
+        assert!(validate_instance(&schema, &json!({"limit": "six"})).is_ok());
+    }
+
+    #[test]
+    fn non_numeric_bounds_refuse_as_unsupported() {
+        for keyword in ["minimum", "maximum"] {
+            let mut schema = json!({"type": "object"});
+            schema[keyword] = json!("zero");
+            match validate_instance(&schema, &json!({})).unwrap_err() {
+                SchemaCheck::Unsupported { keyword: found } => assert_eq!(found, keyword),
+                SchemaCheck::Mismatch { message } => {
+                    panic!("{keyword} was read as a mismatch: {message}")
+                }
+            }
+        }
     }
 
     #[test]
     fn validation_relevant_keywords_outside_the_subset_refuse() {
         for keyword in [
             "pattern",
-            "minimum",
-            "maximum",
             "minLength",
             "maxLength",
             "additionalProperties",
@@ -381,7 +493,6 @@ mod tests {
             "anyOf",
             "oneOf",
             "not",
-            "format",
             "minItems",
             "maxItems",
             "uniqueItems",

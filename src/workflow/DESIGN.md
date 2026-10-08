@@ -108,16 +108,27 @@ each name belongs to.
 The card's scope names `src/workflow/` only (`Cargo.toml` is not in
 it), so the inputSchema check is an in-tree subset validator rather
 than a schema-crate dependency. The subset covers the
-validation-relevant keywords the rig's discovered tools declare:
+validation-relevant keywords the discovered tools declare:
 `type` (`string`, `number`, `integer`, `boolean`, `object`, `array`,
-`null`), `properties`, `required`, `items`, `enum`. Metadata keywords
-(`title`, `description`, `$schema`, `$id`, `default`, `examples`) are
-ignored. Any other validation-relevant keyword fails loud
-(`UnsupportedSchemaKeyword`) rather than passing silently. Three
-outcomes are possible when a schema exceeds the subset (pass, fail,
-refuse), and the approver-authorization rule makes silent-pass the only
-unacceptable one. A tool whose schema needs the fuller surface is the
-signal to widen scope deliberately, on a card that names `Cargo.toml`.
+`null`), `properties`, `required`, `items`, `enum`, and the numeric
+bounds `minimum` and `maximum`. Metadata keywords (`title`,
+`description`, `$schema`, `$id`, `default`, `examples`) and the
+annotation-only `format` are ignored. Any other validation-relevant
+keyword fails loud (`UnsupportedSchemaKeyword`) rather than passing
+silently. Three outcomes are possible when a schema exceeds the subset
+(pass, fail, refuse), and the approver-authorization rule makes
+silent-pass the only unacceptable one. A tool whose schema needs the
+fuller surface is the signal to widen scope deliberately, on a card
+that names `Cargo.toml`.
+
+The 2026-10-07 stage-1 smoke against the live sidecar surface
+extended the subset by three keywords (`format` as annotation;
+`minimum`/`maximum` enforced) after `ops_scale_app`'s schema - a
+schemars `u32`, so `format: uint32` plus `minimum: 0` - refused every
+proposal that stepped through the verb. The smoke also mapped the
+remaining gap: `$ref`, `anyOf`, `oneOf`, and `additionalProperties`
+appear on read-only investigation tools and still refuse loud;
+resolving them is follow-up work, not this repair.
 
 Two-phase type checking follows from the same scope. Reference nodes
 are *structural* at propose time: they occupy a named property, and
