@@ -17,11 +17,11 @@ and who owes the follow-up.
   `https://github.com/answerbook/aura-sandbox` (public; findable from
   any machine); path board at repo root, card
   `docs/board/cards/sb23-gov-mirror-ui-and-faults.md`, id prefix SB;
-  visibility public repo / local-only branch (the work sits on
-  `mshearer/hitl-governance-dev-poll`: ten commits ahead of
-  origin/main, no remote counterpart among the six remote heads as of
-  the date below); verified 2026-10-06; owed push by the aura-sandbox
-  board owner so the public URL carries the card and UI work.
+  visibility public repo / branch pushed (`mshearer/hitl-governance-dev-poll`
+  at `725c941` since 2026-10-07, fetchable from any machine); verified
+  2026-10-07; owed the aura-sandbox board owner's close-outs of Gate M
+  and the U(code-review)/T boxes on the card (substance passed; the
+  boxes stay open).
 - Family registry - the aura family manifest that resolves `refs:`
   short-codes and `boardkit boards`; repo `mezmo/aura` @
   `https://github.com/mezmo/aura` (locate this machine's local

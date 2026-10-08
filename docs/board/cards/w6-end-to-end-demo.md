@@ -83,9 +83,11 @@ Gate T.
   consumes; repo `aura-sandbox` @
   `https://github.com/answerbook/aura-sandbox` (public); path card
   `docs/board/cards/sb23-gov-mirror-ui-and-faults.md` (board at repo
-  root, id prefix SB); visibility public repo / local-only branch (the
-  work is unpushed as of 2026-10-06); verified 2026-10-06; owed push
-  by the aura-sandbox board owner. Full list and grammar:
+  root, id prefix SB); visibility public repo / branch pushed
+  (`mshearer/hitl-governance-dev-poll` at `725c941`); verified
+  2026-10-07; owed the aura-sandbox board owner's gate close-outs
+  (Gate M and the U(code-review)/T boxes open; substance passed).
+  Full list and grammar:
   [EXTERNAL-TRACES.md](../EXTERNAL-TRACES.md).
 
 ## Log
@@ -142,6 +144,15 @@ Gate T.
   this log cites until the aura-sandbox board owner pushes. This
   board's record stands; the push is that board's operation. Board
   owner.
+- 2026-10-07 SB23 harness pushed: `mshearer/hitl-governance-dev-poll`
+  now exists on `answerbook/aura-sandbox` at `725c941` (a views
+  catch-up commit; the ten feature commits behind it), so the harness
+  card and UI work this demo consumes are fetchable from any machine.
+  The SB23 trace above is updated this turn; the remaining owed items
+  belong to the aura-sandbox board (Gate M and the U(code-review)/T
+  boxes open on a substantively reviewed card - Gate S x2, Gate A x2,
+  the Gate M live leg, Mike's U round and T drive all recorded in that
+  card's log). Board owner.
 - 2026-10-07 Closing orientation canary on the post-W4-close surface,
   the first run under the index-inclusive brief: PASS - a cold reader
   (in-harness `python-reviewer` transport, kimi-k2.7-code pin,
