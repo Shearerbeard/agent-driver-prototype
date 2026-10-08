@@ -14,7 +14,7 @@ kanban-plugin: board
 - [ ] **W7** [JEV rubric research spike - synthetic edge corpus, sealed rubric, accuracy + latency read](w7-jev-rubric-research-spike.md)
 	Depends: none. Gates: S -> A -> D -> U(rubric) @ S. Executor: smart. Lane: jev.
 - [ ] **W8** [Prototype RCA harness - contract-retrofitted config, runner wrapper, single-scenario smoke](w8-prototype-rca-harness.md)
-	Depends: none. Gates: S -> A -> D -> U(code-review) @ S. Executor: smart. Lane: jev.
+	Depends: none. Gates: S -> A -> D -> U(code-review) @ A. Executor: smart. Lane: jev.
 
 ## In Review
 - [ ] **W5** [Mock-mcp ops surface - three remediation tools, per-session healing, ground truth](w5-mock-mcp-ops-surface.md)

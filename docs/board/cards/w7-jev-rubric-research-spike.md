@@ -177,6 +177,26 @@ prompt mid-dispatch is a failed pre-vet, not a surprise to debug.
 
 ## Log
 
+- 2026-10-08 Phase 1 (offline legs) landed: `edge-spike/` member in
+  the jev-driver workspace, commit `d1a598c` on card/w7 (17 files,
+  +2774). Executor: rust-write lane (Kimi), two dispatches plus a
+  rulings pass; board owner owns git. Corpus: 105 captured edges
+  (July RCA captures, both dirs) -> 1155 labelled variants, 11
+  classes balanced, split BY CAPTURED EDGE 748/407. Rubric v2 as
+  derive types (5/3/4 levels + 3 nouls, per card); claim extraction
+  + pre-check; arms 1+2 live, arm 3 replay/fixture; class-aware
+  offline replay through the fake client; frozen versioned verdict
+  artifacts carrying full weights `v2-provisional` (thresholds and
+  denominators are data per board ruling); report + review bins.
+  Offline bars green: fmt --check, clippy -D warnings, cargo test
+  (6 integration + stats suite; workspace suite green). Offline
+  headline (synthetic, by design): pairwise 0.89 per arm with
+  11,025 truncation ties of 99,225 pairs (kept in-metric by board
+  ruling; the floor rule is the catcher); fixtures deterministic by
+  ruling. Gate S stays OPEN: the one live scoring run is the staged
+  live phase, which the board owner runs next (local-gateway
+  shakedown -> cloud calibration half -> frozen cloud held-out run
+  -> arm 3 summarizer -> leg 2 judge). Board owner.
 - 2026-10-08 Pulled in-progress. Session plan (W7 ∥ W8) vetted by the
   frontier seat: PASS-WITH-CONDITIONS, all conditions applied (ledger
   rides the plan artifact in `.review/jev-session-plan/`, working

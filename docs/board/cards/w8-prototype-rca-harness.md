@@ -91,8 +91,20 @@ failed pre-vet, not a surprise to debug.
 
 ## Gate checklist
 
-- [ ] Gate S: mock `/healthz` up; shim `/health` up; smoke completes;
+- [x] Gate S: mock `/healthz` up; shim `/health` up; smoke completes;
   `aura-eval` parses; `cargo test` green; outputs pasted verbatim.
+  (Passed 2026-10-08, executor general lane (GLM) authored; board
+  owner re-verified the parse acceptance itself: re-ran `aura-eval`
+  from `aura-e2e/` against the saved capture and grepped the SSE for
+  `finish_reason":"stop`. Evidence:
+  [2026-10-08-w8-smoke.md](../evidence/2026-10-08-w8-smoke.md);
+  raw captures `.review/w8-smoke/` in the card/w8 worktree. Commits:
+  config `a1beb72` on card/w8; wrapper `52aeaa7` on
+  ai-experiments main. Findings ruled at the gate, recorded in the
+  evidence file: `--sidecar-url` CLI wart flagged onto S105's
+  surface; 13.5-min wall clock and 527k prompt tokens go on W13's
+  watch-list; depth checklist read as both analyst roles; config
+  fields dropped by schema fit itemized.)
 - [ ] Gate A: reviewer routed by actual authorship (never Kimi-on-Kimi;
   this wave's prose/fallback route is codex - metered, approval recorded
   per session).
@@ -103,6 +115,16 @@ failed pre-vet, not a surprise to debug.
 
 ## Log
 
+- 2026-10-08 Gate S passed (checklist ticked this turn): smoke
+  completes (`finish_reason":"stop"`, 6 tasks, 78 worker tool calls,
+  all success), `aura-eval` parses (diagnostic 5/5, quality 1/5 -
+  scenario FAIL is data per the card), wrapper fail-loud proven on
+  five probes, `cargo test` 375 green. Author: general lane (GLM);
+  board owner re-ran the parse check. Evidence
+  [2026-10-08-w8-smoke.md](../evidence/2026-10-08-w8-smoke.md).
+  Commits: `a1beb72` (card/w8, this repo), `52aeaa7` (ai-experiments
+  main, wrapper). Card moves to Gate A next: two packets per repo.
+  Board owner.
 - 2026-10-08 Pulled in-progress (W7 ∥ W8 wave; plan vetted
   PASS-WITH-CONDITIONS by the frontier seat, conditions applied).
   Preflight green: zai coding-plan endpoint 200 with `glm-5.3` in the
