@@ -5,14 +5,19 @@
 //! step failure with reverse-order unwind; rollback failure with a loud
 //! stop and a residual set; bounds rejection at resolve time; a binding
 //! miss on a missing export path; and cancellation mid-apply.
+//!
+//! W4 adds four approval-wire legs and one end-to-end approval-gates-apply
+//! leg against an in-process axum approval receiver.
 
 #![allow(clippy::unused_async)]
 
 use agent_driver_prototype::mcp_client::{SidecarTool, SidecarToolName};
 use agent_driver_prototype::workflow::{
-    ExecuteError, ResolveError, RollbackOutcome, RunOutcome, RunRecord, StepId, StepStatus,
+    ApprovalClient, ApprovalOutcome, ApprovalPayload, ExecuteError, ProposeWorkflowTool,
+    ResolveError, RollbackOutcome, RunOutcome, RunRecord, StepId, StepStatus,
     ValidatedWorkflowSpec, WorkflowSpec, execute_workflow,
 };
+use agent_driver_rs::tool::{Tool, ToolContext, ToolInput};
 use serde_json::{Value as JsonValue, json};
 use tokio_util::sync::CancellationToken;
 
@@ -975,5 +980,502 @@ async fn cancellation_during_the_final_call_records_the_interrupt() {
             ),
         ],
         "nothing follows the interrupted apply: no rollback on cancel"
+    );
+}
+
+// ============================================================================
+// Approval wire rig
+// ============================================================================
+
+mod approval_rig {
+    use std::collections::HashMap;
+    use std::sync::Arc;
+
+    use axum::{
+        Json, Router,
+        extract::{Path, State},
+        http::StatusCode,
+        response::IntoResponse,
+        routing::{get, post},
+    };
+    use serde::Deserialize;
+    use serde_json::json;
+    use tokio::net::TcpListener;
+    use tokio::sync::Mutex;
+
+    /// The notify body as the receiver sees it: the wire shape the client
+    /// serializes, keyed by its own `decision_id` field exactly the way the
+    /// governance mirror reads it.
+    #[derive(Deserialize)]
+    struct NotifyBody {
+        #[allow(dead_code)]
+        workflow: serde_json::Value,
+        #[allow(dead_code)]
+        digest: String,
+        decision_id: String,
+        #[allow(dead_code)]
+        rendered: String,
+        #[allow(dead_code)]
+        session_id: String,
+    }
+
+    #[derive(Clone)]
+    pub struct ServerState {
+        decisions: Arc<Mutex<HashMap<String, DecisionRow>>>,
+        pending_status: StatusCode,
+        pending_polls_served: Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    impl Default for ServerState {
+        fn default() -> Self {
+            Self {
+                decisions: Arc::new(Mutex::new(HashMap::new())),
+                pending_status: StatusCode::ACCEPTED,
+                pending_polls_served: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            }
+        }
+    }
+
+    struct DecisionRow {
+        #[allow(dead_code)]
+        body: NotifyBody,
+        status: DecisionStatus,
+    }
+
+    #[derive(Clone)]
+    enum DecisionStatus {
+        Pending,
+        Approved,
+        Denied(Option<String>),
+    }
+
+    pub struct ApprovalServerHandle {
+        base_url: reqwest::Url,
+        state: ServerState,
+    }
+
+    impl ApprovalServerHandle {
+        pub fn notify_url(&self) -> reqwest::Url {
+            self.base_url.join("/decisions").unwrap()
+        }
+
+        /// Pending status responses actually served to polling clients.
+        pub fn pending_polls(&self) -> usize {
+            self.state
+                .pending_polls_served
+                .load(std::sync::atomic::Ordering::SeqCst)
+        }
+
+        /// Wait until the receiver has served `n` pending status polls -
+        /// proof the hold is actively polling before a decision lands.
+        pub async fn await_pending_polls(&self, n: usize) {
+            for _ in 0..2000 {
+                if self.pending_polls() >= n {
+                    return;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+            panic!(
+                "expected {n} pending polls served, saw {}",
+                self.pending_polls()
+            );
+        }
+
+        /// The digest the receiver captured on the wire for a decision id.
+        pub async fn wire_digest(&self, decision_id: &str) -> Option<String> {
+            let map = self.state.decisions.lock().await;
+            map.get(decision_id).map(|row| row.body.digest.clone())
+        }
+
+        /// The id of the receiver's single pending row.
+        ///
+        /// The decision id is minted inside the proposer under the uuid
+        /// ruling, so an approving test discovers the row here rather than
+        /// pre-computing it. None while no row has landed; panics if two
+        /// rows are somehow pending (no test notifies twice).
+        pub async fn sole_pending_decision_id(&self) -> Option<String> {
+            let map = self.state.decisions.lock().await;
+            let pending: Vec<&String> = map
+                .iter()
+                .filter(|(_, row)| matches!(row.status, DecisionStatus::Pending))
+                .map(|(id, _)| id)
+                .collect();
+            match pending.as_slice() {
+                [] => None,
+                [only] => Some((*only).clone()),
+                many => panic!("expected one pending row, saw {many:?}"),
+            }
+        }
+
+        /// The poll base: ends in `/` so the client joins
+        /// `<status_url><decision_id>/status` onto it without dropping the
+        /// last segment. Deliberately a different convention from
+        /// `notify_url` so the two URL derivations are both exercised.
+        pub fn status_url(&self) -> reqwest::Url {
+            self.base_url.join("/decisions/").unwrap()
+        }
+
+        pub async fn approve(&self, decision_id: &str) {
+            let mut map = self.state.decisions.lock().await;
+            if let Some(row) = map.get_mut(decision_id) {
+                row.status = DecisionStatus::Approved;
+            }
+        }
+
+        pub async fn deny(&self, decision_id: &str, reason: &str) {
+            let mut map = self.state.decisions.lock().await;
+            if let Some(row) = map.get_mut(decision_id) {
+                row.status = DecisionStatus::Denied(Some(reason.to_owned()));
+            }
+        }
+
+        pub async fn deny_without_reason(&self, decision_id: &str) {
+            let mut map = self.state.decisions.lock().await;
+            if let Some(row) = map.get_mut(decision_id) {
+                row.status = DecisionStatus::Denied(None);
+            }
+        }
+    }
+
+    pub async fn boot() -> ApprovalServerHandle {
+        boot_with_pending_status(StatusCode::ACCEPTED).await
+    }
+
+    /// Boot with a chosen pending status code, so both halves of the
+    /// pending contract (202 and 207) are exercised across the legs.
+    pub async fn boot_with_pending_status(pending: StatusCode) -> ApprovalServerHandle {
+        let state = ServerState {
+            pending_status: pending,
+            ..ServerState::default()
+        };
+        let app = Router::new()
+            .route("/decisions", post(notify))
+            .route("/decisions/{id}/status", get(status))
+            .route("/admin/decisions/{id}/approve", post(admin_approve))
+            .route("/admin/decisions/{id}/deny", post(admin_deny))
+            .with_state(state.clone());
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        tokio::task::yield_now().await;
+        ApprovalServerHandle {
+            base_url: reqwest::Url::parse(&format!("http://127.0.0.1:{port}")).unwrap(),
+            state,
+        }
+    }
+
+    async fn notify(
+        State(state): State<ServerState>,
+        Json(body): Json<NotifyBody>,
+    ) -> impl IntoResponse {
+        // Insert-if-absent: a re-POST addresses the same row and never
+        // reopens a decided one - the first decision on an id is final,
+        // matching the governance mirror's contract.
+        state
+            .decisions
+            .lock()
+            .await
+            .entry(body.decision_id.clone())
+            .or_insert(DecisionRow {
+                body,
+                status: DecisionStatus::Pending,
+            });
+        StatusCode::ACCEPTED
+    }
+
+    async fn status(State(state): State<ServerState>, Path(id): Path<String>) -> impl IntoResponse {
+        let map = state.decisions.lock().await;
+        let (status, body) = match map.get(&id) {
+            Some(row) => match &row.status {
+                DecisionStatus::Pending => {
+                    state
+                        .pending_polls_served
+                        .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    (state.pending_status, json!({"pending": true}))
+                }
+                DecisionStatus::Approved => {
+                    (StatusCode::OK, json!({"approved": true, "reason": null}))
+                }
+                DecisionStatus::Denied(reason) => {
+                    (StatusCode::OK, json!({"approved": false, "reason": reason}))
+                }
+            },
+            None => (StatusCode::NOT_FOUND, json!({"error": "not found"})),
+        };
+        (status, Json(body))
+    }
+
+    async fn admin_approve(State(state): State<ServerState>, Path(id): Path<String>) {
+        let mut map = state.decisions.lock().await;
+        if let Some(row) = map.get_mut(&id) {
+            row.status = DecisionStatus::Approved;
+        }
+    }
+
+    #[derive(Deserialize, Default)]
+    struct DenyBody {
+        reason: Option<String>,
+    }
+
+    async fn admin_deny(
+        State(state): State<ServerState>,
+        Path(id): Path<String>,
+        Json(body): Json<DenyBody>,
+    ) {
+        let mut map = state.decisions.lock().await;
+        if let Some(row) = map.get_mut(&id) {
+            row.status = DecisionStatus::Denied(body.reason);
+        }
+    }
+}
+
+// ============================================================================
+// Approval wire helpers
+// ============================================================================
+
+fn approval_payload(workflow: JsonValue) -> ApprovalPayload {
+    let workflow: agent_driver_prototype::workflow::WorkflowSpec =
+        serde_json::from_value(workflow).expect("workflow parses");
+    ApprovalPayload::new(
+        workflow,
+        "rendered digest".to_owned(),
+        "test-session".to_owned(),
+    )
+}
+
+/// sha256 over `serde_json::to_vec` of the fixed binding-test workflow
+/// (`{"goal":"g","steps":[]}`), computed out of band (python hashlib over
+/// the compact serialization) and frozen here so the binding proof does not
+/// recompute the digest with the code under test.
+const PAYLOAD_BINDING_DIGEST: &str =
+    "76c7d61d884d78e256accd8ace8f32eb76f8d2954c2ddcfb4c872035e8fe39cb";
+
+// ============================================================================
+// W4 acceptance scenarios
+// ============================================================================
+
+/// W4 offline: an approved decision resolves the hold to an approved
+/// outcome. The decision lands only after the receiver has served a
+/// pending (202) poll, proving the hold was actively polling when the
+/// decision arrived.
+#[tokio::test]
+async fn approve_leg_decides_approved() {
+    let server = approval_rig::boot().await;
+    let client = ApprovalClient::new(server.notify_url(), server.status_url(), 60);
+    let payload = approval_payload(json!({ "goal": "g", "steps": [] }));
+    let decision_id = payload.decision_id().to_owned();
+
+    let hold = client.notify(payload).await.expect("notify returns a hold");
+    let waiting = tokio::spawn(async move {
+        hold.outcome(&CancellationToken::new())
+            .await
+            .expect("outcome resolves")
+    });
+    server.await_pending_polls(1).await;
+    server.approve(&decision_id).await;
+    let outcome = tokio::time::timeout(std::time::Duration::from_secs(5), waiting)
+        .await
+        .expect("outcome resolves within the join bound")
+        .expect("the spawned outcome does not panic");
+
+    assert!(matches!(outcome, ApprovalOutcome::Approved(_)));
+}
+
+/// W4 offline: a denied decision resolves the hold to
+/// [`ApprovalOutcome::Denied`] and carries the receiver's reason, with a
+/// pending (202) poll served before the decision lands.
+#[tokio::test]
+async fn deny_leg_decides_denied_with_reason() {
+    let server = approval_rig::boot().await;
+    let client = ApprovalClient::new(server.notify_url(), server.status_url(), 60);
+    let payload = approval_payload(json!({ "goal": "g", "steps": [] }));
+    let decision_id = payload.decision_id().to_owned();
+
+    let hold = client.notify(payload).await.expect("notify returns a hold");
+    let waiting = tokio::spawn(async move {
+        hold.outcome(&CancellationToken::new())
+            .await
+            .expect("outcome resolves")
+    });
+    server.await_pending_polls(1).await;
+    server.deny(&decision_id, "not today").await;
+    let outcome = tokio::time::timeout(std::time::Duration::from_secs(5), waiting)
+        .await
+        .expect("outcome resolves within the join bound")
+        .expect("the spawned outcome does not panic");
+
+    match outcome {
+        ApprovalOutcome::Denied { reason } => assert_eq!(reason.as_deref(), Some("not today")),
+        other => panic!("expected a denial, got {other:?}"),
+    }
+}
+
+/// W4 offline: a denial without a reason resolves to
+/// [`ApprovalOutcome::Denied`] with `reason: None` - the type keeps the
+/// "receiver gave no reason" case distinct from an empty one.
+#[tokio::test]
+async fn deny_leg_without_reason_decides_denied() {
+    let server = approval_rig::boot().await;
+    let client = ApprovalClient::new(server.notify_url(), server.status_url(), 60);
+    let payload = approval_payload(json!({ "goal": "g", "steps": [] }));
+    let decision_id = payload.decision_id().to_owned();
+
+    let hold = client.notify(payload).await.expect("notify returns a hold");
+    let waiting = tokio::spawn(async move {
+        hold.outcome(&CancellationToken::new())
+            .await
+            .expect("outcome resolves")
+    });
+    server.await_pending_polls(1).await;
+    server.deny_without_reason(&decision_id).await;
+    let outcome = tokio::time::timeout(std::time::Duration::from_secs(5), waiting)
+        .await
+        .expect("outcome resolves within the join bound")
+        .expect("the spawned outcome does not panic");
+
+    assert_eq!(outcome, ApprovalOutcome::Denied { reason: None });
+}
+
+/// W4 offline: if no decision arrives before the hold budget expires, the
+/// hold resolves to [`ApprovalOutcome::TimedOut`]. This leg boots the
+/// receiver with 207-pending so that half of the pending contract is the
+/// one actually polled (the other legs poll 202).
+#[tokio::test]
+async fn hold_timeout_leg_decides_timed_out() {
+    let server = approval_rig::boot_with_pending_status(axum::http::StatusCode::MULTI_STATUS).await;
+    let client = ApprovalClient::new(server.notify_url(), server.status_url(), 1);
+    let payload = approval_payload(json!({ "goal": "g", "steps": [] }));
+
+    let hold = client.notify(payload).await.expect("notify returns a hold");
+    let outcome = hold
+        .outcome(&CancellationToken::new())
+        .await
+        .expect("outcome resolves");
+
+    assert_eq!(outcome, ApprovalOutcome::TimedOut);
+    assert!(
+        server.pending_polls() >= 1,
+        "the timeout must be observed through real 207-pending polls"
+    );
+}
+
+/// W4 offline: if the request cancellation token fires while the hold is
+/// actively polling, the hold resolves to [`ApprovalOutcome::Cancelled`]
+/// promptly - the cancellation interrupts a pending hold, including any
+/// in-flight poll request.
+#[tokio::test]
+async fn cancel_hold_leg_decides_cancelled() {
+    let server = approval_rig::boot().await;
+    let client = ApprovalClient::new(server.notify_url(), server.status_url(), 60);
+    let payload = approval_payload(json!({ "goal": "g", "steps": [] }));
+    let cancel = CancellationToken::new();
+
+    let hold = client.notify(payload).await.expect("notify returns a hold");
+    let token = cancel.clone();
+    let waiting =
+        tokio::spawn(async move { hold.outcome(&token).await.expect("outcome resolves") });
+    server.await_pending_polls(1).await;
+    cancel.cancel();
+    let outcome = tokio::time::timeout(std::time::Duration::from_secs(5), waiting)
+        .await
+        .expect("cancellation must not hang on a pending hold")
+        .expect("the spawned outcome does not panic");
+
+    assert_eq!(outcome, ApprovalOutcome::Cancelled);
+}
+
+/// W4 offline: the payload's digest binding verifies against an
+/// independently pinned SHA-256 constant, and the digest the receiver
+/// captured on the wire is that same value - the binding is proven
+/// end-to-end, not by recomputing with the same function under test.
+#[tokio::test]
+async fn payload_binding_verifies() {
+    let server = approval_rig::boot().await;
+    let client = ApprovalClient::new(server.notify_url(), server.status_url(), 60);
+    let payload = approval_payload(json!({ "goal": "g", "steps": [] }));
+    let decision_id = payload.decision_id().to_owned();
+    let expected = PAYLOAD_BINDING_DIGEST;
+
+    assert_eq!(payload.digest(), expected);
+    assert!(payload.verify_binding());
+    assert_ne!(
+        payload.decision_id(),
+        expected,
+        "the decision id is a fresh uuid, distinct from the binding digest"
+    );
+    uuid::Uuid::parse_str(payload.decision_id()).expect("decision id parses as a uuid");
+
+    let hold = client.notify(payload).await.expect("notify returns a hold");
+    let captured = server
+        .wire_digest(&decision_id)
+        .await
+        .expect("the receiver captured the notify row");
+    drop(hold);
+    assert_eq!(captured, expected);
+}
+
+/// W4 end-to-end: a proposed workflow is validated, the approval hold is
+/// approved while a poll is in flight, and the W3 executor applies the
+/// steps.
+#[tokio::test]
+async fn end_to_end_approval_gates_apply() {
+    let server = rig::ScriptedServer::new(advertised(), |name, _args| match name {
+        "ops_get_cluster_state" => Ok(read_result()),
+        "ops_scale_app" => Ok(scaled_result()),
+        other => Err(format!("unexpected tool call {other}")),
+    });
+    let (sidecar, _served) = rig::boot(server).await;
+
+    let approval_server = approval_rig::boot().await;
+    let approval_client = ApprovalClient::new(
+        approval_server.notify_url(),
+        approval_server.status_url(),
+        60,
+    );
+    let tool = ProposeWorkflowTool::new(sidecar).with_approval(approval_client);
+
+    let workflow = json!({
+        "goal": "scale payments",
+        "steps": [
+            state_step(json!(null)),
+            {
+                "id": "scale",
+                "dependencies": ["state"],
+                "tool": "ops_scale_app",
+                "args": {"app": "payments", "replicas": 6},
+                "exports": {},
+                "rollback": bound_scale_rollback()
+            }
+        ]
+    });
+    let input = ToolInput::from_value(json!({ "workflow": workflow })).unwrap();
+
+    // execute blocks inside the approval hold; the decision lands only
+    // after a poll was actually served, so the hold is provably pending.
+    // The decision id is a fresh uuid minted inside the tool, so the
+    // approver discovers the row from the receiver's pending stack.
+    let executing = tokio::spawn(async move {
+        tool.execute(&input, &ToolContext::new(CancellationToken::new()))
+            .await
+            .expect("propose_workflow returns every outcome as an observation")
+    });
+    approval_server.await_pending_polls(1).await;
+    let decision_id = approval_server
+        .sole_pending_decision_id()
+        .await
+        .expect("the notify row landed");
+    approval_server.approve(&decision_id).await;
+    let result = tokio::time::timeout(std::time::Duration::from_secs(10), executing)
+        .await
+        .expect("the approved apply resolves within the join bound")
+        .expect("the executing task does not panic");
+
+    assert!(result.is_success(), "{result:?}");
+    assert!(
+        result.content().contains("Complete") || result.content().contains("Applied"),
+        "expected a successful run record, got: {}",
+        result.content()
     );
 }

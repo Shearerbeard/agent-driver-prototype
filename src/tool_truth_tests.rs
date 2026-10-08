@@ -677,8 +677,12 @@ fn mounted_preamble_tools_section_names_the_registered_tools() {
         enabled: true,
         ..Default::default()
     };
-    let workflow_tool = workflow_tool_for(&mounted_section, &SidecarClient::disconnected())
-        .expect("enabled section mounts the tool");
+    let workflow_tool = workflow_tool_for(
+        &mounted_section,
+        &SidecarClient::disconnected(),
+        "tool-truth-test",
+    )
+    .expect("enabled section mounts the tool");
     let workflow_definition = workflow_tool.definition().clone();
     let expected: BTreeSet<String> =
         coordinator_tool_definitions_with_workflow(&sections, Some(&workflow_definition))
@@ -706,8 +710,12 @@ fn mounted_planning_loop_wrapper_names_the_registered_tools() {
         enabled: true,
         ..Default::default()
     };
-    let workflow_tool = workflow_tool_for(&mounted_section, &SidecarClient::disconnected())
-        .expect("enabled section mounts the tool");
+    let workflow_tool = workflow_tool_for(
+        &mounted_section,
+        &SidecarClient::disconnected(),
+        "tool-truth-test",
+    )
+    .expect("enabled section mounts the tool");
     let workflow_definition = workflow_tool.definition().clone();
     let expected: BTreeSet<String> =
         coordinator_tool_definitions_with_workflow(&sections, Some(&workflow_definition))

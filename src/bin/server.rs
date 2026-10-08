@@ -172,8 +172,14 @@ async fn build_state(args: &ShimCliArgs) -> Result<ShimState, ShimError> {
     // same single decision point the shim's registration consumes), not
     // from an independent reading of the config flag.
     let agent_system_prompt = config.agent.system_prompt.unwrap_or_default();
-    let workflow_tool =
-        agent_driver_prototype::workflow::workflow_tool_for(&config.workflow, &sidecar);
+    // This startup instance is derived-from only (the preamble reads its
+    // tool names); the executing instance mounts per request with that
+    // request's session id, so the placeholder never reaches the wire.
+    let workflow_tool = agent_driver_prototype::workflow::workflow_tool_for(
+        &config.workflow,
+        &sidecar,
+        "startup-preamble",
+    );
     let mut registered = coordinator_tool_names();
     if let Some(tool) = workflow_tool.as_ref() {
         registered.push(tool.definition().name.as_str());
