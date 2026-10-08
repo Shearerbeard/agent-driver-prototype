@@ -14,7 +14,7 @@ flowchart TD
   classDef done fill:#c6f6d5,color:#1a202c;
   subgraph lane_jev["jev"]
     W7["W7 JEV rubric research spike - synth…"]:::inprogress
-    W8["W8 Prototype RCA harness - contract-…"]:::inprogress
+    W8["W8 Prototype RCA harness - contract-…"]:::inreview
     W9["W9 EdgeVerifier seam + JevEdgeVerifi…"]:::backlog
     W10["W10 RCA verifier experiment - verdict…"]:::backlog
     W11["W11 Typed evidence artifacts + JEV-ra…"]:::backlog

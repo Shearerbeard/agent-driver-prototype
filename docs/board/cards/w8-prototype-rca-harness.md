@@ -1,13 +1,14 @@
 ---
 id: W8
 title: Prototype RCA harness - contract-retrofitted config, runner wrapper, single-scenario smoke
-status: in-progress
+status: in-review
 depends: []
 serialize-with: []
 lineage: none
 executor: smart
 gates: "S -> A -> D -> U(code-review)"
 user-gates: [code-review]
+commit-range: a1beb72^..87f5fa3
 lane: jev
 ---
 
@@ -115,6 +116,32 @@ failed pre-vet, not a surprise to debug.
 
 ## Log
 
+- 2026-10-08 Gate A round 1: PASS-WITH-CONDITIONS (2 MINOR, 0
+  BLOCKING/MAJOR). Reviewer: rust-reviewer seat (GPT family on
+  Bedrock, us.openai.gpt-6.1-sol); author: general lane (GLM);
+  families differ. Finding 1 (minor): MISSING_INPUT single-line and
+  the escalation packet both claimed the missing-input arm - fixed
+  in `87f5fa3` (precedence sentence + overlapping clause dropped,
+  all three workers). Finding 2 (minor): the config header wrongly
+  listed `result_artifact_threshold` as schema-absent (it is parsed
+  and consumed) - comment corrected in the same commit; the Gate S
+  evidence file's dropped-fields list carries the same error,
+  corrected by divergence note there (the record stands as written
+  with the note beside it). Reviewer ran cargo check --locked
+  --offline + fmt --check; bash -n / boardkit / vale denied by its
+  permissions (UNVERIFIED, static shell review). Acceptance
+  verified clean (filters/turn depths/transport all traced into
+  runtime code; no key exposure; scope exact). commit-range extended
+  a1beb72^..a1beb72 -> a1beb72^..87f5fa3; packets regenerate for
+  the round-2 disposition verification per the fix-commit duty.
+  Board owner.
+- 2026-10-08 In-review: commit-range set to a1beb72^..a1beb72 (the
+  card's one commit on card/w8, config); the wrapper lives in
+  ai-experiments at `52aeaa7` on its main (logged above at Gate S;
+  its packet generates with `--repo` + `--suffix ai-experiments`
+  + its own range). Two Gate A packets per the multi-repo flow;
+  reviewer: GPT rust-reviewer seat for the code legs (author GLM
+  general lane; families differ). Board owner.
 - 2026-10-08 Gate S passed (checklist ticked this turn): smoke
   completes (`finish_reason":"stop"`, 6 tasks, 78 worker tool calls,
   all success), `aura-eval` parses (diagnostic 5/5, quality 1/5 -
