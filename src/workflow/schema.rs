@@ -1,6 +1,6 @@
 //! A deliberately minimal JSON-Schema validator: the `inputSchema`
-//! subset the rig's discovered tools actually declare, and nothing
-//! more.
+//! subset the remediation ops verbs declare, extended after the
+//! 2026-10-07 stage-1 smoke, and nothing more.
 //!
 //! W1 narrowing, recorded in `DESIGN.md`: the card's scope names
 //! `src/workflow/` only, so adding a schema crate to `Cargo.toml` is a
@@ -29,7 +29,9 @@
 //! by the W3 executor against the value the referenced export actually
 //! produced. Propose time checks what is knowable at propose time.
 
-use serde_json::Value;
+use std::cmp::Ordering;
+
+use serde_json::{Number, Value};
 
 /// Keywords this validator recognizes without enforcing anything: they
 /// annotate the schema rather than constrain the instance. `format` is
@@ -213,39 +215,83 @@ fn enforce_subset(schema: &Value, instance: &Value) -> Result<(), SchemaCheck> {
 
 /// Numeric bounds constrain numbers only: a non-numeric instance passes
 /// (the `type` keyword is what indicts it), matching the JSON Schema
-/// rule that `minimum`/`maximum` never fail a non-number.
+/// rule that `minimum`/`maximum` never fail a non-number. Comparisons
+/// stay exact where exactness exists (integer-vs-integer via `i128`);
+/// a mixed integer/float pair whose integer side cannot round-trip
+/// through `f64` refuses as unsupported rather than judging from a
+/// lossy conversion (review finding, card `card/w2` round 1).
 fn enforce_minimum(bound: &Value, instance: &Value) -> Result<(), SchemaCheck> {
-    let Some(bound) = bound.as_f64() else {
-        return Err(SchemaCheck::Unsupported {
-            keyword: "minimum".to_string(),
-        });
-    };
-    let Some(value) = instance.as_f64() else {
-        return Ok(());
-    };
-    if value < bound {
-        return Err(SchemaCheck::Mismatch {
-            message: format!("value {value} is less than the schema minimum {bound}"),
-        });
+    match compare_bound("minimum", bound, instance)? {
+        Some(Ordering::Less) => Err(SchemaCheck::Mismatch {
+            message: format!("value {instance} is less than the schema minimum {bound}"),
+        }),
+        _ => Ok(()),
     }
-    Ok(())
 }
 
 fn enforce_maximum(bound: &Value, instance: &Value) -> Result<(), SchemaCheck> {
-    let Some(bound) = bound.as_f64() else {
-        return Err(SchemaCheck::Unsupported {
-            keyword: "maximum".to_string(),
-        });
-    };
-    let Some(value) = instance.as_f64() else {
-        return Ok(());
-    };
-    if value > bound {
-        return Err(SchemaCheck::Mismatch {
-            message: format!("value {value} is greater than the schema maximum {bound}"),
-        });
+    match compare_bound("maximum", bound, instance)? {
+        Some(Ordering::Greater) => Err(SchemaCheck::Mismatch {
+            message: format!("value {instance} is greater than the schema maximum {bound}"),
+        }),
+        _ => Ok(()),
     }
-    Ok(())
+}
+
+/// Order a bound against an instance number. `Ok(None)` means the
+/// instance is not a number, so the bound does not apply; `Err` means
+/// the schema value is not a number at all, or the pair cannot be
+/// compared exactly and judging it would risk a silent pass.
+fn compare_bound(
+    keyword: &str,
+    bound: &Value,
+    instance: &Value,
+) -> Result<Option<Ordering>, SchemaCheck> {
+    let (Value::Number(bound), Value::Number(value)) = (bound, instance) else {
+        if bound.is_number() {
+            return Ok(None);
+        }
+        return Err(SchemaCheck::Unsupported {
+            keyword: keyword.to_string(),
+        });
+    };
+    number_cmp(value, bound)
+        .map(Some)
+        .ok_or_else(|| SchemaCheck::Unsupported {
+            keyword: keyword.to_string(),
+        })
+}
+
+/// Compare two JSON numbers exactly when possible: integer pairs via
+/// `i128` (no `f64` round-trip), float pairs via `f64` directly, and
+/// mixed pairs only when the integer side is exactly representable as
+/// `f64`. `None` reports an inexact pair.
+fn number_cmp(left: &Number, right: &Number) -> Option<Ordering> {
+    match (int_value(left), int_value(right)) {
+        (Some(left), Some(right)) => Some(left.cmp(&right)),
+        _ => f64_of_exact(left)?.partial_cmp(&f64_of_exact(right)?),
+    }
+}
+
+/// The integer value of a JSON number when it is one, sign-normalized
+/// through `i128` so `i64`/`u64` mixes compare without overflow.
+fn int_value(number: &Number) -> Option<i128> {
+    number
+        .as_i64()
+        .map(i128::from)
+        .or_else(|| number.as_u64().map(i128::from))
+}
+
+/// The `f64` value of a number, exact for floats, and for integers only
+/// when the round trip back to `i128` returns the same value.
+fn f64_of_exact(number: &Number) -> Option<f64> {
+    match int_value(number) {
+        Some(value) => {
+            let as_float = value as f64;
+            (as_float as i128 == value).then_some(as_float)
+        }
+        None => number.as_f64(),
+    }
 }
 
 fn enforce_type(expected: &Value, instance: &Value) -> Result<(), SchemaCheck> {
@@ -454,6 +500,33 @@ mod tests {
             .expect_err("a negative replica count breaks the minimum");
         assert!(matches!(below, SchemaCheck::Mismatch { .. }));
         assert!(validate_instance(&schema, &json!({"app": "payments", "replicas": 1.5})).is_err());
+    }
+
+    #[test]
+    fn integer_bounds_compare_exactly_beyond_f64_precision() {
+        let schema = json!({"type": "integer", "minimum": 9007199254740993i64});
+        assert!(validate_instance(&schema, &json!(9007199254740993i64)).is_ok());
+        let below = validate_instance(&schema, &json!(9007199254740992i64))
+            .expect_err("one below the minimum fails even past f64 precision");
+        assert!(matches!(below, SchemaCheck::Mismatch { .. }));
+
+        let schema = json!({"type": "integer", "maximum": 9007199254740992i64});
+        assert!(validate_instance(&schema, &json!(9007199254740993i64)).is_err());
+    }
+
+    #[test]
+    fn inexact_mixed_number_pairs_refuse_rather_than_judge_lossily() {
+        let schema = json!({"minimum": 1.5});
+        assert!(validate_instance(&schema, &json!(2)).is_ok());
+        assert!(validate_instance(&schema, &json!(1)).is_err());
+        let inexact = validate_instance(&schema, &json!(9007199254740993i64))
+            .expect_err("the integer side cannot round-trip through f64");
+        match inexact {
+            SchemaCheck::Unsupported { keyword } => assert_eq!(keyword, "minimum"),
+            SchemaCheck::Mismatch { message } => {
+                panic!("an inexact pair judged instead of refusing: {message}")
+            }
+        }
     }
 
     #[test]

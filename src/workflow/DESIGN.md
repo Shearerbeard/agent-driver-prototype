@@ -108,7 +108,7 @@ each name belongs to.
 The card's scope names `src/workflow/` only (`Cargo.toml` is not in
 it), so the inputSchema check is an in-tree subset validator rather
 than a schema-crate dependency. The subset covers the
-validation-relevant keywords the discovered tools declare:
+validation-relevant keywords the remediation ops verbs declare:
 `type` (`string`, `number`, `integer`, `boolean`, `object`, `array`,
 `null`), `properties`, `required`, `items`, `enum`, and the numeric
 bounds `minimum` and `maximum`. Metadata keywords (`title`,
