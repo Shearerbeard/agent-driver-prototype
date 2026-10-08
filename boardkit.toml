@@ -30,7 +30,7 @@ output_dir = "docs/board/reviews"
 # It is deliberately NOT the aura product board and not the tb S-card
 # stack, so a collaborator can pull workflow cards without either context.
 [charter]
-owns = "all work scoped to agent-driver-prototype: the workflow-proposal mechanism (W1-W6), the re-minted CLI-drivability tail (S103, S104, S105, S107, S110), and the JEV edge-verification workstream (W7-W13: edge verifier, typed evidence, RCA eval harness; W7's spike lands in the jev-driver workspace, W8's wrapper and W13/W10's results land in ai-experiments - external-repo, shas logged)"
+owns = "all work scoped to agent-driver-prototype: the workflow-proposal mechanism (W1-W6), the re-minted CLI-drivability tail (S103, S104, S105, S107, S110), and the JEV edge-verification workstream (W7-W13: the edge verifier with its typed evidence, plus the RCA eval harness; W7's spike lands in the jev-driver workspace, W8's wrapper and W13/W10's results land in ai-experiments - external-repo, shas logged)"
 not = "aura product implementation (the governance workstream owns the AURA Workflows direction), agent-driver-rs crate internals (the agent-driver-rs-adr board owns those), terminalbench-aura rig-scoped cards (the tb board keeps those), mock-mcp-service internals beyond W5's ops surface"
 
 [charter.route]

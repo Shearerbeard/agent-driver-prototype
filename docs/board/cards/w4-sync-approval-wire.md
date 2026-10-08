@@ -1,7 +1,7 @@
 ---
 id: W4
 title: Sync approval wire - notify POST, status poll with blocking hold
-status: in-review
+status: done
 depends: [W2]
 serialize-with: [W3]
 lineage: isolated-branch
@@ -85,8 +85,10 @@ signature). Nothing beyond that; stop and report instead.
       unnamed in Scope; fixed as a card doc repair), round 3 PASS with a
       clean file-by-file scope check and zero regressions; ledger in the
       Log section.)
-- [ ] Gate U (code-review): board owner presents the review packet and
-      stops.
+- [x] Gate U (code-review): board owner presents the review packet and
+      stops. (Passed 2026-10-07: Mike reviewed PR #21 on GitHub and
+      merged it - the reviewed range `d2eb850^..1ac673f` is exactly
+      what merged, as merge commit `9f3dc4a` on `integration/workflow`.)
 - [x] Gate U (wire-contract): Mike adjudicates the realized wire
       contract - the notify payload shape, the poll/pending semantics,
       and the decision_id-vs-digest seam his 2026-10-06 ruling left to

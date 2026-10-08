@@ -37,10 +37,10 @@ JSON-boundary client for a classic-SSE MCP sidecar (GET `/sse`, POST
 `/messages/?session_id=…`), existing so no MCP SDK type crosses the
 seam.
 
-## Why it exists
+## Purpose
 
-Evidence, not product. The spike tests whether aura's orchestration
-behavior lives in its prompt frames rather than in its runtime: if the
+The spike tests whether aura's orchestration behavior lives in its
+prompt frames rather than in its runtime: if the
 ported frames can drive a small purpose-built loop
 ([agent-driver-rs](https://github.com/Shearerbeard/agent-driver-rs))
 and still serve aura's TerminalBench integration shape end to end, the

@@ -48,12 +48,12 @@ and who owes the follow-up.
   present on every working machine; visibility machine-local; verified
   2026-10-06; owed per-machine rebuild per REVIEW-TOOLING.md's
   machine-bootstrap appendix.
-- Review surfaces - where the user's decisions are owed; repos
-  `Shearerbeard/agent-driver-prototype` (PR #21, card/w4 ->
-  integration/workflow, pushed) and `Shearerbeard/ai-experiments`
-  (branch `w5-ops-surface`, pushed, tip logged on W5's card);
-  visibility pushed; verified 2026-10-06; owed Mike's review on PR
-  #21 and his PR decision on W5's branch.
+- Review surfaces - where the user's decisions are owed; repo
+  `Shearerbeard/agent-driver-prototype`, PR #21 (card/w4 ->
+  integration/workflow) merged 2026-10-07 as `9f3dc4a`, so the W4
+  decision is settled; repo `Shearerbeard/ai-experiments`, branch
+  `w5-ops-surface` pushed (tip logged on W5's card); visibility
+  pushed; verified 2026-10-07; owed Mike's PR decision on W5's branch.
 - Aura artifact reference graph - the published, frontier-reviewed
   design for artifact relationships and searchability in aura's
   orchestration mode (flat node store with mandatory pre-summaries,
