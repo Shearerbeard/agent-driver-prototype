@@ -1,9 +1,9 @@
 # External traces
 
-The cold reader's list of material this board depends on that lives
-outside this repo. One entry per trace; the entry grammar is stated
-once at the bottom. Session close updates the entries for any trace
-the session touched, in the same turn as the change it records.
+The cold reader's list of material this board depends on that the
+tracked tree does not carry. One entry per trace; the entry grammar is
+stated once at the bottom. Session close updates the entries for any
+trace the session touched, in the same turn as the change it records.
 
 The board's `refs:` frontmatter stays the resolvable cross-board
 pointer once the family registry carries the codes; this file carries

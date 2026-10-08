@@ -142,3 +142,16 @@ Gate T.
   this log cites until the aura-sandbox board owner pushes. This
   board's record stands; the push is that board's operation. Board
   owner.
+- 2026-10-07 Closing orientation canary on the post-W4-close surface,
+  the first run under the index-inclusive brief: PASS - a cold reader
+  (in-harness `python-reviewer` transport, kimi-k2.7-code pin,
+  read-only, cross-family to this session's board owner) named the
+  in-review set (W2, W5), the next pull (W7), the no-deferred state,
+  all six external traces with their owed lines, and the immediate
+  next action, with no fabricated facts. One advisory awaits a
+  ruling: the depends-vs-done tension (W3/W4 done over W2 in-review)
+  reads as a surface contradiction because the user-ruled pull
+  exceptions live only in card logs; a candidate PROCESS line is
+  drafted in the evidence. Evidence:
+  docs/board/evidence/2026-10-07-close-orientation-canary.md. Board
+  owner.
