@@ -219,7 +219,7 @@ fn enforce_subset(schema: &Value, instance: &Value) -> Result<(), SchemaCheck> {
 /// stay exact where exactness exists (integer-vs-integer via `i128`);
 /// a mixed integer/float pair whose integer side cannot round-trip
 /// through `f64` refuses as unsupported rather than judging from a
-/// lossy conversion (review finding, card `card/w2` round 1).
+/// lossy conversion.
 fn enforce_minimum(bound: &Value, instance: &Value) -> Result<(), SchemaCheck> {
     match compare_bound("minimum", bound, instance)? {
         Some(Ordering::Less) => Err(SchemaCheck::Mismatch {
