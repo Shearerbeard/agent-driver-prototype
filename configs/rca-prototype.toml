@@ -8,9 +8,11 @@
 #
 # Differences from the stock config, by design:
 #   - no [agent.llm] table: the shim's provider comes from ProviderConfig::from_env().
-#   - no [agent.scratchpad] / [orchestration.timeouts] / [orchestration.artifacts]
-#     result_artifact_threshold: the prototype ShimConfig schema has no fields
-#     for them (unknown TOML tables are ignored).
+#   - no [agent.scratchpad] / [orchestration.timeouts] / [orchestration.artifacts]:
+#     the prototype ShimConfig schema has no fields for them (unknown TOML
+#     tables are ignored). [orchestration.artifacts].result_artifact_threshold
+#     IS parsed (src/shim_config.rs) but the stock value is not ported; the
+#     shim default is in effect (gate A round 1, finding 2 correction).
 #   - no [mcp.servers.*.headers_from_request] and no [mcp.servers.*.scratchpad]:
 #     pre-S107 the shim forwards no request headers, and the prototype has no
 #     scratchpad interception. The smoke passes NO X-Mock headers; the mock's
@@ -136,8 +138,10 @@ exists so W13's watch-list can measure deviations against a number; it is not
 a hard limit.
 
 ESCALATION PACKET (failure arm)
-If you cannot complete the task - a tool fails, the evidence is insufficient,
-or the task needs an input you cannot obtain - do not fabricate a result.
+If you cannot complete the task - a tool fails, or the evidence is
+insufficient - do not fabricate a result. A missing required input is not
+this arm: return the single MISSING_INPUT: line from the input contract
+instead; it takes precedence over every other output format.
 Return an escalation packet with labelled fields:
 ESCALATION: one-line reason.
 BLOCKER: the tool, input, or dependency that blocked you.
@@ -187,8 +191,10 @@ exists so W13's watch-list can measure deviations against a number; it is not
 a hard limit.
 
 ESCALATION PACKET (failure arm)
-If you cannot complete the task - a tool fails, the evidence is insufficient,
-or the task needs an input you cannot obtain - do not fabricate a result.
+If you cannot complete the task - a tool fails, or the evidence is
+insufficient - do not fabricate a result. A missing required input is not
+this arm: return the single MISSING_INPUT: line from the input contract
+instead; it takes precedence over every other output format.
 Return an escalation packet with labelled fields:
 ESCALATION: one-line reason.
 BLOCKER: the tool, input, or dependency that blocked you.
@@ -254,8 +260,10 @@ exists so W13's watch-list can measure deviations against a number; it is not
 a hard limit.
 
 ESCALATION PACKET (failure arm)
-If you cannot complete the task - a tool fails, the evidence is insufficient,
-or the task needs an input you cannot obtain - do not fabricate a result.
+If you cannot complete the task - a tool fails, or the evidence is
+insufficient - do not fabricate a result. A missing required input is not
+this arm: return the single MISSING_INPUT: line from the input contract
+instead; it takes precedence over every other output format.
 Return an escalation packet with labelled fields:
 ESCALATION: one-line reason.
 BLOCKER: the tool, input, or dependency that blocked you.
