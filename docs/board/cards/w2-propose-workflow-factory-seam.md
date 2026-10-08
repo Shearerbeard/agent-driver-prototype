@@ -338,3 +338,62 @@ on `integration/workflow` after its second Gate U. Worktree:
   status are unchanged by the ruling; recorded here so the dependency
   question a fresh session asks is answered on the board. Board
   owner.
+- 2026-10-07 Stage-1 smoke round 1 (the U(proposal-quality) gate's
+  first live pass): run against the mock-mcp-service w5-ops-surface
+  branch (scenario db-pool-exhaustion, GLM 5.3 via the zai coding
+  plan, propose-only config - no approval_url), driven through the
+  shim's OpenAI-compatible endpoint. The coordinator investigated
+  thoroughly (58 tool calls: histograms, error clusters, correlated
+  timelines, service graph, pipelines, traces) and identified
+  payments' db-primary pool exhaustion correctly; every
+  propose_workflow call failed: attempt 1 on a model-side schema
+  error (a stray `task` field - the error message corrected it),
+  attempts 2-3 on `inputSchema of 'ops_scale_app' uses a keyword this
+  validator does not implement: format`. Finding: the served schema
+  is a schemars u32 (`format: uint32` plus `minimum: 0`); format is
+  annotation-only and minimum is a bound the subset lacked, so no
+  remediation proposal could validate against the real surface. The
+  coordinator's fallback was good: it recognized the deterministic
+  failure and delivered the proposal inline (scale payments 3->2 with
+  a verification gate and restore to 3; ground truth is scale to 6 -
+  the direction question stays open for the gate). Run stats: 12m05s,
+  58 tool calls, 406,691 tokens (372,079 in / 34,612 out; ~33.5k
+  tok/min). Capture: .review/w2-smoke/run1.sse (working material).
+  Board owner.
+- 2026-10-07 Stage-1 repair (fix-commit duty): extended the subset
+  validator - `format` tolerated as annotation, `minimum`/`maximum`
+  enforced - as commits baeff24 (subset extension), c5e3b31
+  (round-2 repair after review found the f64 conversion losing
+  integer precision past 2^53; exact i128 comparison plus a
+  refuse-on-inexact rule for mixed pairs, and the DESIGN.md claim
+  narrowed to the remediation ops verbs), 3b51402 (round-3
+  doc-aside cleanup). Gate A over 9f3dc4a..3b51402 on the bedrock
+  gpt-5.6-sol seat (rust-reviewer, session
+  ses_ee69c8755ffeCr7cQX0s2rU5e3; round 1 FAIL - 1 BLOCKING plus 1
+  MINOR - rounds 2-3 repaired, final PASS). Author this round: the
+  board owner (deepseek family); reviewer GPT - the invariant holds.
+  Gate S re-run green at each commit (480 tests at the final round);
+  merged to integration/workflow as 3b51402 (fast-forward; the
+  original card/w2 landed via PR #16) and pushed; card/w2 deleted
+  local + remote. DESIGN.md records the remaining refused-loud gap
+  ($ref/anyOf/oneOf/additionalProperties on read-only investigation
+  tools; follow-up).
+- 2026-10-07 Stage-1 smoke round 2 (post-fix, the gate's digest): a
+  first attempt aborted at the client's 14-minute cap mid-
+  investigation (no propose call; usage uncaptured); the second
+  completed in 15m49s at 645,047 tokens with a validated proposal -
+  the digest is in the evidence. Four propose calls: three
+  model-side step-shape rejections (unknown field `arguments`,
+  missing `id`, unknown field `description`), each corrected from
+  the error observation, then success. Quality notes for the
+  adjudication: root cause correct; remediation direction diverges
+  from the scenario ground truth (scale to 6) - the model argued
+  scaling up would worsen the pool exhaustion and proposed 3->1,
+  then a rollback to an unconfirmed tag, then restore 2; and all
+  steps declared `rollback: null` though a compensating call existed
+  for step 1 (a judgment gap, legal per the W1 rules). The
+  propose_workflow schema carries no step-field guidance (`steps` is
+  a bare array), so step shape and rollback semantics reach the
+  model only through rejections - a plausible contributor. Evidence:
+  [the stage-1 smoke record](../evidence/2026-10-07-w2-stage1-smoke.md).
+  Gate stays open for Mike. Board owner.
