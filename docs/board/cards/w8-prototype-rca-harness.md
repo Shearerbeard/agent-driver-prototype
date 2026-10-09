@@ -8,7 +8,7 @@ lineage: none
 executor: smart
 gates: "S -> A -> D -> U(code-review)"
 user-gates: [code-review]
-commit-range: a1beb72^..87f5fa3
+commit-range: a1beb72^..b0dcb57
 lane: jev
 ---
 
@@ -116,6 +116,20 @@ failed pre-vet, not a surprise to debug.
 
 ## Log
 
+- 2026-10-08 Gate A round 2: FAIL (1 MINOR re-raise, finding 1
+  CONFIRMED repaired). Same GPT seat, fresh instance; checks run:
+  cargo check --locked + fmt --check in both checkouts; boardkit /
+  vale denied (UNVERIFIED). Finding 1 verified repaired in
+  `87f5fa3` (all three workers; no new ambiguity). Re-raise: the
+  round-1 comment fix still listed `[orchestration.artifacts]` as
+  schema-absent while the config sets its `memory_dir` - fixed in
+  `b0dcb57` (only the genuinely absent tables remain listed).
+  No regressions; scope not expanded. ROUND-BOUND RULING after two
+  fix rounds: CONTINUE to round 3 - the finding class is comment
+  accuracy on one header, the trajectory is strictly narrowing
+  (2 minors -> 1 re-raise), and the fix commits are single-purpose;
+  escalate only if round 3 finds fresh ground. commit-range extended
+  to a1beb72^..b0dcb57; packets regenerate. Board owner.
 - 2026-10-08 Gate A round 1: PASS-WITH-CONDITIONS (2 MINOR, 0
   BLOCKING/MAJOR). Reviewer: rust-reviewer seat (GPT family on
   Bedrock, us.openai.gpt-6.1-sol); author: general lane (GLM);
