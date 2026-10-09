@@ -9,6 +9,7 @@ use edge_spike::accounting::{Accounting, AccuracySummary};
 use edge_spike::corpus::Corpus;
 use edge_spike::report::generate_report;
 use edge_spike::runner::ScoredEdge;
+use edge_spike::verdict::recompute_artifact;
 
 fn main() -> anyhow::Result<()> {
     let args: Vec<String> = std::env::args().collect();
@@ -31,7 +32,8 @@ fn main() -> anyhow::Result<()> {
             && file_name != Some("judge_results.json".as_ref())
             && file_name != Some("resume.json".as_ref())
         {
-            let edge: ScoredEdge = serde_json::from_str(&std::fs::read_to_string(path)?)?;
+            let mut edge: ScoredEdge = serde_json::from_str(&std::fs::read_to_string(path)?)?;
+            recompute_artifact(&mut edge.artifact);
             scored.push(edge);
         }
     }

@@ -17,6 +17,12 @@ pub enum Verdict {
 }
 
 /// Serializable answer summary extracted from typed answers.
+///
+/// Ordinal scores (`task_fidelity`, `goal_alignment`, `evidence_grounding`)
+/// are probability-weighted level INDICES. Because `rubric.rs` declares the
+/// best variant first (e.g. `TaskFidelity::Excellent`), 0 = best and higher
+/// = worse. The composite scoring function inverts these dimensions so that
+/// a higher composite means better quality.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AnswerSummary {
     pub evidence_presence: f64,
@@ -63,7 +69,10 @@ pub struct Weights {
     pub grounding_threshold: f64,
     pub handoff_threshold: f64,
     pub scope_threshold: f64,
-    // Score normalization denominators (max_score + 1).
+    // Ordinal dimension max indices (levels - 1). These are frozen into the
+    // artifact for transparency, but the scoring math uses the rubric-derived
+    // constants so old artifacts with the buggy level-count denominators are
+    // corrected at read time.
     pub fidelity_levels: f64,
     pub alignment_levels: f64,
     pub grounding_levels: f64,
@@ -82,12 +91,20 @@ impl Default for Weights {
             grounding_threshold: 0.3,
             handoff_threshold: 0.3,
             scope_threshold: 0.3,
-            fidelity_levels: 5.0,
-            alignment_levels: 3.0,
-            grounding_levels: 4.0,
+            fidelity_levels: 4.0,
+            alignment_levels: 2.0,
+            grounding_levels: 3.0,
         }
     }
 }
+
+// Max indices for the ordinal rubric dimensions. `rubric.rs` declares the
+// best variant first, so a `JevScore::score()` value of 0 means best quality
+// and the max index means worst. The composite inverts each dimension via
+// `(max_index - score) / max_index` so that higher composite = better quality.
+const FIDELITY_MAX_INDEX: f64 = 4.0;
+const ALIGNMENT_MAX_INDEX: f64 = 2.0;
+const GROUNDING_MAX_INDEX: f64 = 3.0;
 
 /// Per-field truncation flags.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -142,17 +159,22 @@ impl From<&EdgeRubricAnswers> for AnswerSummary {
     }
 }
 
-/// Composite scoring with code-side weights and floor rules.
-pub fn score_composite(
-    answers: &EdgeRubricAnswers,
+/// Composite scoring from a saved [`AnswerSummary`].
+///
+/// Ordinal dimensions are inverted because `JevScore::score()` returns a
+/// probability-weighted level index where 0 is the best variant and the max
+/// index is the worst (see `rubric.rs` declaration order). Noul dimensions are
+/// already "higher is better" and are left unchanged.
+pub fn score_composite_from_summary(
+    answers: &AnswerSummary,
     weights: &Weights,
     truncation: &TruncationFlags,
 ) -> (f64, Vec<String>) {
-    let fidelity = normalize_score(answers.task_fidelity.score(), weights.fidelity_levels);
-    let alignment = normalize_score(answers.goal_alignment.score(), weights.alignment_levels);
-    let grounding = normalize_score(answers.evidence_grounding.score(), weights.grounding_levels);
-    let handoff = answers.handoff_integrity.probability.get();
-    let scope = answers.scope_discipline.probability.get();
+    let fidelity = normalize_ordinal(answers.task_fidelity, FIDELITY_MAX_INDEX);
+    let alignment = normalize_ordinal(answers.goal_alignment, ALIGNMENT_MAX_INDEX);
+    let grounding = normalize_ordinal(answers.evidence_grounding, GROUNDING_MAX_INDEX);
+    let handoff = answers.handoff_integrity;
+    let scope = answers.scope_discipline;
 
     let composite = fidelity * weights.fidelity
         + alignment * weights.alignment
@@ -177,6 +199,16 @@ pub fn score_composite(
     (composite, flagged)
 }
 
+/// Composite scoring with code-side weights and floor rules.
+pub fn score_composite(
+    answers: &EdgeRubricAnswers,
+    weights: &Weights,
+    truncation: &TruncationFlags,
+) -> (f64, Vec<String>) {
+    let summary = AnswerSummary::from(answers);
+    score_composite_from_summary(&summary, weights, truncation)
+}
+
 impl TruncationFlags {
     /// True if any field is truncated.
     #[must_use]
@@ -190,8 +222,26 @@ impl TruncationFlags {
     }
 }
 
-fn normalize_score(score: f64, levels: f64) -> f64 {
-    (score / levels).clamp(0.0, 1.0)
+fn normalize_ordinal(score: f64, max_index: f64) -> f64 {
+    ((max_index - score) / max_index).clamp(0.0, 1.0)
+}
+
+/// Map a saved answer summary + composite to a verdict enum.
+pub fn resolve_verdict_from_summary(
+    summary: &AnswerSummary,
+    composite: f64,
+    flags: &[String],
+    weights: &Weights,
+) -> Verdict {
+    if summary.evidence_presence < weights.evidence_presence_threshold {
+        return Verdict::InsufficientEvidence;
+    }
+    if composite < weights.pass_threshold || !flags.is_empty() {
+        return Verdict::Flag {
+            dims: flags.to_vec(),
+        };
+    }
+    Verdict::Pass
 }
 
 /// Map answers + composite to a verdict enum using thresholds from `weights`.
@@ -201,13 +251,167 @@ pub fn resolve_verdict(
     flags: &[String],
     weights: &Weights,
 ) -> Verdict {
-    if answers.evidence_presence.probability.get() < weights.evidence_presence_threshold {
-        return Verdict::InsufficientEvidence;
-    }
-    if composite < weights.pass_threshold || !flags.is_empty() {
-        return Verdict::Flag {
-            dims: flags.to_vec(),
+    let summary = AnswerSummary::from(answers);
+    resolve_verdict_from_summary(&summary, composite, flags, weights)
+}
+
+/// Recompute the composite and verdict for a saved artifact from its raw
+/// per-question answers. This corrects the polarity bug in older artifacts
+/// without re-running the scorer.
+pub fn recompute_artifact(artifact: &mut VerdictArtifact) {
+    // Normalize stored weights to the corrected max indices in case this is an
+    // older artifact that still carries the buggy level-count denominators.
+    artifact.weights.fidelity_levels = FIDELITY_MAX_INDEX;
+    artifact.weights.alignment_levels = ALIGNMENT_MAX_INDEX;
+    artifact.weights.grounding_levels = GROUNDING_MAX_INDEX;
+
+    let (composite, flags) = score_composite_from_summary(
+        &artifact.answers,
+        &artifact.weights,
+        &artifact.truncation_flags,
+    );
+    artifact.composite = composite;
+    artifact.verdict =
+        resolve_verdict_from_summary(&artifact.answers, composite, &flags, &artifact.weights);
+    artifact.weights_version = "v2-polarity-fixed".to_owned();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn best_ordinal_answers_score_higher_than_worst() {
+        let weights = Weights::default();
+        let truncation = TruncationFlags::default();
+
+        let best = AnswerSummary {
+            evidence_presence: 0.9,
+            task_fidelity: 0.0,      // Excellent
+            goal_alignment: 0.0,     // Aligned
+            evidence_grounding: 0.0, // Supported
+            handoff_integrity: 0.9,
+            scope_discipline: 0.9,
         };
+        let worst = AnswerSummary {
+            evidence_presence: 0.9,
+            task_fidelity: 4.0,      // None
+            goal_alignment: 2.0,     // Misaligned
+            evidence_grounding: 3.0, // UnsupportedOrFabricated
+            handoff_integrity: 0.1,
+            scope_discipline: 0.1,
+        };
+
+        let (best_score, best_flags) = score_composite_from_summary(&best, &weights, &truncation);
+        let (worst_score, worst_flags) =
+            score_composite_from_summary(&worst, &weights, &truncation);
+
+        assert!(
+            best_score > worst_score,
+            "best ordinal answers should composite higher than worst: {best_score} vs {worst_score}"
+        );
+        assert!(
+            best_flags.is_empty(),
+            "best answers should not trigger floor rules: {best_flags:?}"
+        );
+        assert!(
+            worst_flags.contains(&"handoff_integrity".to_owned()),
+            "worst handoff should be flagged: {worst_flags:?}"
+        );
+        assert!(
+            worst_flags.contains(&"scope_discipline".to_owned()),
+            "worst scope should be flagged: {worst_flags:?}"
+        );
     }
-    Verdict::Pass
+
+    #[test]
+    fn fixture_vector_composite_matches_expected_value() {
+        let summary = AnswerSummary {
+            evidence_presence: 0.9,
+            task_fidelity: 3.27,
+            goal_alignment: 1.50,
+            evidence_grounding: 1.89,
+            handoff_integrity: 0.09,
+            scope_discipline: 0.07,
+        };
+        let weights = Weights::default();
+        let (composite, flags) =
+            score_composite_from_summary(&summary, &weights, &TruncationFlags::default());
+
+        assert!(
+            (composite - 0.218_125).abs() < 1e-6,
+            "expected corrected composite ~0.218, got {composite}"
+        );
+        assert!(
+            flags.contains(&"handoff_integrity".to_owned()),
+            "handoff below threshold should be flagged: {flags:?}"
+        );
+        assert!(
+            flags.contains(&"scope_discipline".to_owned()),
+            "scope below threshold should be flagged: {flags:?}"
+        );
+    }
+
+    #[test]
+    fn saved_artifact_recompute_ignores_buggy_denominators_and_composite() {
+        use crate::claim::GroundingStats;
+
+        let mut artifact = VerdictArtifact {
+            rubric_version: "v2".to_owned(),
+            weights_version: "v2-provisional".to_owned(),
+            weights: Weights {
+                fidelity: 0.25,
+                alignment: 0.15,
+                grounding: 0.30,
+                handoff: 0.15,
+                scope: 0.15,
+                pass_threshold: 0.5,
+                evidence_presence_threshold: 0.3,
+                grounding_threshold: 0.3,
+                handoff_threshold: 0.3,
+                scope_threshold: 0.3,
+                // Buggy level-count denominators as stored in old artifacts.
+                fidelity_levels: 5.0,
+                alignment_levels: 3.0,
+                grounding_levels: 4.0,
+            },
+            resolved_model_id: "jev-1.13.0-replay".to_owned(),
+            state_hash: "abc".to_owned(),
+            answers: AnswerSummary {
+                evidence_presence: 0.9,
+                task_fidelity: 3.27,
+                goal_alignment: 1.50,
+                evidence_grounding: 1.89,
+                handoff_integrity: 0.09,
+                scope_discipline: 0.07,
+            },
+            grounding_stats: GroundingStats::default(),
+            // Buggy stored composite; should be overwritten from answers.
+            composite: 0.404_25,
+            verdict: Verdict::Pass,
+            truncation_flags: TruncationFlags::default(),
+            latency_ms: StageLatencies::default(),
+            tokens: TokenUsage::default(),
+            timestamp: "0".to_owned(),
+        };
+
+        recompute_artifact(&mut artifact);
+
+        assert!(
+            (artifact.composite - 0.218_125).abs() < 1e-6,
+            "recomputed composite should ignore stored buggy composite/denominators, got {}",
+            artifact.composite
+        );
+        match &artifact.verdict {
+            Verdict::Flag { dims } => {
+                assert!(dims.contains(&"handoff_integrity".to_owned()));
+                assert!(dims.contains(&"scope_discipline".to_owned()));
+            }
+            other => panic!("expected Flag verdict after recompute, got {other:?}"),
+        }
+        assert_eq!(artifact.weights_version, "v2-polarity-fixed");
+        assert_eq!(artifact.weights.fidelity_levels, 4.0);
+        assert_eq!(artifact.weights.alignment_levels, 2.0);
+        assert_eq!(artifact.weights.grounding_levels, 3.0);
+    }
 }

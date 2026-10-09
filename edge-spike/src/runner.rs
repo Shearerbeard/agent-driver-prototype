@@ -777,7 +777,7 @@ async fn score_one(
     let total_ms = started.elapsed().as_millis() as u64;
     let artifact = VerdictArtifact {
         rubric_version: "v2".to_owned(),
-        weights_version: "v2-provisional".to_owned(),
+        weights_version: "v2-polarity-fixed".to_owned(),
         weights: config.weights,
         resolved_model_id: response_model,
         state_hash,
