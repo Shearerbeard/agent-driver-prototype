@@ -8,11 +8,12 @@
 #
 # Differences from the stock config, by design:
 #   - no [agent.llm] table: the shim's provider comes from ProviderConfig::from_env().
-#   - no [agent.scratchpad] / [orchestration.timeouts] / [orchestration.artifacts]:
-#     the prototype ShimConfig schema has no fields for them (unknown TOML
-#     tables are ignored). [orchestration.artifacts].result_artifact_threshold
-#     IS parsed (src/shim_config.rs) but the stock value is not ported; the
-#     shim default is in effect (gate A round 1, finding 2 correction).
+#   - no [agent.scratchpad] / [orchestration.timeouts]: the prototype
+#     ShimConfig schema has no fields for them (unknown TOML tables are
+#     ignored). [orchestration.artifacts] IS supported (memory_dir and
+#     result_artifact_threshold both parse; memory_dir is set below) - only
+#     the stock result_artifact_threshold value is not ported, so the shim
+#     default is in effect (gate A rounds 1-2 corrections).
 #   - no [mcp.servers.*.headers_from_request] and no [mcp.servers.*.scratchpad]:
 #     pre-S107 the shim forwards no request headers, and the prototype has no
 #     scratchpad interception. The smoke passes NO X-Mock headers; the mock's
