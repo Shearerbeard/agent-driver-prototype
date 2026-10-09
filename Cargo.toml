@@ -1,3 +1,7 @@
+[workspace]
+members = ["edge-spike"]
+resolver = "3"
+
 [package]
 name = "agent-driver-prototype"
 version = "0.1.0"

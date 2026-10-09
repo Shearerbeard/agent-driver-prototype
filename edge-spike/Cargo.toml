@@ -1,0 +1,35 @@
+[package]
+name = "edge-spike"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.91.1"
+license = "MIT OR Apache-2.0"
+description = "W7 JEV rubric research spike: synthetic edge corpus, selection arms, live scoring"
+publish = false
+
+[[bin]]
+name = "edge-run"
+path = "src/bin/run.rs"
+
+[[bin]]
+name = "edge-review"
+path = "src/bin/review.rs"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+thiserror = "2"
+tokio = { version = "1", features = ["rt", "macros", "time", "fs"] }
+anyhow = "1"
+sha2 = "0.10"
+hex = "0.4"
+jev-driver = { version = "0.1.0", features = ["test-support"] }
+async-trait = "0.1"
+reqwest = { version = "0.12", features = ["json"] }
+url = { version = "2", features = ["serde"] }
+rand = "0.8"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["full"] }
+tempfile = "3"
+wiremock = "0.6"
