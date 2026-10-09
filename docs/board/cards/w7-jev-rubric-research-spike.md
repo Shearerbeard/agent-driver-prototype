@@ -183,7 +183,7 @@ prompt mid-dispatch is a failed pre-vet, not a surprise to debug.
   crates.io, the spike belongs in the prototype workspace consuming
   it as a normal dependency. The spike crate moved from the
   jev-driver repo (where it lived at `d1a598c` on a now-deleted
-  branch; that history stands as the intermediate record) into this
+  branch; that history is the intermediate record) into this
   repo as workspace member `edge-spike` on card/w7 at `1e6f2fc`,
   consuming `jev-driver 0.1.0` from crates.io (rust-version 1.91.1
   matches ours; the test-support feature ships). Full bars green in
