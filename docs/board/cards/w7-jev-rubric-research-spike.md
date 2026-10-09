@@ -175,7 +175,21 @@ prompt mid-dispatch is a failed pre-vet, not a surprise to debug.
   adversarial characterization, thresholds proposal (marked provisional).
   STOPS - W9 does not start on an unapproved rubric.
 
-## Log
+- 2026-10-08 NO-GO RULE COMPUTED OFFLINE from the saved
+  iteration-1 artifacts (zero spend). Per the card's decision
+  rule, the full rubric must beat the evidence-presence-only
+  ablation by >10pp on clean-vs-failure pairwise ordering
+  (held-out): claim_indexed 0.261 vs 0.667 (delta -0.41),
+  flash_summarization 0.258 vs 0.648 (-0.39), head_truncation
+  0.285 vs 0.610 (-0.33). The full rubric is 33-41pp WORSE than
+  the single cheapest question: the no-go fires on all three
+  arms. Mechanism visible in clean-edge mean answers:
+  handoff_integrity 0.15-0.17, scope_discipline 0.43-0.45,
+  evidence_presence 0.40-0.57 - the five added dimensions
+  actively punish clean edges. Open question for any redesign:
+  rubric-prompt miscalibration vs state-assembly starvation
+  (the judge control flagging clean edges too suggests the
+  states themselves read as problematic). Board owner.
 
 - 2026-10-08 ITERATION 1 COMPLETE (live, cloud), followed by the
   user's STOP-AND-REEVALUATE directive before any further spend.
