@@ -86,6 +86,30 @@ pub enum RunnerMode {
     Live,
 }
 
+/// Which variants the runner scores.
+#[derive(Debug, Clone, Default)]
+pub enum RunSelector {
+    /// Score every variant in the corpus (default).
+    #[default]
+    All,
+    /// Score exactly one variant across the selected arms.
+    Edge(String),
+    /// Score one deterministic clean calibration edge.
+    Smoke,
+    /// Score a deterministic stratified slice of the calibration clean edges.
+    Slice(usize),
+}
+
+impl RunSelector {
+    /// Validate selector arguments. Fails loud on invalid inputs.
+    pub fn validate(&self) -> anyhow::Result<()> {
+        match self {
+            RunSelector::Slice(n) if *n == 0 => Err(anyhow::anyhow!("--slice requires N > 0")),
+            _ => Ok(()),
+        }
+    }
+}
+
 /// Runner configuration.
 #[derive(Debug, Clone)]
 pub struct RunnerConfig {
@@ -94,6 +118,10 @@ pub struct RunnerConfig {
     pub model_id: String,
     pub mode: RunnerMode,
     pub endpoint: JevEndpoint,
+    /// Arms to run. Default is all three.
+    pub arms: Vec<SelectionArm>,
+    /// Variant subset selector.
+    pub selector: RunSelector,
 }
 
 impl Default for RunnerConfig {
@@ -104,6 +132,8 @@ impl Default for RunnerConfig {
             model_id: "jev-1.13.0".to_owned(),
             mode: RunnerMode::Replay,
             endpoint: JevEndpoint::Cloud,
+            arms: SelectionArm::all().to_vec(),
+            selector: RunSelector::All,
         }
     }
 }
@@ -196,7 +226,7 @@ pub fn plan_run(corpus: &Corpus, config: &RunnerConfig) -> RunPlan {
     let output_per_call = 128u64;
 
     for _edge in corpus.calibration.iter().chain(corpus.held_out.iter()) {
-        for arm in SelectionArm::all() {
+        for arm in &config.arms {
             let entry = plan.per_arm.entry(arm.name().to_owned()).or_default();
             entry.edges += 1;
             entry.calls += 1;
@@ -209,11 +239,8 @@ pub fn plan_run(corpus: &Corpus, config: &RunnerConfig) -> RunPlan {
 
     if config.mode == RunnerMode::Live {
         // Board ruling (2026-10-08): judge runs on every held-out variant,
-        // once per arm. Held-out variants = 572; arms = 3; judge calls = 1716.
-        plan.judge_calls = corpus
-            .held_out
-            .len()
-            .saturating_mul(SelectionArm::all().len());
+        // once per selected arm.
+        plan.judge_calls = corpus.held_out.len().saturating_mul(config.arms.len());
     }
 
     plan
@@ -228,6 +255,121 @@ pub(crate) fn run_concurrency() -> usize {
         .and_then(|s| s.parse().ok())
         .unwrap_or(4)
         .max(1)
+}
+
+/// Resolve the selector to the list of variants that will be scored.
+///
+/// Deterministic ordering is required for `--smoke` and `--slice` to be
+/// reproducible across runs and filesystems.
+fn select_variants<'a>(
+    corpus: &'a Corpus,
+    selector: &RunSelector,
+) -> anyhow::Result<Vec<&'a LabelledEdge>> {
+    match selector {
+        RunSelector::All => Ok(corpus
+            .calibration
+            .iter()
+            .chain(corpus.held_out.iter())
+            .collect()),
+        RunSelector::Edge(id) => select_edge(corpus, id),
+        RunSelector::Smoke => select_smoke(corpus),
+        RunSelector::Slice(n) => select_slice(corpus, *n),
+    }
+}
+
+fn select_edge<'a>(corpus: &'a Corpus, id: &str) -> anyhow::Result<Vec<&'a LabelledEdge>> {
+    corpus
+        .calibration
+        .iter()
+        .chain(corpus.held_out.iter())
+        .find(|e| e.variant_id == id)
+        .map(|e| vec![e])
+        .ok_or_else(|| anyhow::anyhow!("unknown variant id: {id}"))
+}
+
+fn calibration_sorted(corpus: &Corpus) -> Vec<&LabelledEdge> {
+    let mut edges: Vec<&LabelledEdge> = corpus.calibration.iter().collect();
+    edges.sort_by_key(|e| e.variant_id.clone());
+    edges
+}
+
+fn select_smoke(corpus: &Corpus) -> anyhow::Result<Vec<&LabelledEdge>> {
+    let edge = calibration_sorted(corpus)
+        .into_iter()
+        .filter(|e| e.class == FailureClass::Clean)
+        .find(|e| {
+            e.edge.tool_calls.len() >= 5
+                && e.edge.tool_calls.iter().any(|c| !c.result.contains(" [truncated]"))
+        })
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "no clean calibration edge satisfies smoke criteria (>=5 tool calls, >=1 non-truncated result)"
+            )
+        })?;
+    println!(
+        "smoke: variant_id={} scenario={} worker={} tool_calls={} basis=first calibration Clean variant with >=5 tool calls and >=1 non-truncated result",
+        edge.variant_id,
+        edge.edge.scenario,
+        edge.edge.worker_id,
+        edge.edge.tool_calls.len()
+    );
+    Ok(vec![edge])
+}
+
+fn select_slice(corpus: &Corpus, n: usize) -> anyhow::Result<Vec<&LabelledEdge>> {
+    let mut by_scenario: BTreeMap<String, Vec<&LabelledEdge>> = BTreeMap::new();
+    for edge in calibration_sorted(corpus) {
+        if edge.class == FailureClass::Clean {
+            by_scenario
+                .entry(edge.edge.scenario.clone())
+                .or_default()
+                .push(edge);
+        }
+    }
+    for edges in by_scenario.values_mut() {
+        edges.sort_by_key(|e| e.variant_id.clone());
+    }
+
+    let scenarios: Vec<String> = by_scenario.keys().cloned().collect();
+    let mut selected = Vec::new();
+    let mut pass = 0usize;
+    'outer: loop {
+        for scenario in &scenarios {
+            if selected.len() >= n {
+                break 'outer;
+            }
+            if let Some(edges) = by_scenario.get(scenario)
+                && pass < edges.len()
+            {
+                selected.push(edges[pass]);
+            }
+        }
+        pass += 1;
+        if selected.len() >= n {
+            break;
+        }
+        let any_remaining = scenarios
+            .iter()
+            .any(|s| by_scenario.get(s).map(|e| e.len()).unwrap_or(0) > pass);
+        if !any_remaining {
+            break;
+        }
+    }
+
+    if selected.len() < n {
+        anyhow::bail!(
+            "--slice {n} requested but only {} clean calibration variants available",
+            selected.len()
+        );
+    }
+
+    let ids: Vec<&str> = selected.iter().map(|e| e.variant_id.as_str()).collect();
+    println!(
+        "slice: selected {} variants: {}",
+        selected.len(),
+        ids.join(", ")
+    );
+    Ok(selected)
 }
 
 /// Load the set of completed scoring keys from `results.jsonl`, truncating a
@@ -417,15 +559,19 @@ pub async fn run_corpus(
         HashSet::new()
     };
 
+    if config.arms.is_empty() {
+        anyhow::bail!("no arms selected");
+    }
+
+    let selected = select_variants(corpus, &config.selector)?;
+
     // Build the deterministic work list, skipping pairs already recorded in a
     // resume state. Indices are contiguous after filtering so output slots are
     // dense.
-    let work_items: Vec<_> = corpus
-        .calibration
-        .iter()
-        .chain(corpus.held_out.iter())
+    let work_items: Vec<_> = selected
+        .into_iter()
         .flat_map(|edge| {
-            SelectionArm::all().iter().map(move |arm| {
+            config.arms.iter().map(move |arm| {
                 let key = CompletedKey::new(arm.name(), &edge.variant_id);
                 (edge.clone(), *arm, key)
             })
@@ -593,12 +739,13 @@ fn build_summarizer(
 fn build_judge_work_list(
     corpus: &Corpus,
     completed: &HashSet<CompletedKey>,
+    arms: &[SelectionArm],
 ) -> Vec<(LabelledEdge, SelectionArm)> {
     corpus
         .held_out
         .iter()
         .flat_map(|edge| {
-            SelectionArm::all().iter().filter_map(move |&arm| {
+            arms.iter().filter_map(move |&arm| {
                 let key = CompletedKey::judge(arm.name(), &edge.variant_id);
                 if completed.contains(&key) {
                     None
@@ -635,7 +782,7 @@ async fn run_judge(
         }
     }
 
-    let edges_to_judge = build_judge_work_list(corpus, completed);
+    let edges_to_judge = build_judge_work_list(corpus, completed, &config.arms);
 
     judge_edges_bounded(
         &client,
@@ -748,6 +895,8 @@ pub fn class_aware_response(class: FailureClass, arm: SelectionArm) -> ScriptedR
         FailureClass::Clean | FailureClass::LegitimateScopeOverlap => {
             (0.95, 4.0, 2.0, 3.0, 0.9, 0.9)
         }
+        // Honest blocker: the worker reported it could not fulfil the task.
+        FailureClass::BaselineBlocked => (0.1, 1.0, 1.0, 1.0, 0.9, 0.9),
         FailureClass::Drifted => (0.8, 1.0, 0.0, 2.0, 0.7, 0.8),
         FailureClass::FabricatedSpecifics => (0.85, 3.0, 2.0, 1.0, 0.8, 0.8),
         FailureClass::ScopeViolation => (0.8, 2.0, 1.0, 2.0, 0.7, 0.1),
@@ -1300,7 +1449,7 @@ mod tests {
             .held_out
             .len()
             .saturating_mul(SelectionArm::all().len());
-        let work_list = build_judge_work_list(&corpus, &completed);
+        let work_list = build_judge_work_list(&corpus, &completed, SelectionArm::all());
         assert_eq!(
             work_list.len(),
             expected,
@@ -1317,7 +1466,7 @@ mod tests {
             SelectionArm::ClaimIndexed.name(),
             &corpus.held_out[0].variant_id,
         ));
-        let work_list = build_judge_work_list(&corpus, &with_one_judge_done);
+        let work_list = build_judge_work_list(&corpus, &with_one_judge_done, SelectionArm::all());
         assert_eq!(
             work_list.len(),
             expected - 1,

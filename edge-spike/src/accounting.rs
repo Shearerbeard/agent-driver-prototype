@@ -136,7 +136,7 @@ impl AccuracySummary {
         for edge in scored {
             map.entry(edge.arm.name().to_owned())
                 .or_default()
-                .entry(format!("{:?}", edge.class).to_lowercase())
+                .entry(edge.class.as_str().to_owned())
                 .or_default()
                 .push(edge.artifact.composite);
         }
@@ -160,8 +160,13 @@ impl AccuracySummary {
         let mut total = 0usize;
         let mut correct = 0usize;
         let mut truncation_ties = 0usize;
+        // BaselineBlocked is neither a clean positive nor a failure class for the
+        // pairwise metric; it is reported in its own row in the corpus table.
         for class_name in classes.keys() {
-            if class_name == "clean" || class_name == "legitimatescopeoverlap" {
+            if class_name == "clean"
+                || class_name == "legitimate_scope_overlap"
+                || class_name == "baseline-blocked"
+            {
                 continue;
             }
             if let Some(failure) = classes.get(class_name) {

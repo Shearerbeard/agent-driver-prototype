@@ -54,6 +54,29 @@ impl CapturedEdge {
         }
         out
     }
+
+    /// Detect the honest baseline-blocker structural signal from the C1 audit:
+    /// the worker called `find_trace_analysis_component` and received an empty
+    /// `targets` array. See `.review/jev-goldens/label-audit.md` section 7.
+    #[must_use]
+    pub fn is_baseline_blocked(&self) -> bool {
+        self.tool_calls.iter().any(|call| {
+            call.tool_name == "find_trace_analysis_component"
+                && tool_result_has_empty_targets(&call.result)
+        })
+    }
+}
+
+fn tool_result_has_empty_targets(result: &str) -> bool {
+    let trimmed = result.trim();
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(trimmed) else {
+        return false;
+    };
+    matches!(value, serde_json::Value::Object(ref m) if {
+        m.get("targets")
+            .map(|v| matches!(v, serde_json::Value::Array(a) if a.is_empty()))
+            .unwrap_or(false)
+    })
 }
 
 /// Build-time summary of how the corpus was reconstructed from captures.
@@ -85,6 +108,7 @@ pub struct BuildSummary {
 #[serde(rename_all = "snake_case")]
 pub enum FailureClass {
     Clean,
+    BaselineBlocked,
     Drifted,
     FabricatedSpecifics,
     ScopeViolation,
@@ -103,6 +127,7 @@ impl FailureClass {
     pub fn all() -> &'static [FailureClass] {
         &[
             FailureClass::Clean,
+            FailureClass::BaselineBlocked,
             FailureClass::Drifted,
             FailureClass::FabricatedSpecifics,
             FailureClass::ScopeViolation,
@@ -116,12 +141,34 @@ impl FailureClass {
         ]
     }
 
+    /// Stable snake-case name used for variant ids and serialized keys.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            FailureClass::Clean => "clean",
+            FailureClass::BaselineBlocked => "baseline-blocked",
+            FailureClass::Drifted => "drifted",
+            FailureClass::FabricatedSpecifics => "fabricated_specifics",
+            FailureClass::ScopeViolation => "scope_violation",
+            FailureClass::LossyHandoff => "lossy_handoff",
+            FailureClass::DistractorAligned => "distractor_aligned",
+            FailureClass::MissingEvidence => "missing_evidence",
+            FailureClass::LegitimateScopeOverlap => "legitimate_scope_overlap",
+            FailureClass::ContradictorySources => "contradictory_sources",
+            FailureClass::Truncation => "truncation",
+            FailureClass::AdversarialInjection => "adversarial_injection",
+        }
+    }
+
     /// True if this class should be ordered below clean in pairwise scoring.
+    /// BaselineBlocked is excluded from the pairwise metric entirely.
     #[must_use]
     pub fn is_failure(self) -> bool {
         !matches!(
             self,
-            FailureClass::Clean | FailureClass::LegitimateScopeOverlap
+            FailureClass::Clean
+                | FailureClass::LegitimateScopeOverlap
+                | FailureClass::BaselineBlocked
         )
     }
 }
@@ -557,12 +604,24 @@ fn parse_sse_events(text: &str) -> Vec<SseEvent> {
 pub fn synthesize_variants(edges: &[CapturedEdge]) -> Vec<LabelledEdge> {
     let mut out = Vec::new();
     for edge in edges {
+        // C1 audit: trace-analyst edges with an empty find_trace_analysis_component
+        // result are honest blockers, not clean positives. Label the original
+        // BaselineBlocked; keep the synthesized failure variants so the blocked
+        // output can still exercise drift/scope detectors.
+        let original_class = if edge.is_baseline_blocked() {
+            FailureClass::BaselineBlocked
+        } else {
+            FailureClass::Clean
+        };
         out.push(LabelledEdge {
             edge: edge.clone(),
-            class: FailureClass::Clean,
+            class: original_class,
             variant_id: format!(
-                "{}-iter{}-{}-clean",
-                edge.scenario, edge.iteration, edge.task_id
+                "{}-iter{}-{}-{}",
+                edge.scenario,
+                edge.iteration,
+                edge.task_id,
+                original_class.as_str()
             ),
         });
         out.push(make_variant(edge, FailureClass::Drifted, drift_result));
@@ -624,11 +683,12 @@ fn make_variant(
     variant.worker_output = transform(edge);
     LabelledEdge {
         variant_id: format!(
-            "{}-iter{}-{}-{:?}",
-            edge.scenario, edge.iteration, edge.task_id, class
-        )
-        .to_lowercase()
-        .replace(' ', "_"),
+            "{}-iter{}-{}-{}",
+            edge.scenario,
+            edge.iteration,
+            edge.task_id,
+            class.as_str()
+        ),
         edge: variant,
         class,
     }
@@ -793,6 +853,10 @@ pub fn build_corpus_with_summary(
             calibration.extend(variants);
         }
     }
+
+    // Deterministic order for reports and selector-based runs.
+    calibration.sort_by(|a, b| a.variant_id.cmp(&b.variant_id));
+    held_out.sort_by(|a, b| a.variant_id.cmp(&b.variant_id));
 
     summary.total_variants = calibration.len() + held_out.len();
     summary.calibration_variants = calibration.len();

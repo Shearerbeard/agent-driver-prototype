@@ -130,6 +130,10 @@ pub fn generate_report(
         "- Arm 1 (head-truncation) is expected to underperform Arm 2 on over-budget edges."
             .to_owned(),
     );
+    lines.push(
+        "- BaselineBlocked variants are excluded from the pairwise clean-vs-failure metric."
+            .to_owned(),
+    );
     lines.push(String::new());
 
     lines.join("\n")
