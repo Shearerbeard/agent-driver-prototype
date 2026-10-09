@@ -177,6 +177,31 @@ prompt mid-dispatch is a failed pre-vet, not a surprise to debug.
 
 ## Log
 
+- 2026-10-08 ITERATION 1 COMPLETE (live, cloud), followed by the
+  user's STOP-AND-REEVALUATE directive before any further spend.
+  Mechanics: green - 3,465/3,465 scoring verdicts (cloud
+  jev-latest, 3 arms; ~16.8M input tokens) plus 1,221/1,221 judge
+  results (Bedrock K3), durable across four halts, resume verified
+  end to end. Artifacts + report preserved at
+  `.review/w7-iter1/` in the card/w7 worktree (gitignored working
+  material; 53M). RESULTS ARE NOT RUBRIC-VALIDATING: pairwise
+  clean-vs-failure 0.23-0.27 per arm against the 0.85 bar, with
+  clean composites (0.37-0.41) BELOW several failure classes
+  (drifted 0.46-0.47, distractor 0.49-0.53) - the ordering is
+  inverted; 57-60% of edges scored INSUFFICIENT_EVIDENCE and floor
+  rules fired heavily on clean edges; the judge control flags
+  clean edges too (sample). Three instrumentation gaps confound
+  the read and are fixable offline from saved artifacts at zero
+  spend: (1) edge-review still prints the offline/synthetic banner
+  over live artifacts and shows no judge column (review bin
+  predates leg 2); (2) judge dims use their own vocabulary
+  (scope_compliance etc.) - unmapped to rubric dims; (3) the
+  evidence_presence depression (insufficient-evidence rate) needs
+  a window-assembly audit on the calibration half before the
+  numbers are read as a rubric verdict. Next: offline analysis
+  from the saved artifacts, then re-evaluate (rubric/state
+  redesign for an iteration 2, or the card's no-go path). Board
+  owner.
 - 2026-10-08 LIVE PHASE, iteration 1, incident record (per the
   user's notify-on-failure standing rule): the first cloud launch
   halted ~2 min in - nine (arm, variant) pairs scored (cloud Jev
