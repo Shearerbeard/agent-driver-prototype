@@ -9,7 +9,7 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 
-use crate::chat::{ChatMessage, ChatRequest, ChatResponse, chars_to_tokens};
+use crate::chat::{ChatMessage, ChatRequest, ChatResponse, ThinkingConfig, chars_to_tokens};
 use crate::http_retry::execute_with_retry;
 
 /// Summarize a capture region to fit the remaining budget.
@@ -53,6 +53,8 @@ pub struct SummarizerConfig {
     /// itself asks for the target length, so the completion cap only needs to
     /// guarantee enough headroom for reasoning + visible text.
     pub max_tokens: Option<u32>,
+    /// When true, request `"thinking": {"type": "disabled"}`.
+    pub disable_thinking: bool,
 }
 
 impl SummarizerConfig {
@@ -87,12 +89,15 @@ impl SummarizerConfig {
         let max_tokens = env::var("SUMMARIZER_MAX_TOKENS")
             .ok()
             .and_then(|s| s.parse().ok());
+        let disable_thinking = env::var("SUMMARIZER_DISABLE_THINKING")
+            .is_ok_and(|v| v == "1" || v.eq_ignore_ascii_case("true"));
         Ok(Self {
             base_url,
             api_key,
             model,
             timeout,
             max_tokens,
+            disable_thinking,
         })
     }
 
@@ -132,34 +137,55 @@ impl FlashSummarizer for LiveSummarizer {
             ))],
             max_tokens: self.config.max_tokens_for_budget(budget_chars),
             temperature: 0.0,
+            thinking: self
+                .config
+                .disable_thinking
+                .then_some(ThinkingConfig::Disabled),
         };
 
         let url = format!(
             "{}/chat/completions",
             self.config.base_url.trim_end_matches('/')
         );
-        let req = self
-            .client
-            .post(&url)
-            .header("Authorization", format!("Bearer {}", self.config.api_key))
-            .json(&request)
-            .build()
-            .map_err(|e| anyhow::anyhow!("summarizer failed to build request: {e}"))?;
-        let response = execute_with_retry(&self.client, req, "summarizer").await?;
 
-        let chat = response
-            .json::<ChatResponse>()
-            .await
-            .map_err(|e| anyhow::anyhow!("summarizer response failed to parse: {e}"))?;
-        chat.first_content()
-            .map_err(|e| anyhow::anyhow!("summarizer response invalid: {e}"))
+        // Empty/null content can be transient for reasoning models; retry the
+        // whole call in-process before treating it as exhaustion.
+        const MAX_ATTEMPTS: usize = 3;
+        for attempt in 0..MAX_ATTEMPTS {
+            let req = self
+                .client
+                .post(&url)
+                .header("Authorization", format!("Bearer {}", self.config.api_key))
+                .json(&request)
+                .build()
+                .map_err(|e| anyhow::anyhow!("summarizer failed to build request: {e}"))?;
+            let response = execute_with_retry(&self.client, req, "summarizer").await?;
+
+            let chat = response
+                .json::<ChatResponse>()
+                .await
+                .map_err(|e| anyhow::anyhow!("summarizer response failed to parse: {e}"))?;
+            match chat.first_content() {
+                Ok(content) => return Ok(content),
+                Err(_) if attempt + 1 < MAX_ATTEMPTS => continue,
+                Err(e) => {
+                    return Err(anyhow::anyhow!(
+                        "summarizer exhausted: empty content after {MAX_ATTEMPTS} attempts: {e}"
+                    ));
+                }
+            }
+        }
+
+        unreachable!("loop always returns");
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
     use wiremock::matchers::{bearer_token, body_partial_json, header, method, path};
-    use wiremock::{Mock, MockServer, ResponseTemplate};
+    use wiremock::{Mock, MockServer, Request, Respond, ResponseTemplate};
 
     use super::*;
     use crate::exhaustion::is_exhaustion;
@@ -175,6 +201,7 @@ mod tests {
             model: "test-model".to_owned(),
             timeout: Duration::from_secs(5),
             max_tokens,
+            disable_thinking: false,
         }
     }
 
@@ -277,11 +304,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn null_content_surfaces_as_error() {
+    async fn null_content_is_retried_then_classified_as_exhaustion() {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
             .and(path("/chat/completions"))
             .respond_with(ResponseTemplate::new(200).set_body_json(null_content_response()))
+            .expect(3)
             .mount(&server)
             .await;
 
@@ -292,7 +320,8 @@ mod tests {
             Ok(_) => panic!("expected error"),
         };
 
-        assert!(err.contains("content is null"), "unexpected error: {err}");
+        assert!(err.contains("exhausted"), "unexpected error: {err}");
+        assert!(is_exhaustion(&anyhow::anyhow!("{err}")));
     }
 
     #[tokio::test]
@@ -318,13 +347,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn empty_content_with_length_is_hard_error() {
+    async fn empty_content_is_retried_then_classified_as_exhaustion() {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
             .and(path("/chat/completions"))
             .respond_with(
                 ResponseTemplate::new(200).set_body_json(empty_content_with_length_response()),
             )
+            .expect(3)
             .mount(&server)
             .await;
 
@@ -335,7 +365,105 @@ mod tests {
             Ok(_) => panic!("expected error"),
         };
 
-        assert!(err.contains("content is empty"), "unexpected error: {err}");
+        assert!(err.contains("exhausted"), "unexpected error: {err}");
+        assert!(is_exhaustion(&anyhow::anyhow!("{err}")));
+    }
+
+    #[tokio::test]
+    async fn empty_content_retries_then_succeeds() {
+        struct EmptyThenOkResponder {
+            attempt: AtomicUsize,
+            ok_content: String,
+        }
+
+        impl Respond for EmptyThenOkResponder {
+            fn respond(&self, _request: &Request) -> ResponseTemplate {
+                let n = self.attempt.fetch_add(1, Ordering::SeqCst);
+                if n < 2 {
+                    ResponseTemplate::new(200).set_body_json(empty_content_with_length_response())
+                } else {
+                    ResponseTemplate::new(200).set_body_json(ok_response(&self.ok_content))
+                }
+            }
+        }
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(EmptyThenOkResponder {
+                attempt: AtomicUsize::new(0),
+                ok_content: "usable summary".to_owned(),
+            })
+            .expect(3)
+            .mount(&server)
+            .await;
+
+        let config = test_config(server.uri());
+        let summarizer = LiveSummarizer::new(config).unwrap_or_else(|e| panic!("{e}"));
+        let result = summarizer
+            .summarize("some evidence", 100)
+            .await
+            .unwrap_or_else(|e| panic!("{e}"));
+
+        assert_eq!(result, "usable summary");
+    }
+
+    #[tokio::test]
+    async fn disable_thinking_adds_field_to_request_body() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .and(body_partial_json(
+                serde_json::json!({"thinking": {"type": "disabled"}}),
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_json(ok_response("ok")))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let mut config = test_config(server.uri());
+        config.disable_thinking = true;
+        let summarizer = LiveSummarizer::new(config).unwrap_or_else(|e| panic!("{e}"));
+        summarizer
+            .summarize("x", 10)
+            .await
+            .unwrap_or_else(|e| panic!("{e}"));
+    }
+
+    #[tokio::test]
+    async fn thinking_field_is_absent_by_default_in_live_request() {
+        struct AssertNoThinkingResponder {
+            body: serde_json::Value,
+        }
+
+        impl Respond for AssertNoThinkingResponder {
+            fn respond(&self, request: &Request) -> ResponseTemplate {
+                let body: serde_json::Value =
+                    serde_json::from_slice(&request.body).expect("request body is JSON");
+                assert!(
+                    body.get("thinking").is_none(),
+                    "unexpected thinking field: {body:?}"
+                );
+                ResponseTemplate::new(200).set_body_json(self.body.clone())
+            }
+        }
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(AssertNoThinkingResponder {
+                body: ok_response("ok"),
+            })
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let config = test_config(server.uri());
+        let summarizer = LiveSummarizer::new(config).unwrap_or_else(|e| panic!("{e}"));
+        summarizer
+            .summarize("x", 10)
+            .await
+            .unwrap_or_else(|e| panic!("{e}"));
     }
 
     #[tokio::test]

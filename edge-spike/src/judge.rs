@@ -184,6 +184,7 @@ impl JudgeClient {
             messages: vec![ChatMessage::user(prompt)],
             max_tokens: self.config.max_tokens,
             temperature: 0.0,
+            thinking: None,
         };
         let url = format!(
             "{}/model/{}/invoke",

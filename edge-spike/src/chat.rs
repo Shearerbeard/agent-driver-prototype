@@ -2,6 +2,13 @@
 
 use serde::{Deserialize, Serialize};
 
+/// Thinking configuration for reasoning-capable models.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "lowercase")]
+pub enum ThinkingConfig {
+    Disabled,
+}
+
 /// OpenAI-compatible chat request.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChatRequest {
@@ -9,6 +16,8 @@ pub struct ChatRequest {
     pub messages: Vec<ChatMessage>,
     pub max_tokens: u32,
     pub temperature: f64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thinking: Option<ThinkingConfig>,
 }
 
 /// OpenAI-compatible chat message.
@@ -78,4 +87,33 @@ pub fn chars_to_tokens(budget_chars: usize) -> u32 {
         .clamp(1, 4096)
         .try_into()
         .unwrap_or(4096)
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::*;
+
+    fn sample_request(thinking: Option<ThinkingConfig>) -> ChatRequest {
+        ChatRequest {
+            model: "m".to_owned(),
+            messages: vec![ChatMessage::user("hi")],
+            max_tokens: 1,
+            temperature: 0.0,
+            thinking,
+        }
+    }
+
+    #[test]
+    fn thinking_field_is_absent_by_default() {
+        let value = serde_json::to_value(sample_request(None)).unwrap();
+        assert!(value.get("thinking").is_none(), "{value:?}");
+    }
+
+    #[test]
+    fn thinking_disabled_serializes() {
+        let value = serde_json::to_value(sample_request(Some(ThinkingConfig::Disabled))).unwrap();
+        assert_eq!(value.get("thinking"), Some(&json!({"type": "disabled"})));
+    }
 }

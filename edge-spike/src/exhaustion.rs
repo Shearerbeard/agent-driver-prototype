@@ -45,6 +45,15 @@ impl ResumeState {
         }
     }
 
+    /// Create a resume note for a non-exhaustion hard error that must halt
+    /// the run while preserving completed work.
+    pub fn hard_error(service: impl Into<String>, completed: Vec<CompletedKey>, err: &str) -> Self {
+        Self {
+            completed,
+            error: format!("{}: {err}", service.into()),
+        }
+    }
+
     /// Write the resume state next to the artifact directory.
     pub fn write(&self, dir: &std::path::Path) -> anyhow::Result<()> {
         std::fs::create_dir_all(dir)?;

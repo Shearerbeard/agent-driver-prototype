@@ -272,10 +272,22 @@ pub async fn run_corpus(
     resume: Option<&ResumeState>,
 ) -> anyhow::Result<LiveRunResult> {
     let summarizer: Arc<dyn FlashSummarizer> =
-        build_summarizer(config.mode, SelectionArm::FlashSummarization)?;
+        match build_summarizer(config.mode, SelectionArm::FlashSummarization) {
+            Ok(s) => s,
+            Err(e) => return Ok(hard_error_result("leg_1", Vec::new(), HashSet::new(), &e)),
+        };
     let jev_client = if config.mode == RunnerMode::Live {
-        let (client, configured_model) = build_jev_client(config.endpoint)?;
-        Some((Arc::new(client), configured_model))
+        match build_jev_client(config.endpoint) {
+            Ok((client, configured_model)) => Some((Arc::new(client), configured_model)),
+            Err(e) => {
+                return Ok(hard_error_result(
+                    "leg_1",
+                    Vec::new(),
+                    HashSet::new(),
+                    &anyhow::anyhow!("{e}"),
+                ));
+            }
+        }
     } else {
         None
     };
@@ -352,7 +364,7 @@ pub async fn run_corpus(
                 )),
             });
         }
-        return Err(e);
+        return Ok(hard_error_result("leg_1", scored, completed, &e));
     }
 
     let judge_results = if config.mode == RunnerMode::Live {
@@ -369,7 +381,9 @@ pub async fn run_corpus(
                     )),
                 });
             }
-            Err(e) => return Err(e),
+            Err(e) => {
+                return Ok(hard_error_result("leg_2", scored, completed, &e));
+            }
         }
     } else {
         Vec::new()
@@ -405,6 +419,23 @@ fn exhausted_service(err: &anyhow::Error) -> &'static str {
         "judge"
     } else {
         "jev_scorer"
+    }
+}
+
+fn hard_error_result(
+    leg: &str,
+    scored: Vec<ScoredEdge>,
+    completed: HashSet<CompletedKey>,
+    err: &anyhow::Error,
+) -> LiveRunResult {
+    LiveRunResult {
+        scored,
+        judge_results: Vec::new(),
+        resume: Some(ResumeState::hard_error(
+            format!("hard_error:{leg}"),
+            completed.into_iter().collect(),
+            &err.to_string(),
+        )),
     }
 }
 
@@ -795,8 +826,15 @@ mod tests {
     use std::time::Duration;
 
     use tokio::sync::Semaphore;
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, Request, Respond, ResponseTemplate};
 
-    use super::{run_bounded, run_concurrency};
+    use super::{RunnerConfig, RunnerMode, run_bounded, run_concurrency, run_corpus};
+    use crate::arms::SelectionArm;
+    use crate::client::JevEndpoint;
+    use crate::corpus::{CapturedEdge, Corpus, FailureClass, LabelledEdge};
+    use crate::exhaustion::is_exhaustion;
+    use crate::state::{PlanContext, PlanStep, WorkerOutput};
 
     #[tokio::test]
     async fn run_bounded_preserves_input_order_despite_completion_order() {
@@ -876,10 +914,8 @@ mod tests {
 
     #[tokio::test]
     async fn run_concurrency_env_override() {
-        use std::sync::Mutex;
-
-        static LOCK: Mutex<()> = Mutex::new(());
-        let _guard = LOCK.lock().unwrap();
+        static ENV_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+        let _guard = ENV_LOCK.lock().await;
 
         unsafe {
             std::env::set_var("RUN_CONCURRENCY", "2");
@@ -896,6 +932,173 @@ mod tests {
         assert_eq!(run_concurrency(), 1);
         unsafe {
             std::env::remove_var("RUN_CONCURRENCY");
+        }
+    }
+
+    fn dummy_edge(variant_id: &str, result: &str) -> LabelledEdge {
+        LabelledEdge {
+            variant_id: variant_id.to_owned(),
+            class: FailureClass::Clean,
+            edge: CapturedEdge {
+                scenario: "test".to_owned(),
+                task_id: 1,
+                worker_id: "w1".to_owned(),
+                goal: "goal".to_owned(),
+                plan_step: PlanStep {
+                    task: "task".to_owned(),
+                    worker_role: "worker".to_owned(),
+                    depends_on: Vec::new(),
+                },
+                plan_context: PlanContext {
+                    consumers: Vec::new(),
+                    siblings: Vec::new(),
+                },
+                context_provided: String::new(),
+                worker_output: WorkerOutput {
+                    summary: "summary".to_owned(),
+                    result: result.to_owned(),
+                    truncated: false,
+                },
+                tool_calls: Vec::new(),
+            },
+        }
+    }
+
+    fn jev_ok_response() -> serde_json::Value {
+        serde_json::json!({
+            "model": "jev-1.13.0-replay",
+            "answers": {
+                "evidence_presence": {"type": "noul", "noul": 0.95},
+                "task_fidelity": {
+                    "type": "score",
+                    "score": 4.0,
+                    "legend": {"0": "none", "1": "poor", "2": "fair", "3": "good", "4": "excellent"},
+                    "probabilities": {"0": 0.1, "1": 0.2, "2": 0.4, "3": 0.2, "4": 0.1},
+                    "confidence": 0.7
+                },
+                "goal_alignment": {
+                    "type": "score",
+                    "score": 2.0,
+                    "legend": {"0": "misaligned", "1": "neutral", "2": "aligned"},
+                    "probabilities": {"0": 0.2, "1": 0.6, "2": 0.2},
+                    "confidence": 0.7
+                },
+                "evidence_grounding": {
+                    "type": "score",
+                    "score": 3.0,
+                    "legend": {"0": "unsupported", "1": "partially", "2": "mostly", "3": "supported"},
+                    "probabilities": {"0": 0.1, "1": 0.2, "2": 0.5, "3": 0.2},
+                    "confidence": 0.7
+                },
+                "handoff_integrity": {"type": "noul", "noul": 0.9},
+                "scope_discipline": {"type": "noul", "noul": 0.9}
+            },
+            "usage": {"input_tokens": 2048, "output_tokens": 128}
+        })
+    }
+
+    struct JevCountResponder {
+        attempt: AtomicUsize,
+        successes: usize,
+        ok_body: serde_json::Value,
+    }
+
+    impl JevCountResponder {
+        fn ok_for_first(successes: usize, ok_body: serde_json::Value) -> Self {
+            Self {
+                attempt: AtomicUsize::new(0),
+                successes,
+                ok_body,
+            }
+        }
+    }
+
+    impl Respond for JevCountResponder {
+        fn respond(&self, _request: &Request) -> ResponseTemplate {
+            let n = self.attempt.fetch_add(1, Ordering::SeqCst);
+            if n < self.successes {
+                ResponseTemplate::new(200).set_body_json(self.ok_body.clone())
+            } else {
+                ResponseTemplate::new(500).set_body_string("boom")
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn hard_error_in_scoring_preserves_completed_pairs() {
+        static ENV_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+        let _guard = ENV_LOCK.lock().await;
+
+        let jev_server = MockServer::start().await;
+        let sum_server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "choices": [{"message": {"role": "assistant", "content": "summary"}}]
+            })))
+            .mount(&sum_server)
+            .await;
+
+        Mock::given(method("POST"))
+            .and(path("/v1/systemone"))
+            .respond_with(JevCountResponder::ok_for_first(3, jev_ok_response()))
+            .expect(4)
+            .mount(&jev_server)
+            .await;
+
+        unsafe {
+            std::env::set_var("RUN_CONCURRENCY", "1");
+            std::env::set_var("TYPESAFE_BASE_URL", jev_server.uri());
+            std::env::set_var("TYPESAFE_API_KEY", "test-key");
+            std::env::set_var("TYPESAFE_MODEL", "jev-1.13.0");
+            std::env::set_var("SUMMARIZER_BASE_URL", sum_server.uri());
+            std::env::set_var("SUMMARIZER_API_KEY", "test-key");
+            std::env::set_var("SUMMARIZER_MODEL", "test-model");
+        }
+
+        let corpus = Corpus {
+            calibration: vec![
+                dummy_edge("v0", "result zero"),
+                dummy_edge("v1", "result one"),
+            ],
+            held_out: Vec::new(),
+        };
+        let config = RunnerConfig {
+            mode: RunnerMode::Live,
+            endpoint: JevEndpoint::Cloud,
+            ..Default::default()
+        };
+
+        let result = run_corpus(&corpus, &config, None)
+            .await
+            .unwrap_or_else(|e| panic!("{e}"));
+
+        assert_eq!(
+            result.scored.len(),
+            3,
+            "first edge's three arms should be preserved"
+        );
+        let resume = result.resume.expect("expected resume state");
+        assert!(
+            resume.error.starts_with("hard_error:leg_1"),
+            "unexpected error: {}",
+            resume.error
+        );
+        assert!(!is_exhaustion(&anyhow::anyhow!("{}", resume.error)));
+        assert_eq!(resume.completed.len(), 3);
+        for arm in SelectionArm::all() {
+            assert!(resume.is_completed(arm.name(), "v0"));
+        }
+
+        unsafe {
+            std::env::remove_var("RUN_CONCURRENCY");
+            std::env::remove_var("TYPESAFE_BASE_URL");
+            std::env::remove_var("TYPESAFE_API_KEY");
+            std::env::remove_var("TYPESAFE_MODEL");
+            std::env::remove_var("SUMMARIZER_BASE_URL");
+            std::env::remove_var("SUMMARIZER_API_KEY");
+            std::env::remove_var("SUMMARIZER_MODEL");
         }
     }
 }
