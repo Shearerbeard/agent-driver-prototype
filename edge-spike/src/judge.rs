@@ -6,9 +6,10 @@
 
 use std::collections::HashSet;
 use std::env;
+use std::path::Path;
 use std::time::Duration;
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::arms::{ArmConfig, SelectionArm, assemble_state};
 use crate::chat::{ChatMessage, ChatRequest, ChatResponse};
@@ -233,7 +234,7 @@ impl JudgeClient {
 }
 
 /// Parsed judge verdict.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct JudgeVerdict {
     pub verdict: Verdict,
 }
@@ -259,7 +260,7 @@ pub async fn judge_held_out<S: std::hash::BuildHasher>(
     }
 
     let owned_edges: Vec<_> = edges.iter().map(|(e, arm)| ((*e).clone(), *arm)).collect();
-    let (results, err) = judge_edges_bounded(client, owned_edges, arm_config, None).await;
+    let (results, err) = judge_edges_bounded(client, owned_edges, arm_config, None, None).await;
     match err {
         Some(e) => Err(e),
         None => Ok(results),
@@ -276,12 +277,13 @@ pub(crate) async fn judge_edges_bounded(
     client: &JudgeClient,
     edges: Vec<(LabelledEdge, SelectionArm)>,
     arm_config: &ArmConfig,
-    completed: Option<&mut HashSet<CompletedKey>>,
+    mut completed: Option<&mut HashSet<CompletedKey>>,
+    output_dir: Option<&Path>,
 ) -> (
     Vec<(String, SelectionArm, JudgeVerdict)>,
     Option<anyhow::Error>,
 ) {
-    use crate::runner::run_concurrency;
+    use crate::runner::{JUDGE_RESULTS_JSONL, append_judge_result, run_concurrency};
 
     let concurrency = run_concurrency();
     let client = client.clone();
@@ -304,14 +306,16 @@ pub(crate) async fn judge_edges_bounded(
     )
     .await;
 
-    if let Some(completed) = completed {
-        for (variant_id, arm, verdict, key) in results.into_iter().flatten() {
-            judge_slots.push((variant_id, arm, verdict));
-            completed.insert(key);
+    let judge_path = output_dir.map(|dir| dir.join(JUDGE_RESULTS_JSONL));
+    for (variant_id, arm, verdict, key) in results.into_iter().flatten() {
+        if let Some(path) = judge_path.as_ref()
+            && let Err(e) = append_judge_result(path, &variant_id, arm, &verdict)
+        {
+            return (judge_slots, Some(e));
         }
-    } else {
-        for (variant_id, arm, verdict, _key) in results.into_iter().flatten() {
-            judge_slots.push((variant_id, arm, verdict));
+        judge_slots.push((variant_id, arm, verdict));
+        if let Some(completed) = completed.as_mut() {
+            completed.insert(key);
         }
     }
 

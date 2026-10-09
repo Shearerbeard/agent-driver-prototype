@@ -11,9 +11,8 @@ use std::path::PathBuf;
 
 use edge_spike::client::JevEndpoint;
 use edge_spike::corpus::default_corpus;
-use edge_spike::exhaustion::ResumeState;
 use edge_spike::runner::{
-    RunnerConfig, RunnerMode, plan_run, replay_corpus, write_artifacts, write_judge_results,
+    RunnerConfig, RunnerMode, plan_run, write_artifacts, write_judge_results,
 };
 
 #[tokio::main(flavor = "current_thread")]
@@ -59,10 +58,8 @@ async fn main() -> anyhow::Result<()> {
         return Ok(());
     }
 
-    let resume = load_resume(&artifact_dir);
-
     if live {
-        let result = edge_spike::runner::run_corpus(&corpus, &config, resume.as_ref()).await?;
+        let result = edge_spike::runner::run_corpus(&corpus, &config, Some(&artifact_dir)).await?;
         std::fs::create_dir_all(&artifact_dir)?;
         std::fs::write(
             artifact_dir.join("corpus.json"),
@@ -83,25 +80,25 @@ async fn main() -> anyhow::Result<()> {
             artifact_dir.display()
         );
     } else {
-        let scored = replay_corpus(&corpus, &config).await?;
+        let result = edge_spike::runner::run_corpus(&corpus, &config, Some(&artifact_dir)).await?;
         std::fs::create_dir_all(&artifact_dir)?;
         std::fs::write(
             artifact_dir.join("corpus.json"),
             serde_json::to_string_pretty(&corpus)?,
         )?;
-        write_artifacts(&scored, &artifact_dir)?;
+        write_artifacts(&result.scored, &artifact_dir)?;
+
+        if let Some(resume) = result.resume {
+            resume.write(&artifact_dir)?;
+            anyhow::bail!("{}", resume.error);
+        }
+
         println!(
             "wrote {} scored edges to {}",
-            scored.len(),
+            result.scored.len(),
             artifact_dir.display()
         );
     }
 
     Ok(())
-}
-
-fn load_resume(artifact_dir: &std::path::Path) -> Option<ResumeState> {
-    let path = artifact_dir.join("resume.json");
-    let json = std::fs::read_to_string(path).ok()?;
-    serde_json::from_str(&json).ok()
 }

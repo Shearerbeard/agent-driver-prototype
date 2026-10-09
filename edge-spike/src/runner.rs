@@ -2,6 +2,8 @@
 //! Jev client, plus optional Leg-2 judge over the held-out split.
 
 use std::collections::{BTreeMap, HashSet, VecDeque};
+use std::fs::OpenOptions;
+use std::io::Write;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime};
@@ -115,6 +117,20 @@ pub struct ScoredEdge {
     pub artifact: VerdictArtifact,
 }
 
+/// JSONL file name for durable Leg-1 scoring records.
+pub const RESULTS_JSONL: &str = "results.jsonl";
+
+/// JSONL file name for durable Leg-2 judge records.
+pub const JUDGE_RESULTS_JSONL: &str = "judge_results.jsonl";
+
+/// One line of `judge_results.jsonl`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct JudgeResultRecord {
+    pub variant_id: String,
+    pub arm: SelectionArm,
+    pub verdict: JudgeVerdict,
+}
+
 /// Result of a full run, possibly halted early by endpoint exhaustion.
 #[derive(Debug, Clone)]
 pub struct LiveRunResult {
@@ -214,6 +230,98 @@ pub(crate) fn run_concurrency() -> usize {
         .max(1)
 }
 
+/// Load the set of completed scoring keys from `results.jsonl`, truncating a
+/// torn final line if one is present.
+pub fn load_completed_from_results_jsonl(path: &Path) -> anyhow::Result<HashSet<CompletedKey>> {
+    load_completed_from_jsonl::<ScoredEdge, _>(path, |edge| {
+        CompletedKey::new(edge.arm.name(), &edge.variant_id)
+    })
+}
+
+/// Load the set of completed judge keys from `judge_results.jsonl`, truncating
+/// a torn final line if one is present.
+pub fn load_completed_from_judge_results_jsonl(
+    path: &Path,
+) -> anyhow::Result<HashSet<CompletedKey>> {
+    load_completed_from_jsonl::<JudgeResultRecord, _>(path, |record| {
+        CompletedKey::judge(record.arm.name(), &record.variant_id)
+    })
+}
+
+fn load_completed_from_jsonl<T, F>(path: &Path, f: F) -> anyhow::Result<HashSet<CompletedKey>>
+where
+    T: serde::de::DeserializeOwned,
+    F: Fn(T) -> CompletedKey,
+{
+    if !path.exists() {
+        return Ok(HashSet::new());
+    }
+    let bytes = std::fs::read(path)?;
+    let mut completed = HashSet::new();
+    let mut start = 0usize;
+    let mut last_valid_end = 0usize;
+    let n = bytes.len();
+    for (i, &b) in bytes.iter().enumerate() {
+        if b == b'\n' {
+            let line = &bytes[start..i];
+            start = i + 1;
+            if line.is_empty() {
+                last_valid_end = start;
+                continue;
+            }
+            match serde_json::from_slice::<T>(line) {
+                Ok(item) => {
+                    completed.insert(f(item));
+                    last_valid_end = start;
+                }
+                Err(e) => {
+                    return Err(anyhow::anyhow!(
+                        "{} invalid line: {e}",
+                        path.file_name().and_then(|s| s.to_str()).unwrap_or("jsonl")
+                    ));
+                }
+            }
+        }
+    }
+    if start < n {
+        // Trailing content without a trailing newline is treated as a torn
+        // final line and discarded so the run can re-score it.
+        let file = OpenOptions::new().write(true).open(path)?;
+        file.set_len(last_valid_end as u64)?;
+    }
+    Ok(completed)
+}
+
+/// Append one scored edge to `results.jsonl` and flush before returning.
+pub fn append_scored_edge(path: &Path, edge: &ScoredEdge) -> anyhow::Result<()> {
+    let mut file = OpenOptions::new().append(true).create(true).open(path)?;
+    let mut line = serde_json::to_string(edge)?;
+    line.push('\n');
+    file.write_all(line.as_bytes())?;
+    file.flush()?;
+    Ok(())
+}
+
+/// Append one judge result to `judge_results.jsonl` and flush before returning.
+pub fn append_judge_result(
+    path: &Path,
+    variant_id: &str,
+    arm: SelectionArm,
+    verdict: &JudgeVerdict,
+) -> anyhow::Result<()> {
+    let mut file = OpenOptions::new().append(true).create(true).open(path)?;
+    let record = JudgeResultRecord {
+        variant_id: variant_id.to_owned(),
+        arm,
+        verdict: verdict.clone(),
+    };
+    let mut line = serde_json::to_string(&record)?;
+    line.push('\n');
+    file.write_all(line.as_bytes())?;
+    file.flush()?;
+    Ok(())
+}
+
 /// Execute a bounded number of indexed work items concurrently, preserving
 /// deterministic output order.
 ///
@@ -264,12 +372,14 @@ where
 /// Run the corpus through every arm using replay or live scoring, then judge
 /// the held-out split when live.
 ///
-/// If `resume` is provided, (arm, variant_id) pairs recorded as completed are
-/// skipped so the run continues from the exhaustion point.
+/// If `output_dir` is provided, each completed scoring and judge call is
+/// appended to `results.jsonl` / `judge_results.jsonl` and the completed-key
+/// set is reconstructed from those logs on start, so a halt loses at most the
+/// items still in flight.
 pub async fn run_corpus(
     corpus: &Corpus,
     config: &RunnerConfig,
-    resume: Option<&ResumeState>,
+    output_dir: Option<&Path>,
 ) -> anyhow::Result<LiveRunResult> {
     let summarizer: Arc<dyn FlashSummarizer> =
         match build_summarizer(config.mode, SelectionArm::FlashSummarization) {
@@ -301,9 +411,11 @@ pub async fn run_corpus(
         None
     };
 
-    let mut completed: HashSet<CompletedKey> = resume
-        .map(|r| r.completed.iter().cloned().collect())
-        .unwrap_or_default();
+    let mut completed: HashSet<CompletedKey> = if let Some(dir) = output_dir {
+        load_completed_from_results_jsonl(&dir.join(RESULTS_JSONL))?
+    } else {
+        HashSet::new()
+    };
 
     // Build the deterministic work list, skipping pairs already recorded in a
     // resume state. Indices are contiguous after filtering so output slots are
@@ -356,7 +468,11 @@ pub async fn run_corpus(
     )
     .await;
 
+    let results_path = output_dir.map(|dir| dir.join(RESULTS_JSONL));
     for (scored_edge, key) in results.into_iter().flatten() {
+        if let Some(path) = results_path.as_ref() {
+            append_scored_edge(path, &scored_edge)?;
+        }
         completed.insert(key);
         scored.push(scored_edge);
     }
@@ -383,7 +499,7 @@ pub async fn run_corpus(
     }
 
     let (judge_results, judge_error) = if config.mode == RunnerMode::Live {
-        run_judge(corpus, config, &mut completed).await
+        run_judge(corpus, config, &mut completed, output_dir).await
     } else {
         (Vec::new(), None)
     };
@@ -498,6 +614,7 @@ async fn run_judge(
     corpus: &Corpus,
     config: &RunnerConfig,
     completed: &mut HashSet<CompletedKey>,
+    output_dir: Option<&Path>,
 ) -> (
     Vec<(String, SelectionArm, JudgeVerdict)>,
     Option<anyhow::Error>,
@@ -511,9 +628,23 @@ async fn run_judge(
         Err(e) => return (Vec::new(), Some(e)),
     };
 
+    if let Some(dir) = output_dir {
+        match load_completed_from_judge_results_jsonl(&dir.join(JUDGE_RESULTS_JSONL)) {
+            Ok(judge_completed) => completed.extend(judge_completed),
+            Err(e) => return (Vec::new(), Some(e)),
+        }
+    }
+
     let edges_to_judge = build_judge_work_list(corpus, completed);
 
-    judge_edges_bounded(&client, edges_to_judge, &config.arm_config, Some(completed)).await
+    judge_edges_bounded(
+        &client,
+        edges_to_judge,
+        &config.arm_config,
+        Some(completed),
+        output_dir,
+    )
+    .await
 }
 
 fn default_response() -> ScriptedResponse {
@@ -864,7 +995,8 @@ mod tests {
     use wiremock::{Mock, MockServer, Request, Respond, ResponseTemplate};
 
     use super::{
-        RunnerConfig, RunnerMode, build_judge_work_list, run_bounded, run_concurrency, run_corpus,
+        RESULTS_JSONL, RunnerConfig, RunnerMode, build_judge_work_list, run_bounded,
+        run_concurrency, run_corpus,
     };
     use crate::arms::SelectionArm;
     use crate::client::JevEndpoint;
@@ -1107,7 +1239,9 @@ mod tests {
             ..Default::default()
         };
 
-        let result = run_corpus(&corpus, &config, None)
+        let dir = tempfile::tempdir().unwrap_or_else(|e| panic!("temp dir: {e}"));
+
+        let result = run_corpus(&corpus, &config, Some(dir.path()))
             .await
             .unwrap_or_else(|e| panic!("{e}"));
 
@@ -1127,6 +1261,15 @@ mod tests {
         for arm in SelectionArm::all() {
             assert!(resume.is_completed(arm.name(), "v0"));
         }
+
+        let results_path = dir.path().join(RESULTS_JSONL);
+        let persisted = std::fs::read_to_string(&results_path)
+            .unwrap_or_else(|e| panic!("read results.jsonl: {e}"));
+        assert_eq!(
+            persisted.lines().count(),
+            3,
+            "three scoring records should be persisted"
+        );
 
         unsafe {
             std::env::remove_var("RUN_CONCURRENCY");

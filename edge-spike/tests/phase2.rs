@@ -221,13 +221,35 @@ mod tests {
     async fn resumed_run_skips_completed_arm_variant_pairs() {
         let corpus = minimal_corpus();
         let config = RunnerConfig::default();
-        let resume = ResumeState::exhausted(
-            "jev_scorer",
-            vec![CompletedKey::new("claim_indexed", "cal-1")],
-            "test",
+        let dir = tempfile::tempdir().unwrap_or_else(|e| panic!("temp dir: {e}"));
+
+        let full = run_corpus(&corpus, &config, Some(dir.path()))
+            .await
+            .unwrap_or_else(|e| panic!("run_corpus failed: {e}"));
+        assert_eq!(
+            full.scored.len(),
+            corpus.total() * SelectionArm::all().len()
         );
 
-        let result = run_corpus(&corpus, &config, Some(&resume))
+        // Simulate a partial resume by keeping only the claim_indexed cal-1 record.
+        let results_path = dir.path().join(edge_spike::runner::RESULTS_JSONL);
+        let lines: Vec<_> = std::fs::read_to_string(&results_path)
+            .unwrap_or_else(|e| panic!("read results.jsonl: {e}"))
+            .lines()
+            .map(|s| s.to_owned())
+            .collect();
+        let keep: Vec<_> = lines
+            .into_iter()
+            .filter(|line| {
+                let edge: edge_spike::runner::ScoredEdge =
+                    serde_json::from_str(line).expect("valid scored edge");
+                edge.variant_id == "cal-1" && edge.arm.name() == "claim_indexed"
+            })
+            .collect();
+        std::fs::write(&results_path, keep.join("\n") + "\n")
+            .unwrap_or_else(|e| panic!("write partial results.jsonl: {e}"));
+
+        let result = run_corpus(&corpus, &config, Some(dir.path()))
             .await
             .unwrap_or_else(|e| panic!("run_corpus failed: {e}"));
 
@@ -497,7 +519,8 @@ mod tests {
             endpoint: JevEndpoint::Cloud,
             ..Default::default()
         };
-        let result = run_corpus(&corpus, &config, None)
+        let dir = tempfile::tempdir().unwrap_or_else(|e| panic!("temp dir: {e}"));
+        let result = run_corpus(&corpus, &config, Some(dir.path()))
             .await
             .unwrap_or_else(|e| panic!("run_corpus failed: {e}"));
 
@@ -529,6 +552,15 @@ mod tests {
         assert!(resume.is_judge_completed("head_truncation", "held-0"));
         assert!(resume.is_judge_completed("claim_indexed", "held-0"));
         assert!(!resume.is_judge_completed("flash_summarization", "held-0"));
+
+        let judge_path = dir.path().join(edge_spike::runner::JUDGE_RESULTS_JSONL);
+        let persisted = std::fs::read_to_string(&judge_path)
+            .unwrap_or_else(|e| panic!("read judge_results.jsonl: {e}"));
+        assert_eq!(
+            persisted.lines().count(),
+            2,
+            "two judge records should be durably persisted"
+        );
     }
 
     #[tokio::test]
@@ -555,31 +587,55 @@ mod tests {
         Mock::given(method("POST"))
             .and(path("/model/us.moonshotai.kimi-k3/invoke"))
             .respond_with(ResponseTemplate::new(200).set_body_json(judge_ok_response()))
-            .expect(5)
             .mount(&judge_server)
             .await;
 
         set_live_env(&jev_server.uri(), &sum_server.uri(), &judge_server.uri());
 
         let corpus = held_out_corpus(2);
-        let resume = ResumeState::exhausted(
-            "judge",
-            vec![CompletedKey::judge("head_truncation", "held-0")],
-            "test",
-        );
+        let dir = tempfile::tempdir().unwrap_or_else(|e| panic!("temp dir: {e}"));
         let config = RunnerConfig {
             mode: RunnerMode::Live,
             endpoint: JevEndpoint::Cloud,
             ..Default::default()
         };
-        let result = run_corpus(&corpus, &config, Some(&resume))
+
+        // Seed the output directory with a full scoring log and one completed judge pair.
+        let full = run_corpus(&corpus, &config, Some(dir.path()))
+            .await
+            .unwrap_or_else(|e| panic!("seed run failed: {e}"));
+        assert_eq!(full.scored.len(), 9);
+        assert_eq!(full.judge_results.len(), 6);
+
+        let judge_path = dir.path().join(edge_spike::runner::JUDGE_RESULTS_JSONL);
+        let lines: Vec<_> = std::fs::read_to_string(&judge_path)
+            .unwrap_or_else(|e| panic!("read judge_results.jsonl: {e}"))
+            .lines()
+            .map(|s| s.to_owned())
+            .collect();
+        let keep: Vec<_> = lines
+            .into_iter()
+            .filter(|line| {
+                let record: edge_spike::runner::JudgeResultRecord =
+                    serde_json::from_str(line).expect("valid judge record");
+                record.variant_id == "held-0" && record.arm.name() == "head_truncation"
+            })
+            .collect();
+        std::fs::write(&judge_path, keep.join("\n") + "\n")
+            .unwrap_or_else(|e| panic!("write partial judge_results.jsonl: {e}"));
+
+        let result = run_corpus(&corpus, &config, Some(dir.path()))
             .await
             .unwrap_or_else(|e| panic!("run_corpus failed: {e}"));
 
         clear_live_env();
 
         assert!(result.resume.is_none(), "full run should not halt");
-        assert_eq!(result.scored.len(), 9, "all scoring pairs should complete");
+        assert_eq!(
+            result.scored.len(),
+            0,
+            "scoring should be skipped because results.jsonl is complete"
+        );
         assert_eq!(
             result.judge_results.len(),
             5,
