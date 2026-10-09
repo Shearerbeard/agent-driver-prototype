@@ -8,7 +8,7 @@ lineage: none
 executor: smart
 gates: "S -> A -> D -> U(code-review)"
 user-gates: [code-review]
-commit-range: a1beb72^..b0dcb57
+commit-range: a1beb72^..e15aa16
 lane: jev
 ---
 
@@ -107,15 +107,45 @@ failed pre-vet, not a surprise to debug.
   watch-list; depth checklist read as both analyst roles; config
   fields dropped by schema fit itemized.)
 - [ ] Gate A: reviewer routed by actual authorship (never Kimi-on-Kimi;
-  this wave's prose/fallback route is codex - metered, approval recorded
-  per session).
-- [ ] Gate D: lower-cost drift audit of config/wrapper claims vs both
-  repos before the user gate.
+      this run's prose/fallback route is the in-harness kimi-bedrock
+      frontier seat per the 2026-10-08 ruling in the Log - codex ruled
+      out for this run).
+- [x] Gate D: lower-cost drift audit of config/wrapper claims vs both
+      repos before the user gate. (Passed 2026-10-08: 3 drift found,
+      all dispositioned fixed or logged the same turn - ledger in the
+      Log section; general lane, fresh context.)
 - [ ] Gate U (code-review): external-repo packet (`--repo` flow)
   presented. STOPS.
 
 ## Log
 
+- 2026-10-08 Gate D drift audit (general lane, GLM, fresh context):
+  3 drift / 14 consistent / 3 unverifiable. Dispositions, fixed
+  before the user gate: (1) "stock value not ported" is FALSE - the
+  stock configs carry no `result_artifact_threshold` at all; config
+  header re-corrected (fourth commit) and the evidence divergence
+  note updated. (2) Card log miscount "all three env vars" over
+  four named vars - corrected here: the wrapper exports FOUR
+  (PROVIDER, OPENAI_BASE_URL, OPENAI_API_KEY, OPENAI_MODEL); the
+  original log line stands as written. (3) The Gate A checklist
+  still named codex as the prose/fallback route after the ruling -
+  checklist text updated to the kimi-bedrock seat. RULING on the
+  comment-fix commit: commit-range extends, the packet regenerates,
+  and NO fresh Gate A round runs - the commit touches comment prose
+  only, Gate A rounds 1-3 verified the config's semantics, and Gate
+  D owns prose accuracy (theatre avoidance logged). UNVERIFIABLE
+  left as is: reviewer-run claims (packets are regenerable working
+  material; ledgers on this card are the record); zai preflight
+  (no artifact retained - session record); wrapper-driven
+  end-to-end scenario - DIVERGENCE for the user gate: deliverable 2
+  says the wrapper runs one scenario end to end; evidence proves
+  wrapper launch + /health + exec'd flags and the scenario ran via
+  hand-rolled curl against the same invocation shape, but no
+  wrapper-driven scenario SSE exists. Surfaced at U(code-review)
+  for Mike to rule whether a wrapper-driven re-run is required.
+  Also noted: the wrapper's sixth guard (CONFIG_PATH non-file) went
+  untested in the five-probe pass. Gate D checklist ticked this
+  turn. Board owner.
 - 2026-10-08 Gate A round 2: FAIL (1 MINOR re-raise, finding 1
   CONFIRMED repaired). Same GPT seat, fresh instance; checks run:
   cargo check --locked + fmt --check in both checkouts; boardkit /
