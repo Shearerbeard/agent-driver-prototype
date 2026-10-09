@@ -348,13 +348,13 @@ fn parse_sse_events(text: &str) -> Vec<SseEvent> {
 
     for line in text.lines() {
         if line.is_empty() {
-            if let Some(event) = current_event.take() {
-                if !current_data.is_empty() {
-                    if let Ok(value) = serde_json::from_str(&current_data) {
-                        events.push(SseEvent { event, data: value });
-                    }
-                    current_data.clear();
+            if let Some(event) = current_event.take()
+                && !current_data.is_empty()
+            {
+                if let Ok(value) = serde_json::from_str(&current_data) {
+                    events.push(SseEvent { event, data: value });
                 }
+                current_data.clear();
             }
             continue;
         }
@@ -370,12 +370,11 @@ fn parse_sse_events(text: &str) -> Vec<SseEvent> {
         }
     }
 
-    if let Some(event) = current_event.take() {
-        if !current_data.is_empty() {
-            if let Ok(value) = serde_json::from_str(&current_data) {
-                events.push(SseEvent { event, data: value });
-            }
-        }
+    if let Some(event) = current_event.take()
+        && !current_data.is_empty()
+        && let Ok(value) = serde_json::from_str(&current_data)
+    {
+        events.push(SseEvent { event, data: value });
     }
 
     events

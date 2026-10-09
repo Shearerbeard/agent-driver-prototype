@@ -13,7 +13,9 @@ use serde::Serialize;
 use crate::arms::{ArmConfig, SelectionArm, assemble_state};
 use crate::chat::{ChatMessage, ChatRequest, ChatResponse};
 use crate::corpus::{FailureClass, LabelledEdge};
+use crate::exhaustion::CompletedKey;
 use crate::http_retry::execute_with_retry;
+use crate::runner::run_bounded;
 use crate::summarizer::FixtureSummarizer;
 use crate::verdict::Verdict;
 
@@ -238,12 +240,61 @@ pub async fn judge_held_out<S: std::hash::BuildHasher>(
         }
     }
 
-    let mut out = Vec::new();
-    for (labelled, arm) in edges {
-        let verdict = client.judge_edge(labelled, *arm, arm_config).await?;
-        out.push((labelled.variant_id.clone(), *arm, verdict));
+    let owned_edges: Vec<_> = edges.iter().map(|(e, arm)| ((*e).clone(), *arm)).collect();
+    judge_edges_bounded(client, owned_edges, arm_config, None).await
+}
+
+/// Judge a list of held-out edges with bounded concurrency.
+///
+/// Successfully judged pairs are recorded in `completed` when supplied, so a
+/// caller building a resume state can include them.
+pub(crate) async fn judge_edges_bounded(
+    client: &JudgeClient,
+    edges: Vec<(LabelledEdge, SelectionArm)>,
+    arm_config: &ArmConfig,
+    completed: Option<&mut HashSet<CompletedKey>>,
+) -> anyhow::Result<Vec<(String, SelectionArm, JudgeVerdict)>> {
+    use crate::runner::run_concurrency;
+
+    let concurrency = run_concurrency();
+    let client = client.clone();
+    let arm_config = *arm_config;
+
+    let work_items: Vec<_> = edges.into_iter().enumerate().collect();
+    let mut judge_slots = Vec::new();
+
+    let (results, first_error) = run_bounded(
+        work_items,
+        concurrency,
+        move |idx: usize, (edge, arm): (LabelledEdge, SelectionArm)| {
+            let client = client.clone();
+            async move {
+                let verdict = client.judge_edge(&edge, arm, &arm_config).await?;
+                let key = CompletedKey::new(arm.name(), &edge.variant_id);
+                Ok((idx, (edge.variant_id.clone(), arm, verdict, key)))
+            }
+        },
+    )
+    .await;
+
+    if let Some(completed) = completed {
+        for (variant_id, arm, verdict, key) in results.into_iter().flatten() {
+            judge_slots.push((variant_id, arm, verdict));
+            completed.insert(key);
+        }
+    } else {
+        for (variant_id, arm, verdict, _key) in results.into_iter().flatten() {
+            judge_slots.push((variant_id, arm, verdict));
+        }
     }
-    Ok(out)
+
+    let judge_results = judge_slots;
+
+    if let Some(e) = first_error {
+        return Err(e);
+    }
+
+    Ok(judge_results)
 }
 
 /// Return true if a failure class should be sent to the judge. The judge is

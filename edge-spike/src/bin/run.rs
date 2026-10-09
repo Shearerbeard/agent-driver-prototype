@@ -7,7 +7,7 @@
 //!   cargo run -p edge-spike --bin edge-run -- --live --dry-run [artifact-dir]
 
 use std::env;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use edge_spike::client::JevEndpoint;
 use edge_spike::corpus::default_corpus;
@@ -100,7 +100,7 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-fn load_resume(artifact_dir: &PathBuf) -> Option<ResumeState> {
+fn load_resume(artifact_dir: &std::path::Path) -> Option<ResumeState> {
     let path = artifact_dir.join("resume.json");
     let json = std::fs::read_to_string(path).ok()?;
     serde_json::from_str(&json).ok()

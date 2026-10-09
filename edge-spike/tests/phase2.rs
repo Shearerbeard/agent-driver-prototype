@@ -242,4 +242,100 @@ mod tests {
             "resumed pair must be skipped"
         );
     }
+
+    #[tokio::test]
+    async fn corpus_scoring_preserves_deterministic_order() {
+        let corpus = minimal_corpus();
+        let config = RunnerConfig::default();
+
+        let result = run_corpus(&corpus, &config, None)
+            .await
+            .unwrap_or_else(|e| panic!("run_corpus failed: {e}"));
+
+        let expected_order: Vec<_> = corpus
+            .calibration
+            .iter()
+            .chain(corpus.held_out.iter())
+            .flat_map(|edge| {
+                SelectionArm::all()
+                    .iter()
+                    .map(move |arm| (edge.variant_id.clone(), *arm))
+            })
+            .collect();
+
+        let actual_order: Vec<_> = result
+            .scored
+            .iter()
+            .map(|s| (s.variant_id.clone(), s.arm))
+            .collect();
+
+        assert_eq!(actual_order, expected_order);
+    }
+
+    #[tokio::test]
+    async fn judge_drains_in_flight_on_exhaustion() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use wiremock::{Request, Respond, ResponseTemplate};
+
+        struct ExhaustOnFirstRequest {
+            count: AtomicUsize,
+        }
+
+        impl Respond for ExhaustOnFirstRequest {
+            fn respond(&self, _request: &Request) -> ResponseTemplate {
+                let n = self.count.fetch_add(1, Ordering::SeqCst);
+                if n == 0 {
+                    ResponseTemplate::new(429).set_body_string("rate limited")
+                } else {
+                    ResponseTemplate::new(200)
+                        .set_body_json(serde_json::json!({
+                            "choices": [{"message": {"role": "assistant", "content": "VERDICT: PASS"}}]
+                        }))
+                        .set_delay(Duration::from_millis(100))
+                }
+            }
+        }
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/model/us.moonshotai.kimi-k3/invoke"))
+            .respond_with(ExhaustOnFirstRequest {
+                count: AtomicUsize::new(0),
+            })
+            .expect(4)
+            .mount(&server)
+            .await;
+
+        let client = JudgeClient::new(JudgeConfig {
+            bearer_token: "test-token".to_owned(),
+            region: "us-east-1".to_owned(),
+            model: "us.moonshotai.kimi-k3".to_owned(),
+            base_url: server.uri(),
+            max_tokens: 4096,
+            timeout: Duration::from_secs(5),
+        })
+        .unwrap_or_else(|e| panic!("judge client: {e}"));
+
+        let edges: Vec<_> = (0..4)
+            .map(|i| {
+                (
+                    dummy_edge(&format!("held-{i}"), FailureClass::Drifted),
+                    SelectionArm::ClaimIndexed,
+                )
+            })
+            .collect();
+        let held_out_ids: HashSet<String> =
+            edges.iter().map(|(e, _)| e.variant_id.clone()).collect();
+        let edge_refs: Vec<_> = edges.iter().map(|(e, arm)| (e, *arm)).collect();
+
+        let result =
+            judge_held_out(&client, &edge_refs, &ArmConfig::default(), &held_out_ids).await;
+
+        assert!(result.is_err(), "judge must surface exhaustion");
+        let err = result.unwrap_err().to_string();
+        assert!(
+            is_exhaustion(&anyhow::anyhow!("{err}")),
+            "error should be exhaustion: {err}"
+        );
+    }
 }

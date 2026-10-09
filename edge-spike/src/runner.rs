@@ -17,7 +17,7 @@ use crate::claim::{extract_claims, resolve_claims};
 use crate::client::{JevEndpoint, build_jev_client, resolve_model_id};
 use crate::corpus::{Corpus, FailureClass, LabelledEdge};
 use crate::exhaustion::{CompletedKey, ResumeState, is_exhaustion};
-use crate::judge::{JudgeClient, JudgeConfig, JudgeVerdict, judge_held_out};
+use crate::judge::{JudgeClient, JudgeConfig, JudgeVerdict, judge_edges_bounded};
 use crate::rubric::{EdgeRubric, EdgeRubricAnswers};
 use crate::state::EdgeState;
 use crate::summarizer::{FixtureSummarizer, FlashSummarizer, LiveSummarizer, SummarizerConfig};
@@ -203,6 +203,64 @@ pub fn plan_run(corpus: &Corpus, config: &RunnerConfig) -> RunPlan {
     plan
 }
 
+/// Read the optional `RUN_CONCURRENCY` environment override.
+///
+/// Defaults to 4; values below 1 are clamped to 1 to avoid deadlock.
+pub(crate) fn run_concurrency() -> usize {
+    std::env::var("RUN_CONCURRENCY")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(4)
+        .max(1)
+}
+
+/// Execute a bounded number of indexed work items concurrently, preserving
+/// deterministic output order.
+///
+/// Scheduling stops as soon as any task returns an error, but tasks already
+/// in flight are allowed to finish. Results are collected into pre-allocated
+/// slots by their original index.
+pub(crate) async fn run_bounded<I, T, F, Fut>(
+    items: Vec<(usize, I)>,
+    concurrency: usize,
+    worker: F,
+) -> (Vec<Option<T>>, Option<anyhow::Error>)
+where
+    I: Send + 'static,
+    T: Send + 'static,
+    F: Fn(usize, I) -> Fut + Send + Sync + 'static,
+    Fut: std::future::Future<Output = anyhow::Result<(usize, T)>> + Send + 'static,
+{
+    let concurrency = concurrency.max(1);
+    let total = items.len();
+    let mut results: Vec<Option<T>> = (0..total).map(|_| None).collect();
+    let mut tasks = tokio::task::JoinSet::new();
+    let mut item_iter = items.into_iter().peekable();
+    let mut first_error: Option<anyhow::Error> = None;
+
+    loop {
+        while first_error.is_none() && tasks.len() < concurrency && item_iter.peek().is_some() {
+            let (idx, item) = item_iter.next().expect("peeked");
+            tasks.spawn(worker(idx, item));
+        }
+
+        match tasks.join_next().await {
+            Some(Ok(Ok((idx, value)))) => results[idx] = Some(value),
+            Some(Ok(Err(e))) => first_error = Some(e),
+            Some(Err(join_err)) => {
+                first_error = Some(anyhow::anyhow!("task panicked: {join_err}"));
+            }
+            None => break,
+        }
+
+        if tasks.is_empty() && item_iter.peek().is_none() {
+            break;
+        }
+    }
+
+    (results, first_error)
+}
+
 /// Run the corpus through every arm using replay or live scoring, then judge
 /// the held-out split when live.
 ///
@@ -217,7 +275,7 @@ pub async fn run_corpus(
         build_summarizer(config.mode, SelectionArm::FlashSummarization)?;
     let jev_client = if config.mode == RunnerMode::Live {
         let (client, configured_model) = build_jev_client(config.endpoint)?;
-        Some((client, configured_model))
+        Some((Arc::new(client), configured_model))
     } else {
         None
     };
@@ -225,60 +283,94 @@ pub async fn run_corpus(
     let mut completed: HashSet<CompletedKey> = resume
         .map(|r| r.completed.iter().cloned().collect())
         .unwrap_or_default();
+
+    // Build the deterministic work list, skipping pairs already recorded in a
+    // resume state. Indices are contiguous after filtering so output slots are
+    // dense.
+    let work_items: Vec<_> = corpus
+        .calibration
+        .iter()
+        .chain(corpus.held_out.iter())
+        .flat_map(|edge| {
+            SelectionArm::all().iter().map(move |arm| {
+                let key = CompletedKey::new(arm.name(), &edge.variant_id);
+                (edge.clone(), *arm, key)
+            })
+        })
+        .filter(|(_, _, key)| !completed.contains(key))
+        .enumerate()
+        .map(|(idx, (edge, arm, _key))| (idx, (edge, arm)))
+        .collect();
     let mut scored = Vec::new();
 
-    for edge in corpus.calibration.iter().chain(corpus.held_out.iter()) {
-        for arm in SelectionArm::all() {
-            let arm_name = arm.name();
-            let key = CompletedKey::new(arm_name, &edge.variant_id);
-            if completed.contains(&key) {
-                continue;
-            }
+    let concurrency = run_concurrency();
+    let worker_config = config.clone();
+    let summarizer = Arc::clone(&summarizer);
+    let jev_client = jev_client.clone();
 
-            let state =
-                match assemble_state(&edge.edge, *arm, &config.arm_config, &*summarizer).await {
-                    Ok(s) => s,
-                    Err(e) if is_exhaustion(&e) => {
-                        return Ok(LiveRunResult {
-                            scored,
-                            judge_results: Vec::new(),
-                            resume: Some(ResumeState::exhausted(
-                                if matches!(arm, SelectionArm::FlashSummarization) {
-                                    "summarizer"
-                                } else {
-                                    "state_assembly"
-                                },
-                                completed.into_iter().collect(),
-                                &e.to_string(),
-                            )),
-                        });
-                    }
-                    Err(e) => return Err(e),
-                };
-            let result = score_one(edge, *arm, &state, config, jev_client.as_ref()).await;
-            match result {
-                Ok(s) => {
-                    completed.insert(key);
-                    scored.push(s);
-                }
-                Err(e) if is_exhaustion(&e) => {
-                    return Ok(LiveRunResult {
-                        scored,
-                        judge_results: Vec::new(),
-                        resume: Some(ResumeState::exhausted(
-                            "jev_scorer",
-                            completed.into_iter().collect(),
-                            &e.to_string(),
-                        )),
-                    });
-                }
-                Err(e) => return Err(e),
+    let (results, first_error) = run_bounded(
+        work_items,
+        concurrency,
+        move |idx: usize, (edge, arm): (LabelledEdge, SelectionArm)| {
+            let config = worker_config.clone();
+            let summarizer = Arc::clone(&summarizer);
+            let jev_client = jev_client.clone();
+            async move {
+                let state = assemble_state(&edge.edge, arm, &config.arm_config, &*summarizer)
+                    .await
+                    .map_err(|e| wrap_state_exhaustion(e, arm))?;
+                let scored_edge = score_one(&edge, arm, &state, &config, jev_client.as_ref())
+                    .await
+                    .map_err(|e| {
+                        if is_exhaustion(&e) {
+                            anyhow::anyhow!("jev_scorer exhausted: {e}")
+                        } else {
+                            e
+                        }
+                    })?;
+                let key = CompletedKey::new(arm.name(), &edge.variant_id);
+                Ok((idx, (scored_edge, key)))
             }
+        },
+    )
+    .await;
+
+    for (scored_edge, key) in results.into_iter().flatten() {
+        completed.insert(key);
+        scored.push(scored_edge);
+    }
+
+    if let Some(e) = first_error {
+        if is_exhaustion(&e) {
+            return Ok(LiveRunResult {
+                scored,
+                judge_results: Vec::new(),
+                resume: Some(ResumeState::exhausted(
+                    exhausted_service(&e),
+                    completed.into_iter().collect(),
+                    &e.to_string(),
+                )),
+            });
         }
+        return Err(e);
     }
 
     let judge_results = if config.mode == RunnerMode::Live {
-        run_judge(corpus, config, &scored).await?
+        match run_judge(corpus, config, &scored, &mut completed).await {
+            Ok(v) => v,
+            Err(e) if is_exhaustion(&e) => {
+                return Ok(LiveRunResult {
+                    scored,
+                    judge_results: Vec::new(),
+                    resume: Some(ResumeState::exhausted(
+                        "judge",
+                        completed.into_iter().collect(),
+                        &e.to_string(),
+                    )),
+                });
+            }
+            Err(e) => return Err(e),
+        }
     } else {
         Vec::new()
     };
@@ -288,6 +380,32 @@ pub async fn run_corpus(
         judge_results,
         resume: None,
     })
+}
+
+fn wrap_state_exhaustion(e: anyhow::Error, arm: SelectionArm) -> anyhow::Error {
+    if is_exhaustion(&e) {
+        let service = if matches!(arm, SelectionArm::FlashSummarization) {
+            "summarizer"
+        } else {
+            "state_assembly"
+        };
+        anyhow::anyhow!("{service} exhausted: {e}")
+    } else {
+        e
+    }
+}
+
+fn exhausted_service(err: &anyhow::Error) -> &'static str {
+    let msg = err.to_string();
+    if msg.starts_with("summarizer exhausted:") {
+        "summarizer"
+    } else if msg.starts_with("state_assembly exhausted:") {
+        "state_assembly"
+    } else if msg.starts_with("judge exhausted:") {
+        "judge"
+    } else {
+        "jev_scorer"
+    }
 }
 
 fn build_summarizer(
@@ -306,6 +424,7 @@ async fn run_judge(
     corpus: &Corpus,
     config: &RunnerConfig,
     scored: &[ScoredEdge],
+    completed: &mut HashSet<CompletedKey>,
 ) -> anyhow::Result<Vec<(String, SelectionArm, JudgeVerdict)>> {
     let judge_config = JudgeConfig::from_env()?;
     let client = JudgeClient::new(judge_config)?;
@@ -324,12 +443,12 @@ async fn run_judge(
                 .iter()
                 .find(|e| e.variant_id == edge.variant_id)
             {
-                edges_to_judge.push((labelled, edge.arm));
+                edges_to_judge.push((labelled.clone(), edge.arm));
             }
         }
     }
 
-    judge_held_out(&client, &edges_to_judge, &config.arm_config, &held_out_ids).await
+    judge_edges_bounded(&client, edges_to_judge, &config.arm_config, Some(completed)).await
 }
 
 fn default_response() -> ScriptedResponse {
@@ -521,7 +640,7 @@ async fn score_one(
     arm: SelectionArm,
     state: &EdgeState,
     config: &RunnerConfig,
-    live_client: Option<&(JevClient, String)>,
+    live_client: Option<&(Arc<JevClient>, String)>,
 ) -> anyhow::Result<ScoredEdge> {
     let started = Instant::now();
 
@@ -667,4 +786,116 @@ pub async fn replay_corpus(
 ) -> anyhow::Result<Vec<ScoredEdge>> {
     let result = run_corpus(corpus, config, None).await?;
     Ok(result.scored)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::Duration;
+
+    use tokio::sync::Semaphore;
+
+    use super::{run_bounded, run_concurrency};
+
+    #[tokio::test]
+    async fn run_bounded_preserves_input_order_despite_completion_order() {
+        let items: Vec<_> = (0..8).map(|i| (i, i)).collect();
+
+        let (results, error) = run_bounded(items, 4, |idx: usize, value: usize| async move {
+            // Later indices finish first; the helper must still return
+            // values in original index order.
+            tokio::time::sleep(Duration::from_millis((8 - value) as u64 * 5)).await;
+            Ok((idx, value * 10))
+        })
+        .await;
+
+        assert!(error.is_none());
+        let collected: Vec<_> = results.into_iter().flatten().collect();
+        assert_eq!(collected, vec![0, 10, 20, 30, 40, 50, 60, 70]);
+    }
+
+    #[tokio::test]
+    async fn run_bounded_respects_concurrency_limit() {
+        let items: Vec<_> = (0..12).map(|i| (i, i)).collect();
+        let limit = Arc::new(Semaphore::new(4));
+        let max_in_flight = Arc::new(AtomicUsize::new(0));
+        let current = Arc::new(AtomicUsize::new(0));
+
+        let limit_clone = Arc::clone(&limit);
+        let max_clone = Arc::clone(&max_in_flight);
+        let current_clone = Arc::clone(&current);
+
+        let (_results, error) = run_bounded(items, 4, move |idx: usize, value: usize| {
+            let limit = Arc::clone(&limit_clone);
+            let max = Arc::clone(&max_clone);
+            let current = Arc::clone(&current_clone);
+            async move {
+                let _permit = limit.acquire().await.expect("semaphore closed");
+                let n = current.fetch_add(1, Ordering::SeqCst) + 1;
+                max.fetch_max(n, Ordering::SeqCst);
+                tokio::time::sleep(Duration::from_millis(20)).await;
+                current.fetch_sub(1, Ordering::SeqCst);
+                Ok((idx, value))
+            }
+        })
+        .await;
+
+        assert!(error.is_none());
+        assert_eq!(max_in_flight.load(Ordering::SeqCst), 4);
+    }
+
+    #[tokio::test]
+    async fn run_bounded_drains_in_flight_on_exhaustion() {
+        // With concurrency 4, items 0-3 are in flight. Item 3 exhausts quickly
+        // while 0-2 sleep; scheduling stops, but 0-2 are allowed to finish.
+        let items: Vec<_> = (0..8).map(|i| (i, i)).collect();
+
+        let (results, error) = run_bounded(items, 4, |idx: usize, value: usize| async move {
+            if value == 3 {
+                return Err(anyhow::anyhow!("exhausted: 429 rate limited"));
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            Ok((idx, value))
+        })
+        .await;
+
+        assert!(error.is_some());
+        assert!(error.unwrap().to_string().contains("429"));
+
+        // Items 0-2 should have completed; item 3 failed; items 4-7 were never
+        // scheduled.
+        for (i, slot) in results.iter().enumerate().take(3) {
+            assert_eq!(*slot, Some(i), "item {i} should have completed");
+        }
+        assert!(results[3].is_none(), "exhausted item should not complete");
+        for (i, slot) in results.iter().enumerate().skip(4) {
+            assert!(slot.is_none(), "item {i} should not have been scheduled");
+        }
+    }
+
+    #[tokio::test]
+    async fn run_concurrency_env_override() {
+        use std::sync::Mutex;
+
+        static LOCK: Mutex<()> = Mutex::new(());
+        let _guard = LOCK.lock().unwrap();
+
+        unsafe {
+            std::env::set_var("RUN_CONCURRENCY", "2");
+        }
+        assert_eq!(run_concurrency(), 2);
+        unsafe {
+            std::env::remove_var("RUN_CONCURRENCY");
+        }
+        assert_eq!(run_concurrency(), 4);
+
+        unsafe {
+            std::env::set_var("RUN_CONCURRENCY", "0");
+        }
+        assert_eq!(run_concurrency(), 1);
+        unsafe {
+            std::env::remove_var("RUN_CONCURRENCY");
+        }
+    }
 }
