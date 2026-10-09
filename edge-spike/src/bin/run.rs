@@ -94,7 +94,7 @@ async fn main() -> anyhow::Result<()> {
     let corpus = default_corpus()?;
 
     if dry_run {
-        let plan = plan_run(&corpus, &config);
+        let plan = plan_run(&corpus, &config)?;
         println!("{}", plan.format());
         return Ok(());
     }

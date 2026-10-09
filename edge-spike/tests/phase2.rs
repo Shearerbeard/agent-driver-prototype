@@ -4,10 +4,12 @@
 use std::collections::HashSet;
 
 use edge_spike::arms::{ArmConfig, SelectionArm};
-use edge_spike::corpus::{CapturedEdge, Corpus, FailureClass, LabelledEdge, ToolCall};
+use edge_spike::corpus::{
+    CapturedEdge, Corpus, FailureClass, LabelledEdge, ToolCall, default_corpus,
+};
 use edge_spike::exhaustion::{CompletedKey, ResumeState, is_exhaustion};
 use edge_spike::judge::{JudgeClient, JudgeConfig, judge_held_out};
-use edge_spike::runner::{RunnerConfig, plan_run, run_corpus};
+use edge_spike::runner::{RunPlan, RunSelector, RunnerConfig, plan_run, run_corpus};
 use edge_spike::state::{PlanContext, PlanStep, TaskRef, WorkerOutput};
 use std::time::Duration;
 use wiremock::matchers::{bearer_token, header, method, path};
@@ -74,7 +76,7 @@ mod tests {
     fn dry_run_zero_network() {
         let corpus = minimal_corpus();
         let config = RunnerConfig::default();
-        let plan = plan_run(&corpus, &config);
+        let plan = plan_run(&corpus, &config).unwrap_or_else(|e| panic!("plan_run: {e}"));
 
         // Replay mode does not schedule judge calls.
         assert_eq!(plan.judge_calls, 0);
@@ -98,6 +100,74 @@ mod tests {
                 .values()
                 .map(|p| p.estimated_input_tokens)
                 .sum::<u64>()
+        );
+    }
+
+    fn live_config(selector: RunSelector) -> RunnerConfig {
+        RunnerConfig {
+            mode: RunnerMode::Live,
+            selector,
+            ..RunnerConfig::default()
+        }
+    }
+
+    fn assert_edges_per_arm(plan: &RunPlan, expected: usize) {
+        for arm in SelectionArm::all() {
+            let arm_plan = plan
+                .per_arm
+                .get(arm.name())
+                .unwrap_or_else(|| panic!("{} arm missing from plan", arm.name()));
+            assert_eq!(arm_plan.edges, expected, "{} edges", arm.name());
+            assert_eq!(arm_plan.calls, expected, "{} calls", arm.name());
+        }
+    }
+
+    #[test]
+    fn dry_run_smoke_selector_counts_one_calibration_edge() {
+        let corpus = default_corpus().unwrap_or_else(|e| panic!("default corpus: {e}"));
+        let plan = plan_run(&corpus, &live_config(RunSelector::Smoke))
+            .unwrap_or_else(|e| panic!("plan_run: {e}"));
+
+        assert_edges_per_arm(&plan, 1);
+        assert_eq!(plan.judge_calls, 0, "smoke edge is calibration");
+    }
+
+    #[test]
+    fn dry_run_slice_selector_counts_calibration_slice() {
+        let corpus = default_corpus().unwrap_or_else(|e| panic!("default corpus: {e}"));
+        let plan = plan_run(&corpus, &live_config(RunSelector::Slice(5)))
+            .unwrap_or_else(|e| panic!("plan_run: {e}"));
+
+        assert_edges_per_arm(&plan, 5);
+        assert_eq!(plan.judge_calls, 0, "slice draws from calibration");
+    }
+
+    #[test]
+    fn dry_run_all_selector_matches_corpus_totals() {
+        let corpus = default_corpus().unwrap_or_else(|e| panic!("default corpus: {e}"));
+        let plan = plan_run(&corpus, &live_config(RunSelector::All))
+            .unwrap_or_else(|e| panic!("plan_run: {e}"));
+
+        assert_edges_per_arm(&plan, corpus.total());
+        assert_eq!(
+            plan.judge_calls,
+            corpus.held_out.len() * SelectionArm::all().len(),
+            "every held-out variant is judged once per arm"
+        );
+    }
+
+    #[test]
+    fn dry_run_edge_selector_judges_selected_held_out_edge() {
+        let corpus = default_corpus().unwrap_or_else(|e| panic!("default corpus: {e}"));
+        let held_out_id = corpus.held_out[0].variant_id.clone();
+        let plan = plan_run(&corpus, &live_config(RunSelector::Edge(held_out_id)))
+            .unwrap_or_else(|e| panic!("plan_run: {e}"));
+
+        assert_edges_per_arm(&plan, 1);
+        assert_eq!(
+            plan.judge_calls,
+            SelectionArm::all().len(),
+            "a selected held-out edge is judged once per arm"
         );
     }
 

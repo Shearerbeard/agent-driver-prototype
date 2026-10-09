@@ -220,12 +220,14 @@ impl RunPlan {
 }
 
 /// Build a dry-run plan without constructing any live clients.
-pub fn plan_run(corpus: &Corpus, config: &RunnerConfig) -> RunPlan {
+pub fn plan_run(corpus: &Corpus, config: &RunnerConfig) -> anyhow::Result<RunPlan> {
     let mut plan = RunPlan::default();
     let input_per_call = 2048u64;
     let output_per_call = 128u64;
 
-    for _edge in corpus.calibration.iter().chain(corpus.held_out.iter()) {
+    let selected = select_variants(corpus, &config.selector)?;
+
+    for _edge in &selected {
         for arm in &config.arms {
             let entry = plan.per_arm.entry(arm.name().to_owned()).or_default();
             entry.edges += 1;
@@ -238,12 +240,19 @@ pub fn plan_run(corpus: &Corpus, config: &RunnerConfig) -> RunPlan {
     }
 
     if config.mode == RunnerMode::Live {
-        // Board ruling (2026-10-08): judge runs on every held-out variant,
-        // once per selected arm.
-        plan.judge_calls = corpus.held_out.len().saturating_mul(config.arms.len());
+        let held_out_ids: HashSet<&str> = corpus
+            .held_out
+            .iter()
+            .map(|edge| edge.variant_id.as_str())
+            .collect();
+        let judge_edges = selected
+            .iter()
+            .filter(|edge| held_out_ids.contains(edge.variant_id.as_str()))
+            .count();
+        plan.judge_calls = judge_edges.saturating_mul(config.arms.len());
     }
 
-    plan
+    Ok(plan)
 }
 
 /// Read the optional `RUN_CONCURRENCY` environment override.
@@ -569,7 +578,8 @@ pub async fn run_corpus(
     // resume state. Indices are contiguous after filtering so output slots are
     // dense.
     let work_items: Vec<_> = selected
-        .into_iter()
+        .iter()
+        .copied()
         .flat_map(|edge| {
             config.arms.iter().map(move |arm| {
                 let key = CompletedKey::new(arm.name(), &edge.variant_id);
@@ -645,7 +655,7 @@ pub async fn run_corpus(
     }
 
     let (judge_results, judge_error) = if config.mode == RunnerMode::Live {
-        run_judge(corpus, config, &mut completed, output_dir).await
+        run_judge(corpus, &selected, config, &mut completed, output_dir).await
     } else {
         (Vec::new(), None)
     };
@@ -734,16 +744,26 @@ fn build_summarizer(
     }
 }
 
-/// Build the judge work list from the held-out split, independent of what
-/// the current process has scored. Already-completed judge keys are skipped.
+/// Build the judge work list from the selected variants intersected with the
+/// held-out split, independent of what the current process has scored.
+///
+/// The list derives from the corpus and the selector, never from this run's
+/// scored results. Already-completed judge keys are skipped.
 fn build_judge_work_list(
     corpus: &Corpus,
+    selected: &[&LabelledEdge],
     completed: &HashSet<CompletedKey>,
     arms: &[SelectionArm],
 ) -> Vec<(LabelledEdge, SelectionArm)> {
-    corpus
+    let held_out_ids: HashSet<&str> = corpus
         .held_out
         .iter()
+        .map(|edge| edge.variant_id.as_str())
+        .collect();
+    selected
+        .iter()
+        .copied()
+        .filter(|edge| held_out_ids.contains(edge.variant_id.as_str()))
         .flat_map(|edge| {
             arms.iter().filter_map(move |&arm| {
                 let key = CompletedKey::judge(arm.name(), &edge.variant_id);
@@ -759,6 +779,7 @@ fn build_judge_work_list(
 
 async fn run_judge(
     corpus: &Corpus,
+    selected: &[&LabelledEdge],
     config: &RunnerConfig,
     completed: &mut HashSet<CompletedKey>,
     output_dir: Option<&Path>,
@@ -782,7 +803,7 @@ async fn run_judge(
         }
     }
 
-    let edges_to_judge = build_judge_work_list(corpus, completed, &config.arms);
+    let edges_to_judge = build_judge_work_list(corpus, selected, completed, &config.arms);
 
     judge_edges_bounded(
         &client,
@@ -1144,8 +1165,8 @@ mod tests {
     use wiremock::{Mock, MockServer, Request, Respond, ResponseTemplate};
 
     use super::{
-        RESULTS_JSONL, RunnerConfig, RunnerMode, build_judge_work_list, run_bounded,
-        run_concurrency, run_corpus,
+        RESULTS_JSONL, RunSelector, RunnerConfig, RunnerMode, build_judge_work_list, plan_run,
+        run_bounded, run_concurrency, run_corpus, select_variants,
     };
     use crate::arms::SelectionArm;
     use crate::client::JevEndpoint;
@@ -1445,11 +1466,10 @@ mod tests {
             })
             .collect();
 
-        let expected = corpus
-            .held_out
-            .len()
-            .saturating_mul(SelectionArm::all().len());
-        let work_list = build_judge_work_list(&corpus, &completed, SelectionArm::all());
+        let arms = SelectionArm::all();
+        let expected = corpus.held_out.len().saturating_mul(arms.len());
+        let all = select_variants(&corpus, &RunSelector::All).unwrap_or_else(|e| panic!("{e}"));
+        let work_list = build_judge_work_list(&corpus, &all, &completed, arms);
         assert_eq!(
             work_list.len(),
             expected,
@@ -1461,16 +1481,80 @@ mod tests {
             "expected 572 held-out variants x 3 arms"
         );
 
+        let smoke = select_variants(&corpus, &RunSelector::Smoke).unwrap_or_else(|e| panic!("{e}"));
+        assert!(
+            build_judge_work_list(&corpus, &smoke, &completed, arms).is_empty(),
+            "smoke draws from calibration, so it schedules no judge calls"
+        );
+
+        let slice =
+            select_variants(&corpus, &RunSelector::Slice(5)).unwrap_or_else(|e| panic!("{e}"));
+        assert!(
+            build_judge_work_list(&corpus, &slice, &completed, arms).is_empty(),
+            "slice draws from calibration, so it schedules no judge calls"
+        );
+
+        let calibration_id = corpus.calibration[0].variant_id.clone();
+        let calibration = select_variants(&corpus, &RunSelector::Edge(calibration_id))
+            .unwrap_or_else(|e| panic!("{e}"));
+        assert!(
+            build_judge_work_list(&corpus, &calibration, &completed, arms).is_empty(),
+            "a selected calibration edge is not held out"
+        );
+
+        let held_out_id = corpus.held_out[0].variant_id.clone();
+        let held_out = select_variants(&corpus, &RunSelector::Edge(held_out_id))
+            .unwrap_or_else(|e| panic!("{e}"));
+        assert_eq!(
+            build_judge_work_list(&corpus, &held_out, &completed, arms).len(),
+            arms.len(),
+            "a selected held-out edge is judged once per arm"
+        );
+
         let mut with_one_judge_done = completed;
         with_one_judge_done.insert(CompletedKey::judge(
             SelectionArm::ClaimIndexed.name(),
             &corpus.held_out[0].variant_id,
         ));
-        let work_list = build_judge_work_list(&corpus, &with_one_judge_done, SelectionArm::all());
+        let work_list = build_judge_work_list(&corpus, &all, &with_one_judge_done, arms);
         assert_eq!(
             work_list.len(),
             expected - 1,
             "already-completed judge key must be skipped"
         );
+    }
+
+    #[test]
+    fn plan_run_judge_calls_match_judge_work_list() {
+        let corpus = default_corpus().unwrap_or_else(|e| panic!("default corpus: {e}"));
+        let held_out_id = corpus.held_out[0].variant_id.clone();
+        let selectors = [
+            RunSelector::Smoke,
+            RunSelector::Slice(5),
+            RunSelector::Edge(held_out_id),
+            RunSelector::All,
+        ];
+
+        for selector in selectors {
+            let selected = select_variants(&corpus, &selector).unwrap_or_else(|e| panic!("{e}"));
+            let expected = build_judge_work_list(
+                &corpus,
+                &selected,
+                &std::collections::HashSet::new(),
+                SelectionArm::all(),
+            )
+            .len();
+            let config = RunnerConfig {
+                mode: RunnerMode::Live,
+                selector,
+                ..RunnerConfig::default()
+            };
+            let plan = plan_run(&corpus, &config).unwrap_or_else(|e| panic!("{e}"));
+
+            assert_eq!(
+                plan.judge_calls, expected,
+                "dry-run judge_calls must match the live judge work list"
+            );
+        }
     }
 }
