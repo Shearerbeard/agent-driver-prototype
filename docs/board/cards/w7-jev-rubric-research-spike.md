@@ -177,6 +177,36 @@ prompt mid-dispatch is a failed pre-vet, not a surprise to debug.
 
 ## Log
 
+- 2026-10-09 SCOPE AMENDMENT (pending user ruling at U(rubric)): corpus
+  repair gates the live spend. Driver instruction: continue the experiment
+  ("we're close, barring a few minor changes") but bite the repair into
+  smaller chunks before the long corpus, and fix the runner's
+  hold-everything-in-memory-till-the-end shape (an expensive-mistake door).
+  Evidence journal `.review/jev-goldens/JOURNAL.md` (working material) +
+  adversarial review by the GPT-6.1-sol rust-reviewer seat (VERDICT FAIL,
+  3 BLOCKING upheld) established: (1) the July corpus parser keys by bare
+  `task_id` across two plan iterations that reuse ids 0/1/2, folding 147
+  dispatches into 105 chimeric edges; (2) the parser ignores
+  `tool_call_started` and marks pre-truncated results `truncated: false`;
+  (3) the offline 0.89 pairwise is scoring-math FIXTURE math
+  (`runner.rs` selects answers from `labelled.class`), NOT empirical
+  capability evidence; (4) "clean" originals are unaudited and synthetic
+  variants telegraph their labels. Repair chunks: C0 parser re-key by
+  (iteration, task_id) + read tool_call_started + honor truncation + honest
+  context_provided; C1 baseline-label audit of "clean" originals; C2
+  append-per-edge persistence (results.jsonl, resume reads the log) so a
+  halt loses nothing scored; C3 single-edge live smoke (3 calls); C4 small
+  calibration slice (~30 calls); C5 explicit go/no-go for the full corpus
+  informed by C3/C4 latency/cost/validity. CLAIM NARROWED: July supports a
+  restricted synthetic-grounding capability read only; the full
+  six-dimensional capability claim is NOT supported by this corpus. The
+  0.89 fixture number is withdrawn as capability evidence. Pin changes
+  (driver-ruled): rust-write/rust-fill/python-write and the general/explore
+  summarize seats now pin `opencode-go/deepseek-v4.1-flash` for cheaper/faster
+  proto code building; rust-reviewer stays GPT-6.1-sol to hold the
+  reviewer-differs-from-author invariant against the deepseek writer pool.
+  Board owner.
+
 - 2026-10-08 Phase 1 (offline legs) landed: `edge-spike/` member in
   the jev-driver workspace, commit `d1a598c` on card/w7 (17 files,
   +2774). Executor: rust-write lane (Kimi), two dispatches plus a

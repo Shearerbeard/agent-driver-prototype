@@ -347,6 +347,7 @@ mod tests {
         LabelledEdge {
             edge: CapturedEdge {
                 scenario: "judge-test".to_owned(),
+                iteration: 0,
                 task_id: 1,
                 worker_id: "w1".to_owned(),
                 goal: "goal".to_owned(),
@@ -366,6 +367,7 @@ mod tests {
                     truncated: false,
                 },
                 tool_calls: Vec::new(),
+                confidence: None,
             },
             class,
             variant_id: variant_id.to_owned(),

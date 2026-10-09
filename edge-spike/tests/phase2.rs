@@ -17,6 +17,7 @@ fn dummy_edge(variant_id: &str, class: FailureClass) -> LabelledEdge {
     LabelledEdge {
         edge: CapturedEdge {
             scenario: "phase2".to_owned(),
+            iteration: 0,
             task_id: 1,
             worker_id: "w1".to_owned(),
             goal: "test goal".to_owned(),
@@ -46,6 +47,7 @@ fn dummy_edge(variant_id: &str, class: FailureClass) -> LabelledEdge {
                 result: "capture data".to_owned(),
                 success: true,
             }],
+            confidence: None,
         },
         class,
         variant_id: variant_id.to_owned(),

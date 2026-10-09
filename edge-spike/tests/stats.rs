@@ -1,6 +1,6 @@
 use std::collections::HashSet;
 
-use edge_spike::corpus::{FailureClass, default_corpus};
+use edge_spike::corpus::{FailureClass, default_corpus, default_corpus_with_summary};
 
 #[cfg(test)]
 mod tests {
@@ -10,14 +10,11 @@ mod tests {
     fn corpus_stats_sanity() -> anyhow::Result<()> {
         let corpus = default_corpus()?;
         let edges = corpus.total() / 11;
-        if edges < 40 {
-            anyhow::bail!("expected at least 40 captured edges, got {edges}");
+        if edges != 147 {
+            anyhow::bail!("expected 147 captured edges, got {edges}");
         }
-        if corpus.total() != edges * 11 {
-            anyhow::bail!(
-                "total variants {} is not a multiple of 11 for {edges} edges",
-                corpus.total()
-            );
+        if corpus.total() != 1617 {
+            anyhow::bail!("expected 1617 total variants, got {}", corpus.total());
         }
 
         let mut ids = HashSet::new();
@@ -37,6 +34,18 @@ mod tests {
                 anyhow::bail!("class {class:?} missing in held-out");
             }
         }
+        Ok(())
+    }
+
+    #[test]
+    fn corpus_build_summary_is_sane() -> anyhow::Result<()> {
+        let (corpus, summary) = default_corpus_with_summary()?;
+        assert_eq!(corpus.total(), summary.total_variants);
+        assert_eq!(corpus.calibration.len(), summary.calibration_variants);
+        assert_eq!(corpus.held_out.len(), summary.held_out_variants);
+        assert_eq!(summary.chimeras_eliminated, 42);
+        assert_eq!(summary.submit_result_count + summary.fallback_count, 147);
+        assert!(summary.orphan_tool_calls < 10);
         Ok(())
     }
 }

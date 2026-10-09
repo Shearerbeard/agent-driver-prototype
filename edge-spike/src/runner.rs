@@ -193,7 +193,7 @@ pub fn plan_run(corpus: &Corpus, config: &RunnerConfig) -> RunPlan {
 
     if config.mode == RunnerMode::Live {
         // Board ruling (2026-10-08): judge runs on every held-out variant,
-        // once per arm. Held-out variants = 407; arms = 3; judge calls = 1221.
+        // once per arm. Held-out variants = 572; arms = 3; judge calls = 1716.
         plan.judge_calls = corpus
             .held_out
             .len()
@@ -977,6 +977,7 @@ mod tests {
             class: FailureClass::Clean,
             edge: CapturedEdge {
                 scenario: "test".to_owned(),
+                iteration: 0,
                 task_id: 1,
                 worker_id: "w1".to_owned(),
                 goal: "goal".to_owned(),
@@ -996,6 +997,7 @@ mod tests {
                     truncated: false,
                 },
                 tool_calls: Vec::new(),
+                confidence: None,
             },
         }
     }
@@ -1163,8 +1165,8 @@ mod tests {
         );
         assert_eq!(
             work_list.len(),
-            1221,
-            "expected 407 held-out variants x 3 arms"
+            1716,
+            "expected 572 held-out variants x 3 arms"
         );
 
         let mut with_one_judge_done = completed;
