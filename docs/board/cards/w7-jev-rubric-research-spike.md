@@ -177,6 +177,66 @@ prompt mid-dispatch is a failed pre-vet, not a surprise to debug.
 
 ## Log
 
+- 2026-10-09 C3 + C4 live legs ran (cloud, jev-1.13.0; user-approved
+  live). Commits `5829239` (baseline_blocked + selectors), `72c440a`
+  (dry-run + judge leg respect selectors - a live smoke would otherwise
+  have fired 1144 unpreviewed judge calls; caught in dry-run), `20d0aa5`
+  (summarizer built only when arm 3 selected), `af43769` (state_chars +
+  honest truncation flags, source vs assembly split), `014e5c2`
+  (whole-request budget packing + per-item resilience). C3 smoke
+  (1 edge x 2 arms): claim-indexed PASS 0.919 vs head-truncation
+  FLAG{truncation} 0.757 on a clean edge - Tony's predicted selection
+  failure reproduced in two calls; latency 279/349ms. C4 slice (10 clean
+  edges x 2 arms, one halt recovered by C2 resume): FIRST LIVE FINDING -
+  FLAG{truncation} dominates both arms on clean edges (Arm 1: 9/10 +
+  1 INSUFFICIENT_EVIDENCE, expected demonstration; Arm 2: 9/10 at
+  composite p50 0.879 - NOT expected). Cause: ~100 claims/edge cannot
+  all keep windows under the 24k-char budget, so tail degradation sets
+  the evidence-truncation flag on nearly every edge; the flag is honest
+  but as a binary verdict it is uninformative at this budget. Composite
+  ordering, latency (Arm 2 p50 186ms), and cost (~12k input tokens/call)
+  all healthy; post-fix states fit budget (23.5k chars; one pre-fix
+  artifact at 68.7k chars survives in results.jsonl as the before-case).
+  Measured ~2 chars/token on this JSON: the 32k-token ceiling maps to
+  ~64k chars, so a ~48k-char budget would roughly halve degradation.
+  OPEN for U(rubric): (a) FLAG{truncation} semantics - flag vs reported
+  column vs degradation-fraction threshold; (b) budget sweep before or
+  as part of the full run. Known warts logged: bin/run.rs creates the
+  output dir after run_corpus (operator mkdir needed); judge.rs assembles
+  arm-3 windows with the fixture summarizer on live runs (must fix before
+  Leg 2); plan's summarize/fan-out routing branches unwired (W9 concern);
+  report tables lack a state-size column; truncation_count covers
+  assembly only; char_len is byte length; " [truncated]" literal in 3
+  files. Board owner.
+- 2026-10-09 Repair chunks C0-C2 landed (offline, zero spend; commits
+  `eef32e5`, `0743ff0`; executors rust-write/general lanes on the new
+  deepseek pin; board owner re-verified clippy/fmt/test tails and owns
+  git). C0: corpus re-keyed by (iteration, task_id) - 147 honest edges
+  (42 chimeras eliminated), 1617 variants, split 1045/572; tool calls
+  joined started/completed by tool_call_id; `[truncated]` markers now set
+  honest flags (1223 tool results); worker outputs from attested
+  submit_result args with confidence recorded on CapturedEdge (still
+  excluded from scorer state); context_provided emptied (source carries no
+  dep info; aura workers received no prior-work frame); variant
+  fabrication reworked, label-telegraphing prefixes neutralized.
+  C1 (label audit, `.review/jev-goldens/label-audit.md`, working
+  material): ALL 14 trace-analyst edges (every scenario, iteration 1,
+  task 1) are EXPLICIT FAILURES labelled Clean - `find_trace_analysis_component`
+  returned empty targets and each worker honestly reported it could not
+  do the analysis, yet success=true; 9.5% of the baseline is corrupt;
+  refusal-phrase screening is an unreliable proxy (precision 0.16) while
+  the structural signal (empty-targets tool result) is exact;
+  confidence self-rank unreliable (one total-failure edge self-reported
+  high). Recommendation pending user ruling: a `baseline_blocked` bucket
+  for the 14 trace-analyst edges (useful as negative-path fixtures, not
+  clean positives) before any live scoring. C2: append-per-item durable
+  persistence (results.jsonl / judge_results.jsonl, flush per line,
+  torn-final-line recovery, resume from the logs) - an interruption now
+  loses at most the item in flight, replacing the
+  hold-everything-in-memory shape the driver flagged. Next: C3
+  single-edge live smoke (3 calls) WAITS on explicit user approval;
+  the baseline_blocked downgrade is recommended BEFORE C3 so the smoke
+  reads against an honest clean baseline. Board owner.
 - 2026-10-09 SCOPE AMENDMENT (pending user ruling at U(rubric)): corpus
   repair gates the live spend. Driver instruction: continue the experiment
   ("we're close, barring a few minor changes") but bite the repair into
