@@ -175,6 +175,44 @@ prompt mid-dispatch is a failed pre-vet, not a surprise to debug.
   adversarial characterization, thresholds proposal (marked provisional).
   STOPS - W9 does not start on an unapproved rubric.
 
+- 2026-10-08 ROOT CAUSE + REVERSAL after 3 adversarial review
+  rounds (GPT-6.1-sol; codex CLI rejected the model on the
+  ChatGPT account, ran via the in-harness Bedrock pin - same
+  model, disclosed vehicle swap). The earlier no-go was computed
+  on a SIGN-FLIPPED METRIC: rubric ordinal enums declare
+  best-first (rubric.rs:23-65), jev-driver score() returns the
+  probability-weighted level index (higher = worse), and
+  verdict.rs summed raw levels positively (70% of composite
+  weight inverted) with a level-count off-by-one. Fixed in
+  verdict.rs (weights v2-polarity-fixed, commit 3c7ddb1 on
+  card/w7); reports recompute composites from saved answers - no
+  model rerun needed. CORRECTED numbers (held-out): the card's
+  exact no-go comparison (clean vs fabricated, composite vs
+  evidence-presence-only ablation, n=1369/arm) does NOT fire on
+  any arm: +0.182 claim_indexed, +0.232 flash, +0.128
+  truncation (bar > +0.10). The 85% all-pairs accuracy bar
+  still FAILS (0.755-0.790); matched-pairs diagnostic
+  0.958-0.982 (n=333, not a substitute for the acceptance
+  metric). Two genuine defects remain open, found by review:
+  D2 corpus join corruption (proven: task_id reuse across plan
+  iterations pairs first task text with last result -
+  corpus.rs ~195-198, ~280-287; "clean" = unmutated, never
+  adjudicated; the judge's scope flag on the showcase edge was
+  CORRECT, earlier "judge misreads" claim retracted) and D3
+  state assembly gaps (consumers empty by construction; no
+  upstream-findings object - the zombie-execution failure mode
+  is structurally undetectable in this state design).
+  Position: NOT no-go, NOT validated go; lane decision gated
+  on the zero-spend corpus audit (iteration-aware join rebuild
+  + 30-edge clean-label adjudication), then D3 fix, then a
+  deliberately-budgeted rescore. Findings doc with cited
+  verbatim evidence: .review/w7-iter1/FINDINGS-w7-iter1.html
+  (card/w7 worktree); review trail hypothesis-v1..v3.md same
+  dir. Known tooling debt logged there: edge-review accuracy
+  section pools splits, no ablation/judge sections, stale
+  synthetic banner; replay fixtures still encode old polarity
+  (tests only, live recomputation unaffected). Board owner.
+
 - 2026-10-08 NO-GO RULE COMPUTED OFFLINE from the saved
   iteration-1 artifacts (zero spend). Per the card's decision
   rule, the full rubric must beat the evidence-presence-only
