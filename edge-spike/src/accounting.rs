@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::arms::SelectionArm;
 use crate::runner::ScoredEdge;
-use crate::verdict::StageLatencies;
+use crate::verdict::{StageLatencies, Verdict};
 
 /// Aggregate accounting for one arm.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -21,6 +21,7 @@ pub struct ArmAccounting {
     pub total_output_tokens: u64,
     pub truncation_count: usize,
     pub insufficient_evidence_count: usize,
+    pub verifier_error_count: usize,
 }
 
 /// Aggregate accounting table.
@@ -75,6 +76,10 @@ impl Accounting {
                     )
                 })
                 .count();
+            let verifier_errors = edges
+                .iter()
+                .filter(|e| e.artifact.verifier_error.is_some())
+                .count();
 
             out.insert(
                 name.clone(),
@@ -92,6 +97,7 @@ impl Accounting {
                         .sum(),
                     truncation_count,
                     insufficient_evidence_count: insufficient,
+                    verifier_error_count: verifier_errors,
                 },
             );
         }
@@ -134,6 +140,13 @@ impl AccuracySummary {
     pub fn from_scored(scored: &[ScoredEdge]) -> Self {
         let mut map: BTreeMap<String, BTreeMap<String, Vec<f64>>> = BTreeMap::new();
         for edge in scored {
+            // A verifier error carries a placeholder composite of 0.0 because no
+            // scorer response was received. It is counted separately by
+            // `ArmAccounting::verifier_error_count`; folding it into a class
+            // bucket would drag clean below every failure in the pairwise metric.
+            if matches!(edge.artifact.verdict, Verdict::VerifierError) {
+                continue;
+            }
             map.entry(edge.arm.name().to_owned())
                 .or_default()
                 .entry(edge.class.as_str().to_owned())
@@ -196,5 +209,97 @@ impl AccuracySummary {
             clean_wins: correct,
             truncation_ties,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::claim::GroundingStats;
+    use crate::corpus::FailureClass;
+    use crate::verdict::{
+        AnswerSummary, TokenUsage, TruncationFlags, VerdictArtifact, VerifierErrorDetail,
+        VerifierErrorReason, Weights,
+    };
+
+    fn artifact(composite: f64, verdict: Verdict) -> VerdictArtifact {
+        let verifier_error =
+            matches!(verdict, Verdict::VerifierError).then(|| VerifierErrorDetail {
+                reason: VerifierErrorReason::RequestRejected,
+                detail: "400".to_owned(),
+            });
+        VerdictArtifact {
+            rubric_version: "v2".to_owned(),
+            weights_version: "v2-polarity-fixed".to_owned(),
+            weights: Weights::default(),
+            resolved_model_id: "test".to_owned(),
+            state_hash: "hash".to_owned(),
+            state_chars: 0,
+            answers: AnswerSummary {
+                evidence_presence: 0.0,
+                task_fidelity: 0.0,
+                goal_alignment: 0.0,
+                evidence_grounding: 0.0,
+                handoff_integrity: 0.0,
+                scope_discipline: 0.0,
+            },
+            grounding_stats: GroundingStats::default(),
+            composite,
+            verdict,
+            truncation_flags: TruncationFlags::default(),
+            verifier_error,
+            latency_ms: StageLatencies::default(),
+            tokens: TokenUsage::default(),
+            timestamp: "0".to_owned(),
+        }
+    }
+
+    fn scored(class: FailureClass, composite: f64, verdict: Verdict) -> ScoredEdge {
+        ScoredEdge {
+            variant_id: "v".to_owned(),
+            class,
+            arm: SelectionArm::ClaimIndexed,
+            artifact: artifact(composite, verdict),
+        }
+    }
+
+    #[test]
+    fn verifier_errors_are_excluded_from_class_buckets_but_still_counted() {
+        let scored = vec![
+            scored(FailureClass::Clean, 0.9, Verdict::Pass),
+            scored(FailureClass::Clean, 0.8, Verdict::Pass),
+            scored(FailureClass::Clean, 0.0, Verdict::VerifierError),
+            scored(FailureClass::Drifted, 0.4, Verdict::Pass),
+        ];
+
+        let accuracy = AccuracySummary::from_scored(&scored);
+        let classes = accuracy
+            .by_arm_class
+            .get(SelectionArm::ClaimIndexed.name())
+            .expect("claim_indexed accuracy");
+        let clean = classes.get("clean").expect("clean bucket");
+        assert_eq!(
+            clean.as_slice(),
+            [0.9, 0.8],
+            "verifier-error composite must not enter the clean bucket"
+        );
+
+        let accounting = Accounting::from_scored(&scored);
+        let arm_acc = accounting
+            .by_arm
+            .get(SelectionArm::ClaimIndexed.name())
+            .expect("claim_indexed accounting");
+        assert_eq!(arm_acc.verifier_error_count, 1);
+
+        let pairwise = accuracy.pairwise_clean_vs_failure(SelectionArm::ClaimIndexed);
+        assert_eq!(pairwise.total_pairs, 2, "one pair per clean composite");
+        assert_eq!(
+            pairwise.clean_wins, 2,
+            "both clean composites beat the failure"
+        );
+        assert!(
+            (pairwise.rate - 1.0).abs() < f64::EPSILON,
+            "the 0.0 placeholder must not appear in any pair"
+        );
     }
 }

@@ -16,6 +16,21 @@ pub enum Verdict {
     VerifierError,
 }
 
+/// Typed reason for a verifier-level error verdict.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum VerifierErrorReason {
+    /// The scorer API rejected the request (non-retryable 4xx).
+    RequestRejected,
+}
+
+/// Typed detail carried by a verifier-error artifact.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct VerifierErrorDetail {
+    pub reason: VerifierErrorReason,
+    pub detail: String,
+}
+
 /// Serializable answer summary extracted from typed answers.
 ///
 /// Ordinal scores (`task_fidelity`, `goal_alignment`, `evidence_grounding`)
@@ -48,6 +63,9 @@ pub struct VerdictArtifact {
     pub composite: f64,
     pub verdict: Verdict,
     pub truncation_flags: TruncationFlags,
+    /// Set only when the verdict is [`Verdict::VerifierError`].
+    #[serde(default)]
+    pub verifier_error: Option<VerifierErrorDetail>,
     pub latency_ms: StageLatencies,
     pub tokens: TokenUsage,
     pub timestamp: String,
@@ -402,6 +420,7 @@ mod tests {
             composite: 0.404_25,
             verdict: Verdict::Pass,
             truncation_flags: TruncationFlags::default(),
+            verifier_error: None,
             latency_ms: StageLatencies::default(),
             tokens: TokenUsage::default(),
             timestamp: "0".to_owned(),

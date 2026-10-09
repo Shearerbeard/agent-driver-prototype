@@ -24,8 +24,8 @@ use crate::rubric::{EdgeRubric, EdgeRubricAnswers};
 use crate::state::EdgeState;
 use crate::summarizer::{FixtureSummarizer, FlashSummarizer, LiveSummarizer, SummarizerConfig};
 use crate::verdict::{
-    TokenUsage, TruncationFlags, VerdictArtifact, Weights, hash_state, resolve_verdict,
-    score_composite,
+    AnswerSummary, TokenUsage, TruncationFlags, Verdict, VerdictArtifact, VerifierErrorDetail,
+    VerifierErrorReason, Weights, hash_state, resolve_verdict, score_composite,
 };
 
 /// Scripted Jev response for one edge (in-memory only; not serialized).
@@ -1065,18 +1065,18 @@ async fn score_one(
     let request = EdgeRubric::request().state(state)?;
     let decision = request.build()?;
 
-    let (answers, response_model, usage) = if let Some((client, configured_model)) = live_client {
-        let raw = client.evaluate_raw(&decision).await?;
-        let model = resolve_model_id(&raw.model, configured_model);
-        let answers = EdgeRubricAnswers::from_answers(&raw)?;
-        (
-            answers,
-            model,
-            TokenUsage {
-                input_tokens: raw.usage.input_tokens,
-                output_tokens: raw.usage.output_tokens,
-            },
-        )
+    let score_result = if let Some((client, configured_model)) = live_client {
+        match client.evaluate_raw(&decision).await {
+            Ok(raw) => Ok((
+                EdgeRubricAnswers::from_answers(&raw)?,
+                resolve_model_id(&raw.model, configured_model),
+                TokenUsage {
+                    input_tokens: raw.usage.input_tokens,
+                    output_tokens: raw.usage.output_tokens,
+                },
+            )),
+            Err(e) => Err(e),
+        }
     } else {
         let response = class_aware_response(labelled.class, arm);
         let transport = Arc::new(ScriptedTransport::new(vec![Ok(WireResponse {
@@ -1086,17 +1086,18 @@ async fn score_one(
         })]));
         let client =
             JevClient::with_transport(transport, config.model_id.clone(), RetryConfig::default());
-        let answers: EdgeRubricAnswers = client.evaluate(&decision).await?;
-        (
-            answers,
-            response.model,
-            TokenUsage {
-                input_tokens: response.usage.input_tokens,
-                output_tokens: response.usage.output_tokens,
-            },
-        )
+        match client.evaluate(&decision).await {
+            Ok(answers) => Ok((
+                answers,
+                response.model,
+                TokenUsage {
+                    input_tokens: response.usage.input_tokens,
+                    output_tokens: response.usage.output_tokens,
+                },
+            )),
+            Err(e) => Err(e),
+        }
     };
-    let jev_ms = started.elapsed().as_millis() as u64;
 
     let fan_out_ms = 0u64;
     let state_hash = hash_state(state);
@@ -1118,36 +1119,82 @@ async fn score_one(
                 .any(|c| c.result.contains(" [truncated]")),
     };
 
-    let (composite, flags) = score_composite(&answers, &config.weights, &truncation_flags);
-    let verdict = resolve_verdict(&answers, composite, &flags, &config.weights);
-
-    let total_ms = started.elapsed().as_millis() as u64;
-    let artifact = VerdictArtifact {
-        rubric_version: "v2".to_owned(),
-        weights_version: "v2-polarity-fixed".to_owned(),
-        weights: config.weights,
-        resolved_model_id: response_model,
-        state_hash,
-        state_chars,
-        answers: crate::verdict::AnswerSummary::from(&answers),
-        grounding_stats,
-        composite,
-        verdict,
-        truncation_flags,
-        latency_ms: crate::verdict::StageLatencies {
-            extraction_ms,
-            retrieval_ms,
-            summarization_ms,
-            jev_ms,
-            fan_out_ms,
-            write_ms: 0,
-            total_ms,
-        },
-        tokens: TokenUsage {
-            input_tokens: usage.input_tokens,
-            output_tokens: usage.output_tokens,
-        },
-        timestamp: format_system_time(SystemTime::now()),
+    let artifact = match score_result {
+        Ok((answers, response_model, usage)) => {
+            let jev_ms = started.elapsed().as_millis() as u64;
+            let total_ms = started.elapsed().as_millis() as u64;
+            let (composite, flags) = score_composite(&answers, &config.weights, &truncation_flags);
+            let verdict = resolve_verdict(&answers, composite, &flags, &config.weights);
+            VerdictArtifact {
+                rubric_version: "v2".to_owned(),
+                weights_version: "v2-polarity-fixed".to_owned(),
+                weights: config.weights,
+                resolved_model_id: response_model,
+                state_hash,
+                state_chars,
+                answers: AnswerSummary::from(&answers),
+                grounding_stats,
+                composite,
+                verdict,
+                truncation_flags,
+                verifier_error: None,
+                latency_ms: crate::verdict::StageLatencies {
+                    extraction_ms,
+                    retrieval_ms,
+                    summarization_ms,
+                    jev_ms,
+                    fan_out_ms,
+                    write_ms: 0,
+                    total_ms,
+                },
+                tokens: usage,
+                timestamp: format_system_time(SystemTime::now()),
+            }
+        }
+        Err(e) => {
+            if let Some(detail) = classify_request_rejected(&e) {
+                let total_ms = started.elapsed().as_millis() as u64;
+                VerdictArtifact {
+                    rubric_version: "v2".to_owned(),
+                    weights_version: "v2-polarity-fixed".to_owned(),
+                    weights: config.weights,
+                    resolved_model_id: live_client
+                        .map(|(_, m)| m.clone())
+                        .unwrap_or_else(|| config.model_id.clone()),
+                    state_hash,
+                    state_chars,
+                    answers: AnswerSummary {
+                        evidence_presence: 0.0,
+                        task_fidelity: 0.0,
+                        goal_alignment: 0.0,
+                        evidence_grounding: 0.0,
+                        handoff_integrity: 0.0,
+                        scope_discipline: 0.0,
+                    },
+                    grounding_stats,
+                    composite: 0.0,
+                    verdict: Verdict::VerifierError,
+                    truncation_flags,
+                    verifier_error: Some(VerifierErrorDetail {
+                        reason: VerifierErrorReason::RequestRejected,
+                        detail,
+                    }),
+                    latency_ms: crate::verdict::StageLatencies {
+                        extraction_ms,
+                        retrieval_ms,
+                        summarization_ms,
+                        jev_ms: 0,
+                        fan_out_ms,
+                        write_ms: 0,
+                        total_ms,
+                    },
+                    tokens: TokenUsage::default(),
+                    timestamp: format_system_time(SystemTime::now()),
+                }
+            } else {
+                return Err(e.into());
+            }
+        }
     };
 
     Ok(ScoredEdge {
@@ -1156,6 +1203,26 @@ async fn score_one(
         arm,
         artifact,
     })
+}
+
+/// Classify a Jev client error as a non-retryable request rejection.
+///
+/// Maps typed [`JevError::InvalidRequest`] and unexpected-status transport
+/// messages containing 400/413/422. Quota/rate exhaustion (429) and other
+/// statuses are left to propagate so the runner can halt-and-resume.
+fn classify_request_rejected(err: &JevError) -> Option<String> {
+    match err {
+        JevError::InvalidRequest(detail) => Some(detail.clone()),
+        JevError::Transport(msg) => {
+            let lowered = msg.to_lowercase();
+            if lowered.contains("400") || lowered.contains("413") || lowered.contains("422") {
+                Some(msg.clone())
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }
 }
 
 fn format_system_time(time: SystemTime) -> String {
@@ -1775,5 +1842,126 @@ mod tests {
         assert_eq!(artifact.tokens.output_tokens, 99);
         assert_eq!(artifact.state_hash.len(), 64);
         assert!(artifact.state_chars > 0);
+    }
+
+    /// A single non-retryable 4xx scorer response must be recorded as a
+    /// per-item verifier error, letting the rest of the run complete.
+    #[tokio::test]
+    async fn request_rejected_continues_run_and_counts_error() {
+        let _guard = ENV_LOCK.lock().await;
+
+        struct RejectOneResponder {
+            ok_body: serde_json::Value,
+            count: AtomicUsize,
+        }
+
+        impl RejectOneResponder {
+            fn new(ok_body: serde_json::Value) -> Self {
+                Self {
+                    ok_body,
+                    count: AtomicUsize::new(0),
+                }
+            }
+        }
+
+        impl Respond for RejectOneResponder {
+            fn respond(&self, _request: &Request) -> ResponseTemplate {
+                let n = self.count.fetch_add(1, Ordering::SeqCst);
+                if n == 0 {
+                    ResponseTemplate::new(400).set_body_json(serde_json::json!({
+                        "detail": {"error_type": "max_tokens_exceeded"}
+                    }))
+                } else {
+                    ResponseTemplate::new(200).set_body_json(self.ok_body.clone())
+                }
+            }
+        }
+
+        let jev_server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/systemone"))
+            .respond_with(RejectOneResponder::new(jev_ok_response()))
+            .mount(&jev_server)
+            .await;
+
+        unsafe {
+            std::env::set_var("RUN_CONCURRENCY", "1");
+            std::env::set_var("TYPESAFE_BASE_URL", jev_server.uri());
+            std::env::set_var("TYPESAFE_API_KEY", "test-key");
+            std::env::set_var("TYPESAFE_MODEL", "jev-1.13.0");
+        }
+
+        let corpus = Corpus {
+            calibration: vec![
+                dummy_edge("cal-1", "result one"),
+                dummy_edge("cal-2", "result two"),
+            ],
+            held_out: Vec::new(),
+        };
+        let config = RunnerConfig {
+            mode: RunnerMode::Live,
+            endpoint: JevEndpoint::Cloud,
+            arms: vec![SelectionArm::ClaimIndexed],
+            ..Default::default()
+        };
+        let dir = tempfile::tempdir().unwrap_or_else(|e| panic!("temp dir: {e}"));
+        let result = run_corpus(&corpus, &config, Some(dir.path()))
+            .await
+            .unwrap_or_else(|e| panic!("run_corpus failed: {e}"));
+
+        unsafe {
+            std::env::remove_var("RUN_CONCURRENCY");
+            std::env::remove_var("TYPESAFE_BASE_URL");
+            std::env::remove_var("TYPESAFE_API_KEY");
+            std::env::remove_var("TYPESAFE_MODEL");
+        }
+
+        assert_eq!(
+            result.scored.len(),
+            2,
+            "both calibration edges should produce a scored edge"
+        );
+        assert!(
+            result.resume.is_none(),
+            "run should complete without halting"
+        );
+
+        let rejected: Vec<_> = result
+            .scored
+            .iter()
+            .filter(|s| s.artifact.verifier_error.is_some())
+            .collect();
+        assert_eq!(
+            rejected.len(),
+            1,
+            "exactly one item should be a verifier error"
+        );
+        let detail = rejected[0]
+            .artifact
+            .verifier_error
+            .as_ref()
+            .expect("filtered above");
+        assert!(
+            matches!(
+                detail.reason,
+                crate::verdict::VerifierErrorReason::RequestRejected
+            ),
+            "expected request_rejected reason"
+        );
+        assert!(
+            detail.detail.contains("400"),
+            "detail should carry the API status: {}",
+            detail.detail
+        );
+
+        let accounting = crate::accounting::Accounting::from_scored(&result.scored);
+        let arm_acc = accounting
+            .by_arm
+            .get("claim_indexed")
+            .expect("claim_indexed accounting");
+        assert_eq!(
+            arm_acc.verifier_error_count, 1,
+            "arm accounting must count the verifier error"
+        );
     }
 }

@@ -45,11 +45,11 @@ pub fn generate_report(
     lines.push(String::new());
 
     lines.push("## Latency profile".to_owned());
-    lines.push("| arm | edges | p50_total_ms | p95_total_ms | p50_jev_ms | p95_jev_ms | input_tokens | output_tokens | truncations | insufficient_evidence |".to_owned());
-    lines.push("| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |".to_owned());
+    lines.push("| arm | edges | p50_total_ms | p95_total_ms | p50_jev_ms | p95_jev_ms | input_tokens | output_tokens | truncations | insufficient_evidence | verifier_errors |".to_owned());
+    lines.push("| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |".to_owned());
     for acc in accounting.by_arm.values() {
         lines.push(format!(
-            "| {} | {} | {} | {} | {} | {} | {} | {} | {} | {} |",
+            "| {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} |",
             acc.arm,
             acc.edges,
             acc.p50_total_ms,
@@ -59,7 +59,8 @@ pub fn generate_report(
             acc.total_input_tokens,
             acc.total_output_tokens,
             acc.truncation_count,
-            acc.insufficient_evidence_count
+            acc.insufficient_evidence_count,
+            acc.verifier_error_count
         ));
     }
     lines.push(String::new());
@@ -86,13 +87,13 @@ pub fn generate_report(
 
     lines.push("## Per-class scoring".to_owned());
     lines.push("Average composite score per arm and verdict counts per class.".to_owned());
-    lines.push("| class | head_truncation | claim_indexed | flash_summarization | pass | flag | insufficient | floor_rules |".to_owned());
-    lines.push("| --- | --- | --- | --- | --- | --- | --- | --- |".to_owned());
+    lines.push("| class | head_truncation | claim_indexed | flash_summarization | pass | flag | insufficient | verifier_errors | floor_rules |".to_owned());
+    lines.push("| --- | --- | --- | --- | --- | --- | --- | --- | --- |".to_owned());
     let by_class = class_summary(scored);
     for class in FailureClass::all() {
         let summary = by_class.get(class).cloned().unwrap_or_default();
         lines.push(format!(
-            "| {class:?} | {:.3} | {:.3} | {:.3} | {} | {} | {} | {} |",
+            "| {class:?} | {:.3} | {:.3} | {:.3} | {} | {} | {} | {} | {} |",
             summary
                 .composite_by_arm
                 .get("head_truncation")
@@ -111,6 +112,7 @@ pub fn generate_report(
             summary.pass,
             summary.flag,
             summary.insufficient,
+            summary.verifier_error,
             summary.floor_rules.join(", ")
         ));
     }
@@ -145,6 +147,7 @@ struct ClassSummary {
     pass: usize,
     flag: usize,
     insufficient: usize,
+    verifier_error: usize,
     floor_rules: Vec<String>,
 }
 
@@ -170,7 +173,7 @@ fn class_summary(scored: &[ScoredEdge]) -> BTreeMap<FailureClass, ClassSummary> 
                 Verdict::Pass => summary.pass += 1,
                 Verdict::Flag { .. } => summary.flag += 1,
                 Verdict::InsufficientEvidence => summary.insufficient += 1,
-                Verdict::VerifierError => {}
+                Verdict::VerifierError => summary.verifier_error += 1,
             }
 
             if let Verdict::Flag { dims } = &edge.artifact.verdict {
