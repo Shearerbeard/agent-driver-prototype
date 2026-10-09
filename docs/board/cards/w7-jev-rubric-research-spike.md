@@ -177,6 +177,24 @@ prompt mid-dispatch is a failed pre-vet, not a surprise to debug.
 
 ## Log
 
+- 2026-10-08 SCOPE RELOCATION (user ruling, supersedes the v3.2
+  plan's placement): the edge verifier is an agent-driver-prototype
+  feature, not jev-driver machinery - with jev-driver published to
+  crates.io, the spike belongs in the prototype workspace consuming
+  it as a normal dependency. The spike crate moved from the
+  jev-driver repo (where it lived at `d1a598c` on a now-deleted
+  branch; that history stands as the intermediate record) into this
+  repo as workspace member `edge-spike` on card/w7 at `1e6f2fc`,
+  consuming `jev-driver 0.1.0` from crates.io (rust-version 1.91.1
+  matches ours; the test-support feature ships). Full bars green in
+  the new home: fmt, clippy --workspace --all-targets --locked,
+  cargo test --locked. The retry policy (transport backoff +
+  Retry-After) and (arm, variant) resume keying landed with the
+  move. Charter note in boardkit.toml updated the same turn. Also
+  clarified for the record: the local-gateway shakedown scores
+  against `jev-latest` (client.rs pins it; kev-9b is the gateway's
+  other resident model and was never selected); the report numbers
+  come from cloud Jev. Board owner.
 - 2026-10-08 Phase 1 (offline legs) landed: `edge-spike/` member in
   the jev-driver workspace, commit `d1a598c` on card/w7 (17 files,
   +2774). Executor: rust-write lane (Kimi), two dispatches plus a
