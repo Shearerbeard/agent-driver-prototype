@@ -31,9 +31,10 @@ pub struct JudgeConfig {
 }
 
 impl JudgeConfig {
-    /// Default thinking-model token budget. The probe burned 8 tokens on
-    /// reasoning alone; 4096 gives comfortable headroom and is overridable.
-    pub const DEFAULT_MAX_TOKENS: u32 = 4096;
+    /// Default thinking-model token budget. Reasoning-capable models can
+    /// consume thousands of tokens before emitting the constrained verdict;
+    /// 8192 gives comfortable headroom and is overridable via `JUDGE_MAX_TOKENS`.
+    pub const DEFAULT_MAX_TOKENS: u32 = 8192;
 
     /// Default timeout for a single judge call.
     pub const DEFAULT_TIMEOUT: Duration = Duration::from_mins(2);
@@ -170,8 +171,12 @@ impl JudgeClient {
     }
 
     /// Judge a single held-out edge by POSTing to the Bedrock runtime invoke
-    /// endpoint. Fails loud on non-2xx and surfaces null/empty content as a
-    /// parse failure.
+    /// endpoint.
+    ///
+    /// Non-2xx responses fail loud. Null/empty content is retried in-process up
+    /// to two more times; if it persists, the error is classified as exhaustion
+    /// so the runner halts and writes a resume rather than losing completed
+    /// results.
     pub async fn judge_edge(
         &self,
         labelled: &LabelledEdge,
@@ -179,39 +184,51 @@ impl JudgeClient {
         arm_config: &ArmConfig,
     ) -> anyhow::Result<JudgeVerdict> {
         let prompt = self.build_prompt(labelled, arm, arm_config).await?;
-        let request = ChatRequest {
-            model: self.config.model.clone(),
-            messages: vec![ChatMessage::user(prompt)],
-            max_tokens: self.config.max_tokens,
-            temperature: 0.0,
-            thinking: None,
-        };
         let url = format!(
             "{}/model/{}/invoke",
             self.config.base_url.trim_end_matches('/'),
             self.config.model
         );
 
-        let req = self
-            .client
-            .post(&url)
-            .header(
-                "Authorization",
-                format!("Bearer {}", self.config.bearer_token),
-            )
-            .json(&request)
-            .build()
-            .map_err(|e| anyhow::anyhow!("judge failed to build request: {e}"))?;
-        let response = execute_with_retry(&self.client, req, "judge").await?;
+        // Empty/null content can be transient for reasoning models; retry the
+        // whole call in-process before treating it as exhaustion.
+        const MAX_ATTEMPTS: usize = 3;
+        for attempt in 0..MAX_ATTEMPTS {
+            let request = ChatRequest {
+                model: self.config.model.clone(),
+                messages: vec![ChatMessage::user(prompt.clone())],
+                max_tokens: self.config.max_tokens,
+                temperature: 0.0,
+                thinking: None,
+            };
+            let req = self
+                .client
+                .post(&url)
+                .header(
+                    "Authorization",
+                    format!("Bearer {}", self.config.bearer_token),
+                )
+                .json(&request)
+                .build()
+                .map_err(|e| anyhow::anyhow!("judge failed to build request: {e}"))?;
+            let response = execute_with_retry(&self.client, req, "judge").await?;
 
-        let chat = response
-            .json::<ChatResponse>()
-            .await
-            .map_err(|e| anyhow::anyhow!("judge response failed to parse: {e}"))?;
-        let content = chat
-            .first_content()
-            .map_err(|e| anyhow::anyhow!("judge response invalid: {e}"))?;
-        Self::parse_reply(&content)
+            let chat = response
+                .json::<ChatResponse>()
+                .await
+                .map_err(|e| anyhow::anyhow!("judge response failed to parse: {e}"))?;
+            match chat.first_content() {
+                Ok(content) => return Self::parse_reply(&content),
+                Err(_) if attempt + 1 < MAX_ATTEMPTS => continue,
+                Err(e) => {
+                    return Err(anyhow::anyhow!(
+                        "judge exhausted: empty content after {MAX_ATTEMPTS} attempts: {e}"
+                    ));
+                }
+            }
+        }
+
+        unreachable!("loop always returns");
     }
 }
 
@@ -242,19 +259,28 @@ pub async fn judge_held_out<S: std::hash::BuildHasher>(
     }
 
     let owned_edges: Vec<_> = edges.iter().map(|(e, arm)| ((*e).clone(), *arm)).collect();
-    judge_edges_bounded(client, owned_edges, arm_config, None).await
+    let (results, err) = judge_edges_bounded(client, owned_edges, arm_config, None).await;
+    match err {
+        Some(e) => Err(e),
+        None => Ok(results),
+    }
 }
 
 /// Judge a list of held-out edges with bounded concurrency.
 ///
 /// Successfully judged pairs are recorded in `completed` when supplied, so a
-/// caller building a resume state can include them.
+/// caller building a resume state can include them. On error the partial
+/// results completed before the failure are still returned alongside the
+/// error so the runner can write them out instead of discarding them.
 pub(crate) async fn judge_edges_bounded(
     client: &JudgeClient,
     edges: Vec<(LabelledEdge, SelectionArm)>,
     arm_config: &ArmConfig,
     completed: Option<&mut HashSet<CompletedKey>>,
-) -> anyhow::Result<Vec<(String, SelectionArm, JudgeVerdict)>> {
+) -> (
+    Vec<(String, SelectionArm, JudgeVerdict)>,
+    Option<anyhow::Error>,
+) {
     use crate::runner::run_concurrency;
 
     let concurrency = run_concurrency();
@@ -271,7 +297,7 @@ pub(crate) async fn judge_edges_bounded(
             let client = client.clone();
             async move {
                 let verdict = client.judge_edge(&edge, arm, &arm_config).await?;
-                let key = CompletedKey::new(arm.name(), &edge.variant_id);
+                let key = CompletedKey::judge(arm.name(), &edge.variant_id);
                 Ok((idx, (edge.variant_id.clone(), arm, verdict, key)))
             }
         },
@@ -289,13 +315,7 @@ pub(crate) async fn judge_edges_bounded(
         }
     }
 
-    let judge_results = judge_slots;
-
-    if let Some(e) = first_error {
-        return Err(e);
-    }
-
-    Ok(judge_results)
+    (judge_slots, first_error)
 }
 
 /// Return true if a failure class should be sent to the judge. The judge is
@@ -358,7 +378,7 @@ mod tests {
             region: "us-east-1".to_owned(),
             model: "us.moonshotai.kimi-k3".to_owned(),
             base_url,
-            max_tokens: 4096,
+            max_tokens: 8192,
             timeout: Duration::from_secs(5),
         }
     }
@@ -462,7 +482,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn null_content_surfaces_as_error() {
+    async fn null_content_is_retried_then_classified_as_exhaustion() {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
             .and(path(format!(
@@ -470,6 +490,7 @@ mod tests {
                 test_config(server.uri()).model
             )))
             .respond_with(ResponseTemplate::new(200).set_body_json(null_content_response()))
+            .expect(3)
             .mount(&server)
             .await;
 
@@ -484,7 +505,8 @@ mod tests {
             Ok(_) => panic!("expected error"),
         };
 
-        assert!(err.contains("content is null"), "unexpected error: {err}");
+        assert!(err.contains("exhausted"), "unexpected error: {err}");
+        assert!(is_exhaustion(&anyhow::anyhow!("{err}")));
     }
 
     #[tokio::test]

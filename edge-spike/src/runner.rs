@@ -274,7 +274,15 @@ pub async fn run_corpus(
     let summarizer: Arc<dyn FlashSummarizer> =
         match build_summarizer(config.mode, SelectionArm::FlashSummarization) {
             Ok(s) => s,
-            Err(e) => return Ok(hard_error_result("leg_1", Vec::new(), HashSet::new(), &e)),
+            Err(e) => {
+                return Ok(hard_error_result(
+                    "leg_1",
+                    Vec::new(),
+                    Vec::new(),
+                    HashSet::new(),
+                    &e,
+                ));
+            }
         };
     let jev_client = if config.mode == RunnerMode::Live {
         match build_jev_client(config.endpoint) {
@@ -282,6 +290,7 @@ pub async fn run_corpus(
             Err(e) => {
                 return Ok(hard_error_result(
                     "leg_1",
+                    Vec::new(),
                     Vec::new(),
                     HashSet::new(),
                     &anyhow::anyhow!("{e}"),
@@ -364,30 +373,41 @@ pub async fn run_corpus(
                 )),
             });
         }
-        return Ok(hard_error_result("leg_1", scored, completed, &e));
+        return Ok(hard_error_result(
+            "leg_1",
+            scored,
+            Vec::new(),
+            completed,
+            &e,
+        ));
     }
 
-    let judge_results = if config.mode == RunnerMode::Live {
-        match run_judge(corpus, config, &scored, &mut completed).await {
-            Ok(v) => v,
-            Err(e) if is_exhaustion(&e) => {
-                return Ok(LiveRunResult {
-                    scored,
-                    judge_results: Vec::new(),
-                    resume: Some(ResumeState::exhausted(
-                        "judge",
-                        completed.into_iter().collect(),
-                        &e.to_string(),
-                    )),
-                });
-            }
-            Err(e) => {
-                return Ok(hard_error_result("leg_2", scored, completed, &e));
-            }
-        }
+    let (judge_results, judge_error) = if config.mode == RunnerMode::Live {
+        run_judge(corpus, config, &scored, &mut completed).await
     } else {
-        Vec::new()
+        (Vec::new(), None)
     };
+
+    if let Some(e) = judge_error {
+        if is_exhaustion(&e) {
+            return Ok(LiveRunResult {
+                scored,
+                judge_results,
+                resume: Some(ResumeState::exhausted(
+                    exhausted_service(&e),
+                    completed.into_iter().collect(),
+                    &e.to_string(),
+                )),
+            });
+        }
+        return Ok(hard_error_result(
+            "leg_2",
+            scored,
+            judge_results,
+            completed,
+            &e,
+        ));
+    }
 
     Ok(LiveRunResult {
         scored,
@@ -425,12 +445,13 @@ fn exhausted_service(err: &anyhow::Error) -> &'static str {
 fn hard_error_result(
     leg: &str,
     scored: Vec<ScoredEdge>,
+    judge_results: Vec<(String, SelectionArm, JudgeVerdict)>,
     completed: HashSet<CompletedKey>,
     err: &anyhow::Error,
 ) -> LiveRunResult {
     LiveRunResult {
         scored,
-        judge_results: Vec::new(),
+        judge_results,
         resume: Some(ResumeState::hard_error(
             format!("hard_error:{leg}"),
             completed.into_iter().collect(),
@@ -456,9 +477,18 @@ async fn run_judge(
     config: &RunnerConfig,
     scored: &[ScoredEdge],
     completed: &mut HashSet<CompletedKey>,
-) -> anyhow::Result<Vec<(String, SelectionArm, JudgeVerdict)>> {
-    let judge_config = JudgeConfig::from_env()?;
-    let client = JudgeClient::new(judge_config)?;
+) -> (
+    Vec<(String, SelectionArm, JudgeVerdict)>,
+    Option<anyhow::Error>,
+) {
+    let judge_config = match JudgeConfig::from_env() {
+        Ok(c) => c,
+        Err(e) => return (Vec::new(), Some(e)),
+    };
+    let client = match JudgeClient::new(judge_config) {
+        Ok(c) => c,
+        Err(e) => return (Vec::new(), Some(e)),
+    };
     let held_out_ids: HashSet<String> = corpus
         .held_out
         .iter()
@@ -474,6 +504,10 @@ async fn run_judge(
                 .iter()
                 .find(|e| e.variant_id == edge.variant_id)
             {
+                let key = CompletedKey::judge(edge.arm.name(), &edge.variant_id);
+                if completed.contains(&key) {
+                    continue;
+                }
                 edges_to_judge.push((labelled.clone(), edge.arm));
             }
         }

@@ -6,23 +6,46 @@
 
 use serde::{Deserialize, Serialize};
 
-/// One completed scoring unit.
+/// Which phase of a live run recorded the completion.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum CompletedPhase {
+    /// Scoring phase (Leg 1).
+    #[default]
+    Scoring,
+    /// Judge phase (Leg 2).
+    Judge,
+}
+
+/// One completed unit of work.
 ///
-/// The same variant is scored under every arm, so the key must include both
-/// the arm and the variant id. A bare variant id would mark all three arms as
-/// done and silently skip work on resume.
+/// The same variant is scored and then judged under every arm, so the key
+/// must include the arm, the variant id, and the phase. Without the phase a
+/// scoring resume would silently skip the judge leg and vice versa.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct CompletedKey {
     pub arm: String,
     pub variant_id: String,
+    #[serde(default)]
+    pub phase: CompletedPhase,
 }
 
 impl CompletedKey {
-    /// Create a key from an arm name and variant id.
+    /// Create a scoring key from an arm name and variant id.
     pub fn new(arm: impl Into<String>, variant_id: impl Into<String>) -> Self {
         Self {
             arm: arm.into(),
             variant_id: variant_id.into(),
+            phase: CompletedPhase::Scoring,
+        }
+    }
+
+    /// Create a judge key from an arm name and variant id.
+    pub fn judge(arm: impl Into<String>, variant_id: impl Into<String>) -> Self {
+        Self {
+            arm: arm.into(),
+            variant_id: variant_id.into(),
+            phase: CompletedPhase::Judge,
         }
     }
 }
@@ -63,11 +86,18 @@ impl ResumeState {
         Ok(())
     }
 
-    /// Check whether a given (arm, variant_id) pair is already completed.
+    /// Check whether a given scoring (arm, variant_id) pair is already completed.
     pub fn is_completed(&self, arm: &str, variant_id: &str) -> bool {
+        self.completed.iter().any(|k| {
+            k.arm == arm && k.variant_id == variant_id && k.phase == CompletedPhase::Scoring
+        })
+    }
+
+    /// Check whether a given judge (arm, variant_id) pair is already completed.
+    pub fn is_judge_completed(&self, arm: &str, variant_id: &str) -> bool {
         self.completed
             .iter()
-            .any(|k| k.arm == arm && k.variant_id == variant_id)
+            .any(|k| k.arm == arm && k.variant_id == variant_id && k.phase == CompletedPhase::Judge)
     }
 }
 

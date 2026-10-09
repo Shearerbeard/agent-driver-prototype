@@ -61,7 +61,12 @@ fn minimal_corpus() -> Corpus {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
     use super::*;
+    use edge_spike::client::JevEndpoint;
+    use edge_spike::runner::RunnerMode;
+    use wiremock::{Request, Respond};
 
     #[test]
     fn dry_run_zero_network() {
@@ -107,7 +112,7 @@ mod tests {
             region: "us-east-1".to_owned(),
             model: "us.moonshotai.kimi-k3".to_owned(),
             base_url: "https://bedrock-runtime.us-east-1.amazonaws.com".to_owned(),
-            max_tokens: 4096,
+            max_tokens: 8192,
             timeout: Duration::from_secs(5),
         })
         .unwrap_or_else(|e| panic!("judge client: {e}"));
@@ -154,7 +159,7 @@ mod tests {
             region: "us-east-1".to_owned(),
             model: "us.moonshotai.kimi-k3".to_owned(),
             base_url: server.uri(),
-            max_tokens: 4096,
+            max_tokens: 8192,
             timeout: Duration::from_secs(5),
         })
         .unwrap_or_else(|e| panic!("judge client: {e}"));
@@ -274,6 +279,8 @@ mod tests {
 
     #[tokio::test]
     async fn judge_drains_in_flight_on_exhaustion() {
+        let _guard = ENV_LOCK.lock().await;
+
         use std::sync::atomic::{AtomicUsize, Ordering};
         use wiremock::{Request, Respond, ResponseTemplate};
 
@@ -311,7 +318,7 @@ mod tests {
             region: "us-east-1".to_owned(),
             model: "us.moonshotai.kimi-k3".to_owned(),
             base_url: server.uri(),
-            max_tokens: 4096,
+            max_tokens: 8192,
             timeout: Duration::from_secs(5),
         })
         .unwrap_or_else(|e| panic!("judge client: {e}"));
@@ -337,5 +344,256 @@ mod tests {
             is_exhaustion(&anyhow::anyhow!("{err}")),
             "error should be exhaustion: {err}"
         );
+    }
+
+    static ENV_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+    fn held_out_corpus(held_out_count: usize) -> Corpus {
+        Corpus {
+            calibration: vec![dummy_edge("cal-1", FailureClass::Clean)],
+            held_out: (0..held_out_count)
+                .map(|i| dummy_edge(&format!("held-{i}"), FailureClass::Drifted))
+                .collect(),
+        }
+    }
+
+    fn jev_ok_response() -> serde_json::Value {
+        serde_json::json!({
+            "model": "jev-1.13.0-replay",
+            "answers": {
+                "evidence_presence": {"type": "noul", "noul": 0.95},
+                "task_fidelity": {
+                    "type": "score",
+                    "score": 4.0,
+                    "legend": {"0": "none", "1": "poor", "2": "fair", "3": "good", "4": "excellent"},
+                    "probabilities": {"0": 0.1, "1": 0.2, "2": 0.4, "3": 0.2, "4": 0.1},
+                    "confidence": 0.7
+                },
+                "goal_alignment": {
+                    "type": "score",
+                    "score": 2.0,
+                    "legend": {"0": "misaligned", "1": "neutral", "2": "aligned"},
+                    "probabilities": {"0": 0.2, "1": 0.6, "2": 0.2},
+                    "confidence": 0.7
+                },
+                "evidence_grounding": {
+                    "type": "score",
+                    "score": 3.0,
+                    "legend": {"0": "unsupported", "1": "partially", "2": "mostly", "3": "supported"},
+                    "probabilities": {"0": 0.1, "1": 0.2, "2": 0.5, "3": 0.2},
+                    "confidence": 0.7
+                },
+                "handoff_integrity": {"type": "noul", "noul": 0.9},
+                "scope_discipline": {"type": "noul", "noul": 0.9}
+            },
+            "usage": {"input_tokens": 2048, "output_tokens": 128}
+        })
+    }
+
+    fn summary_ok_response() -> serde_json::Value {
+        serde_json::json!({
+            "choices": [{"message": {"role": "assistant", "content": "short summary"}}]
+        })
+    }
+
+    fn judge_ok_response() -> serde_json::Value {
+        serde_json::json!({
+            "choices": [{"message": {"role": "assistant", "content": "VERDICT: PASS"}}]
+        })
+    }
+
+    fn null_content_response() -> serde_json::Value {
+        serde_json::json!({
+            "choices": [{"message": {"role": "assistant", "content": null}}]
+        })
+    }
+
+    struct FirstNThenNullResponder {
+        successes: usize,
+        attempt: AtomicUsize,
+    }
+
+    impl Respond for FirstNThenNullResponder {
+        fn respond(&self, _request: &Request) -> ResponseTemplate {
+            let n = self.attempt.fetch_add(1, Ordering::SeqCst);
+            if n < self.successes {
+                ResponseTemplate::new(200).set_body_json(judge_ok_response())
+            } else {
+                ResponseTemplate::new(200).set_body_json(null_content_response())
+            }
+        }
+    }
+
+    fn set_live_env(jev_uri: &str, sum_uri: &str, judge_uri: &str) {
+        unsafe {
+            std::env::set_var("RUN_CONCURRENCY", "1");
+            std::env::set_var("TYPESAFE_BASE_URL", jev_uri);
+            std::env::set_var("TYPESAFE_API_KEY", "test-key");
+            std::env::set_var("TYPESAFE_MODEL", "jev-1.13.0");
+            std::env::set_var("SUMMARIZER_BASE_URL", sum_uri);
+            std::env::set_var("SUMMARIZER_API_KEY", "test-key");
+            std::env::set_var("SUMMARIZER_MODEL", "test-model");
+            std::env::set_var("AWS_BEARER_TOKEN_BEDROCK", "test-token");
+            std::env::set_var("AWS_REGION", "us-east-1");
+            std::env::set_var("AWS_BEDROCK_BASE_URL", judge_uri);
+            std::env::set_var("JUDGE_MODEL", "us.moonshotai.kimi-k3");
+        }
+    }
+
+    fn clear_live_env() {
+        unsafe {
+            std::env::remove_var("RUN_CONCURRENCY");
+            std::env::remove_var("TYPESAFE_BASE_URL");
+            std::env::remove_var("TYPESAFE_API_KEY");
+            std::env::remove_var("TYPESAFE_MODEL");
+            std::env::remove_var("SUMMARIZER_BASE_URL");
+            std::env::remove_var("SUMMARIZER_API_KEY");
+            std::env::remove_var("SUMMARIZER_MODEL");
+            std::env::remove_var("AWS_BEARER_TOKEN_BEDROCK");
+            std::env::remove_var("AWS_REGION");
+            std::env::remove_var("AWS_BEDROCK_BASE_URL");
+            std::env::remove_var("JUDGE_MODEL");
+        }
+    }
+
+    #[tokio::test]
+    async fn judge_halt_preserves_completed_judge_results_and_resume_keys() {
+        let _guard = ENV_LOCK.lock().await;
+
+        let jev_server = MockServer::start().await;
+        let sum_server = MockServer::start().await;
+        let judge_server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path("/v1/systemone"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(jev_ok_response()))
+            .expect(12)
+            .mount(&jev_server)
+            .await;
+
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(summary_ok_response()))
+            .mount(&sum_server)
+            .await;
+
+        Mock::given(method("POST"))
+            .and(path("/model/us.moonshotai.kimi-k3/invoke"))
+            .respond_with(FirstNThenNullResponder {
+                successes: 2,
+                attempt: AtomicUsize::new(0),
+            })
+            .expect(5)
+            .mount(&judge_server)
+            .await;
+
+        set_live_env(&jev_server.uri(), &sum_server.uri(), &judge_server.uri());
+
+        let corpus = held_out_corpus(3);
+        let config = RunnerConfig {
+            mode: RunnerMode::Live,
+            endpoint: JevEndpoint::Cloud,
+            ..Default::default()
+        };
+        let result = run_corpus(&corpus, &config, None)
+            .await
+            .unwrap_or_else(|e| panic!("run_corpus failed: {e}"));
+
+        clear_live_env();
+
+        assert_eq!(result.scored.len(), 12, "all scoring pairs should complete");
+        assert_eq!(
+            result.judge_results.len(),
+            2,
+            "completed judge pairs before halt must be preserved"
+        );
+
+        let resume = result.resume.expect("expected resume state");
+        assert!(
+            is_exhaustion(&anyhow::anyhow!("{}", resume.error)),
+            "expected exhaustion: {}",
+            resume.error
+        );
+        assert!(
+            resume.error.contains("judge"),
+            "error should name judge: {}",
+            resume.error
+        );
+        assert_eq!(
+            resume.completed.len(),
+            14,
+            "resume should contain all scoring keys plus the two judge keys"
+        );
+        assert!(resume.is_judge_completed("head_truncation", "held-0"));
+        assert!(resume.is_judge_completed("claim_indexed", "held-0"));
+        assert!(!resume.is_judge_completed("flash_summarization", "held-0"));
+    }
+
+    #[tokio::test]
+    async fn resumed_judge_run_skips_completed_pairs() {
+        let _guard = ENV_LOCK.lock().await;
+
+        let jev_server = MockServer::start().await;
+        let sum_server = MockServer::start().await;
+        let judge_server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path("/v1/systemone"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(jev_ok_response()))
+            .expect(9)
+            .mount(&jev_server)
+            .await;
+
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(summary_ok_response()))
+            .mount(&sum_server)
+            .await;
+
+        Mock::given(method("POST"))
+            .and(path("/model/us.moonshotai.kimi-k3/invoke"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(judge_ok_response()))
+            .expect(5)
+            .mount(&judge_server)
+            .await;
+
+        set_live_env(&jev_server.uri(), &sum_server.uri(), &judge_server.uri());
+
+        let corpus = held_out_corpus(2);
+        let resume = ResumeState::exhausted(
+            "judge",
+            vec![CompletedKey::judge("head_truncation", "held-0")],
+            "test",
+        );
+        let config = RunnerConfig {
+            mode: RunnerMode::Live,
+            endpoint: JevEndpoint::Cloud,
+            ..Default::default()
+        };
+        let result = run_corpus(&corpus, &config, Some(&resume))
+            .await
+            .unwrap_or_else(|e| panic!("run_corpus failed: {e}"));
+
+        clear_live_env();
+
+        assert!(result.resume.is_none(), "full run should not halt");
+        assert_eq!(result.scored.len(), 9, "all scoring pairs should complete");
+        assert_eq!(
+            result.judge_results.len(),
+            5,
+            "judge should skip one completed pair and judge the rest"
+        );
+
+        let judged: HashSet<(String, String)> = result
+            .judge_results
+            .iter()
+            .map(|(variant_id, arm, _)| (arm.name().to_owned(), variant_id.clone()))
+            .collect();
+        assert!(
+            !judged.contains(&("head_truncation".to_owned(), "held-0".to_owned())),
+            "completed judge pair must be skipped"
+        );
+        assert!(judged.contains(&("claim_indexed".to_owned(), "held-0".to_owned())));
+        assert!(judged.contains(&("flash_summarization".to_owned(), "held-1".to_owned())));
     }
 }
