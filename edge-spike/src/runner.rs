@@ -383,7 +383,7 @@ pub async fn run_corpus(
     }
 
     let (judge_results, judge_error) = if config.mode == RunnerMode::Live {
-        run_judge(corpus, config, &scored, &mut completed).await
+        run_judge(corpus, config, &mut completed).await
     } else {
         (Vec::new(), None)
     };
@@ -472,10 +472,31 @@ fn build_summarizer(
     }
 }
 
+/// Build the judge work list from the held-out split, independent of what
+/// the current process has scored. Already-completed judge keys are skipped.
+fn build_judge_work_list(
+    corpus: &Corpus,
+    completed: &HashSet<CompletedKey>,
+) -> Vec<(LabelledEdge, SelectionArm)> {
+    corpus
+        .held_out
+        .iter()
+        .flat_map(|edge| {
+            SelectionArm::all().iter().filter_map(move |&arm| {
+                let key = CompletedKey::judge(arm.name(), &edge.variant_id);
+                if completed.contains(&key) {
+                    None
+                } else {
+                    Some((edge.clone(), arm))
+                }
+            })
+        })
+        .collect()
+}
+
 async fn run_judge(
     corpus: &Corpus,
     config: &RunnerConfig,
-    scored: &[ScoredEdge],
     completed: &mut HashSet<CompletedKey>,
 ) -> (
     Vec<(String, SelectionArm, JudgeVerdict)>,
@@ -489,29 +510,8 @@ async fn run_judge(
         Ok(c) => c,
         Err(e) => return (Vec::new(), Some(e)),
     };
-    let held_out_ids: HashSet<String> = corpus
-        .held_out
-        .iter()
-        .map(|e| e.variant_id.clone())
-        .collect();
 
-    let mut edges_to_judge = Vec::new();
-    for edge in scored {
-        if held_out_ids.contains(&edge.variant_id) {
-            // Re-find the original LabelledEdge for state assembly.
-            if let Some(labelled) = corpus
-                .held_out
-                .iter()
-                .find(|e| e.variant_id == edge.variant_id)
-            {
-                let key = CompletedKey::judge(edge.arm.name(), &edge.variant_id);
-                if completed.contains(&key) {
-                    continue;
-                }
-                edges_to_judge.push((labelled.clone(), edge.arm));
-            }
-        }
-    }
+    let edges_to_judge = build_judge_work_list(corpus, completed);
 
     judge_edges_bounded(&client, edges_to_judge, &config.arm_config, Some(completed)).await
 }
@@ -863,11 +863,13 @@ mod tests {
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, Request, Respond, ResponseTemplate};
 
-    use super::{RunnerConfig, RunnerMode, run_bounded, run_concurrency, run_corpus};
+    use super::{
+        RunnerConfig, RunnerMode, build_judge_work_list, run_bounded, run_concurrency, run_corpus,
+    };
     use crate::arms::SelectionArm;
     use crate::client::JevEndpoint;
-    use crate::corpus::{CapturedEdge, Corpus, FailureClass, LabelledEdge};
-    use crate::exhaustion::is_exhaustion;
+    use crate::corpus::{CapturedEdge, Corpus, FailureClass, LabelledEdge, default_corpus};
+    use crate::exhaustion::{CompletedKey, is_exhaustion};
     use crate::state::{PlanContext, PlanStep, WorkerOutput};
 
     #[tokio::test]
@@ -1077,7 +1079,6 @@ mod tests {
         Mock::given(method("POST"))
             .and(path("/v1/systemone"))
             .respond_with(JevCountResponder::ok_for_first(3, jev_ok_response()))
-            .expect(4)
             .mount(&jev_server)
             .await;
 
@@ -1134,5 +1135,48 @@ mod tests {
             std::env::remove_var("SUMMARIZER_API_KEY");
             std::env::remove_var("SUMMARIZER_MODEL");
         }
+    }
+
+    #[test]
+    fn judge_work_list_is_independent_of_this_run_scored() {
+        let corpus = default_corpus().unwrap_or_else(|e| panic!("default corpus: {e}"));
+        let completed: std::collections::HashSet<CompletedKey> = corpus
+            .calibration
+            .iter()
+            .chain(corpus.held_out.iter())
+            .flat_map(|edge| {
+                SelectionArm::all()
+                    .iter()
+                    .map(move |&arm| CompletedKey::new(arm.name(), &edge.variant_id))
+            })
+            .collect();
+
+        let expected = corpus
+            .held_out
+            .len()
+            .saturating_mul(SelectionArm::all().len());
+        let work_list = build_judge_work_list(&corpus, &completed);
+        assert_eq!(
+            work_list.len(),
+            expected,
+            "judge work list must be held-out variants x arms when scoring is already done"
+        );
+        assert_eq!(
+            work_list.len(),
+            1221,
+            "expected 407 held-out variants x 3 arms"
+        );
+
+        let mut with_one_judge_done = completed;
+        with_one_judge_done.insert(CompletedKey::judge(
+            SelectionArm::ClaimIndexed.name(),
+            &corpus.held_out[0].variant_id,
+        ));
+        let work_list = build_judge_work_list(&corpus, &with_one_judge_done);
+        assert_eq!(
+            work_list.len(),
+            expected - 1,
+            "already-completed judge key must be skipped"
+        );
     }
 }
