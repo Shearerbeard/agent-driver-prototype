@@ -11,9 +11,10 @@
 #   - no [agent.scratchpad] / [orchestration.timeouts]: the prototype
 #     ShimConfig schema has no fields for them (unknown TOML tables are
 #     ignored). [orchestration.artifacts] IS supported (memory_dir and
-#     result_artifact_threshold both parse; memory_dir is set below) - only
-#     the stock result_artifact_threshold value is not ported, so the shim
-#     default is in effect (gate A rounds 1-2 corrections).
+#     result_artifact_threshold both parse; memory_dir is set below);
+#     result_artifact_threshold is left unset because the stock configs
+#     carry no value for it, so the shim default applies (gate A rounds
+#     1-2 + gate D corrections).
 #   - no [mcp.servers.*.headers_from_request] and no [mcp.servers.*.scratchpad]:
 #     pre-S107 the shim forwards no request headers, and the prototype has no
 #     scratchpad interception. The smoke passes NO X-Mock headers; the mock's
