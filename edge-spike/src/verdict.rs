@@ -41,6 +41,8 @@ pub struct VerdictArtifact {
     pub weights: Weights,
     pub resolved_model_id: String,
     pub state_hash: String,
+    /// Serialized length of the assembled state actually sent.
+    pub state_chars: usize,
     pub answers: AnswerSummary,
     pub grounding_stats: GroundingStats,
     pub composite: f64,
@@ -107,6 +109,13 @@ const ALIGNMENT_MAX_INDEX: f64 = 2.0;
 const GROUNDING_MAX_INDEX: f64 = 3.0;
 
 /// Per-field truncation flags.
+///
+/// The six named fields record **assembly**-time truncation: a bounded field
+/// the arm's state assembly actually capped. `source` is a separate
+/// provenance flag for truncation that pre-existed in the capture (the C0
+/// ` [truncated]` marker on a worker output or tool result). It is reported
+/// separately so a capture-level cut does not inflate the arm's assembly
+/// truncation rate; [`TruncationFlags::any`] therefore ignores it.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct TruncationFlags {
     pub goal: bool,
@@ -115,6 +124,8 @@ pub struct TruncationFlags {
     pub worker_output: bool,
     pub context_provided: bool,
     pub evidence: bool,
+    /// Capture-level (pre-existing) truncation marker, not an assembly cap.
+    pub source: bool,
 }
 
 /// Stage-level latency bookkeeping.
@@ -377,6 +388,7 @@ mod tests {
             },
             resolved_model_id: "jev-1.13.0-replay".to_owned(),
             state_hash: "abc".to_owned(),
+            state_chars: 0,
             answers: AnswerSummary {
                 evidence_presence: 0.9,
                 task_fidelity: 3.27,

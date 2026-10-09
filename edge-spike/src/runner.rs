@@ -1100,13 +1100,22 @@ async fn score_one(
 
     let fan_out_ms = 0u64;
     let state_hash = hash_state(state);
+    let state_chars = state.char_len();
     let truncation_flags = TruncationFlags {
         goal: state.goal.len() >= config.arm_config.goal_cap,
         plan_step: state.plan_step.task.len() >= config.arm_config.plan_step_cap,
-        plan_context: false,
+        plan_context: labelled.edge.plan_context.consumers.len()
+            != state.plan_context.consumers.len()
+            || labelled.edge.plan_context.siblings.len() != state.plan_context.siblings.len(),
         worker_output: state.worker_output.truncated,
         context_provided: state.context_provided.len() >= config.arm_config.context_provided_cap,
         evidence: state.claim_evidence.iter().any(|c| c.truncated),
+        source: labelled.edge.worker_output.truncated
+            || labelled
+                .edge
+                .tool_calls
+                .iter()
+                .any(|c| c.result.contains(" [truncated]")),
     };
 
     let (composite, flags) = score_composite(&answers, &config.weights, &truncation_flags);
@@ -1119,6 +1128,7 @@ async fn score_one(
         weights: config.weights,
         resolved_model_id: response_model,
         state_hash,
+        state_chars,
         answers: crate::verdict::AnswerSummary::from(&answers),
         grounding_stats,
         composite,
@@ -1201,10 +1211,13 @@ mod tests {
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, Request, Respond, ResponseTemplate};
 
+    use jev_driver::prelude::{JevClient, RetryConfig};
+    use jev_driver::wire::{WireResponse, WireUsage};
+
     use super::{
-        RESULTS_JSONL, RunSelector, RunnerConfig, RunnerMode, assemble_arm_state,
-        build_judge_work_list, build_summarizer, plan_run, run_bounded, run_concurrency,
-        run_corpus, select_variants,
+        RESULTS_JSONL, RunSelector, RunnerConfig, RunnerMode, ScriptedTransport,
+        assemble_arm_state, build_judge_work_list, build_summarizer, default_response, plan_run,
+        run_bounded, run_concurrency, run_corpus, score_one, select_variants,
     };
     use crate::arms::{ArmConfig, SelectionArm};
     use crate::client::JevEndpoint;
@@ -1664,5 +1677,103 @@ mod tests {
                 "dry-run judge_calls must match the live judge work list"
             );
         }
+    }
+
+    /// Every replay artifact must carry the acceptance-required provenance:
+    /// a model id, a state hash, a state size, and token usage.
+    #[tokio::test]
+    async fn replay_artifacts_carry_provenance_fields() {
+        let corpus = Corpus {
+            calibration: vec![dummy_edge("prov-1", "result one")],
+            held_out: Vec::new(),
+        };
+        let config = RunnerConfig::default();
+        let result = run_corpus(&corpus, &config, None)
+            .await
+            .unwrap_or_else(|e| panic!("run_corpus: {e}"));
+
+        assert_eq!(result.scored.len(), SelectionArm::all().len());
+        for edge in &result.scored {
+            let artifact = &edge.artifact;
+            assert!(
+                !artifact.resolved_model_id.is_empty(),
+                "{} must record a resolved model id",
+                edge.arm.name()
+            );
+            assert!(
+                artifact.resolved_model_id.contains("replay"),
+                "replay artifacts must carry the deterministic fixture id, got {}",
+                artifact.resolved_model_id
+            );
+            assert_eq!(
+                artifact.state_hash.len(),
+                64,
+                "{} must record a sha256 state hash",
+                edge.arm.name()
+            );
+            assert!(
+                artifact.state_chars > 0,
+                "{} must record a non-zero state size",
+                edge.arm.name()
+            );
+            assert!(
+                artifact.tokens.input_tokens > 0,
+                "{} must record input token usage",
+                edge.arm.name()
+            );
+        }
+    }
+
+    /// Live-mode wiring: the resolved model id and token usage must flow from
+    /// the API response, not the configured fallback. Driven through the
+    /// scripted transport so the test never touches the network.
+    #[tokio::test]
+    async fn live_scripted_response_flows_model_and_usage_into_artifact() {
+        let config = RunnerConfig::default();
+        let edge = dummy_edge("live-1", "result one");
+        let state = assemble_arm_state(
+            &edge.edge,
+            SelectionArm::ClaimIndexed,
+            &config.arm_config,
+            None,
+        )
+        .await
+        .unwrap_or_else(|e| panic!("assemble state: {e}"));
+
+        let scripted = default_response();
+        let transport = Arc::new(ScriptedTransport::new(vec![Ok(WireResponse {
+            model: "resolved-live-model-42".to_owned(),
+            answers: scripted.answers,
+            usage: WireUsage {
+                input_tokens: 4321,
+                output_tokens: 99,
+            },
+        })]));
+        let client = Arc::new(JevClient::with_transport(
+            transport,
+            "configured-fallback-model".to_owned(),
+            RetryConfig::default(),
+        ));
+        let live_client = (client, "configured-fallback-model".to_owned());
+
+        let scored = score_one(
+            &edge,
+            SelectionArm::ClaimIndexed,
+            &state,
+            &config,
+            Some(&live_client),
+        )
+        .await
+        .unwrap_or_else(|e| panic!("score_one: {e}"));
+
+        let artifact = &scored.artifact;
+        assert_eq!(
+            artifact.resolved_model_id, "resolved-live-model-42",
+            "live artifact must carry the API-resolved model id, not the configured fallback"
+        );
+        assert_eq!(artifact.tokens.input_tokens, 4321);
+        assert_eq!(artifact.tokens.output_tokens, 99);
+        assert_eq!(artifact.state_hash.len(), 64);
+        assert!(artifact.state_chars > 0);
     }
 }

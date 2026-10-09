@@ -134,12 +134,15 @@ fn assemble_claim_indexed(edge: &CapturedEdge, config: &ArmConfig) -> EdgeState 
             });
         }
     } else {
+        // The evidence budget fell below the window floor: supported claims
+        // get no window at all. Record that as assembly truncation so the
+        // arm's loss is visible; unsupported claims have no window regardless.
         for (claim, found_in) in resolved {
             claim_evidence.push(ClaimEvidence {
                 claim: claim.text,
                 found_in,
                 window: None,
-                truncated: false,
+                truncated: !matches!(found_in, FoundIn::NotFound),
             });
         }
     }
@@ -197,12 +200,15 @@ async fn assemble_flash_summary(
             });
         }
     } else {
+        // The evidence budget fell below the window floor: supported claims
+        // get no window at all. Record that as assembly truncation so the
+        // arm's loss is visible; unsupported claims have no window regardless.
         for (claim, found_in) in resolved {
             claim_evidence.push(ClaimEvidence {
                 claim: claim.text,
                 found_in,
                 window: None,
-                truncated: false,
+                truncated: !matches!(found_in, FoundIn::NotFound),
             });
         }
     }

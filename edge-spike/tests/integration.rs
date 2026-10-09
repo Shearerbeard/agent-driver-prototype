@@ -44,6 +44,37 @@ mod tests {
                 scored.len()
             ));
         }
+        for edge in &scored {
+            let artifact = &edge.artifact;
+            if artifact.resolved_model_id.is_empty() {
+                return Err(anyhow::anyhow!(
+                    "{} {} artifact missing resolved model id",
+                    edge.variant_id,
+                    edge.arm.name()
+                ));
+            }
+            if artifact.state_hash.len() != 64 {
+                return Err(anyhow::anyhow!(
+                    "{} {} artifact missing state hash",
+                    edge.variant_id,
+                    edge.arm.name()
+                ));
+            }
+            if artifact.state_chars == 0 {
+                return Err(anyhow::anyhow!(
+                    "{} {} artifact missing state size",
+                    edge.variant_id,
+                    edge.arm.name()
+                ));
+            }
+            if artifact.tokens.input_tokens == 0 {
+                return Err(anyhow::anyhow!(
+                    "{} {} artifact missing input token usage",
+                    edge.variant_id,
+                    edge.arm.name()
+                ));
+            }
+        }
         Ok(())
     }
 
