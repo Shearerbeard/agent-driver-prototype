@@ -17,7 +17,7 @@ use serde::{Deserialize, Serialize};
 use crate::arms::{ArmConfig, SelectionArm, assemble_state};
 use crate::claim::{extract_claims, resolve_claims};
 use crate::client::{JevEndpoint, build_jev_client, resolve_model_id};
-use crate::corpus::{Corpus, FailureClass, LabelledEdge};
+use crate::corpus::{CapturedEdge, Corpus, FailureClass, LabelledEdge};
 use crate::exhaustion::{CompletedKey, ResumeState, is_exhaustion};
 use crate::judge::{JudgeClient, JudgeConfig, JudgeVerdict, judge_edges_bounded};
 use crate::rubric::{EdgeRubric, EdgeRubricAnswers};
@@ -532,8 +532,10 @@ pub async fn run_corpus(
     config: &RunnerConfig,
     output_dir: Option<&Path>,
 ) -> anyhow::Result<LiveRunResult> {
-    let summarizer: Arc<dyn FlashSummarizer> =
-        match build_summarizer(config.mode, SelectionArm::FlashSummarization) {
+    // Only Arm 3 needs a summarizer. When it is not selected, skip construction
+    // entirely so an unused SUMMARIZER_* env cannot fail the whole run.
+    let summarizer: Option<Arc<dyn FlashSummarizer>> =
+        match build_summarizer(config.mode, &config.arms) {
             Ok(s) => s,
             Err(e) => {
                 return Ok(hard_error_result(
@@ -594,7 +596,7 @@ pub async fn run_corpus(
 
     let concurrency = run_concurrency();
     let worker_config = config.clone();
-    let summarizer = Arc::clone(&summarizer);
+    let summarizer = summarizer.clone();
     let jev_client = jev_client.clone();
 
     let (results, first_error) = run_bounded(
@@ -602,12 +604,13 @@ pub async fn run_corpus(
         concurrency,
         move |idx: usize, (edge, arm): (LabelledEdge, SelectionArm)| {
             let config = worker_config.clone();
-            let summarizer = Arc::clone(&summarizer);
+            let summarizer = summarizer.clone();
             let jev_client = jev_client.clone();
             async move {
-                let state = assemble_state(&edge.edge, arm, &config.arm_config, &*summarizer)
-                    .await
-                    .map_err(|e| wrap_state_exhaustion(e, arm))?;
+                let state =
+                    assemble_arm_state(&edge.edge, arm, &config.arm_config, summarizer.as_deref())
+                        .await
+                        .map_err(|e| wrap_state_exhaustion(e, arm))?;
                 let scored_edge = score_one(&edge, arm, &state, &config, jev_client.as_ref())
                     .await
                     .map_err(|e| {
@@ -732,16 +735,50 @@ fn hard_error_result(
     }
 }
 
+/// Construct the summarizer only when Arm 3 is selected.
+///
+/// Returns `None` when `arms` omits [`SelectionArm::FlashSummarization`], so a
+/// live run without Arm 3 never reads the `SUMMARIZER_*` environment. When
+/// Arm 3 is selected, live mode requires that environment and fails loud if it
+/// is missing.
 fn build_summarizer(
     mode: RunnerMode,
-    arm: SelectionArm,
-) -> anyhow::Result<Arc<dyn FlashSummarizer>> {
-    if mode == RunnerMode::Live && matches!(arm, SelectionArm::FlashSummarization) {
-        let config = SummarizerConfig::from_env()?;
-        Ok(Arc::new(LiveSummarizer::new(config)?))
-    } else {
-        Ok(Arc::new(FixtureSummarizer))
+    arms: &[SelectionArm],
+) -> anyhow::Result<Option<Arc<dyn FlashSummarizer>>> {
+    if !arms.contains(&SelectionArm::FlashSummarization) {
+        return Ok(None);
     }
+    if mode == RunnerMode::Live {
+        let config = SummarizerConfig::from_env()?;
+        Ok(Some(Arc::new(LiveSummarizer::new(config)?)))
+    } else {
+        Ok(Some(Arc::new(FixtureSummarizer)))
+    }
+}
+
+/// Assemble the arm state, requiring a summarizer only for Arm 3.
+///
+/// A missing summarizer at Arm 3 is a routing bug (Arm 3 was assembled without
+/// being selected); fail loud there rather than silently substituting a fixture.
+async fn assemble_arm_state(
+    edge: &CapturedEdge,
+    arm: SelectionArm,
+    config: &ArmConfig,
+    summarizer: Option<&dyn FlashSummarizer>,
+) -> anyhow::Result<EdgeState> {
+    if matches!(arm, SelectionArm::FlashSummarization) {
+        let summarizer = summarizer.ok_or_else(unavailable_summarizer_error)?;
+        assemble_state(edge, arm, config, summarizer).await
+    } else {
+        // Arms 1 and 2 ignore the summarizer argument entirely.
+        assemble_state(edge, arm, config, &FixtureSummarizer).await
+    }
+}
+
+fn unavailable_summarizer_error() -> anyhow::Error {
+    SummarizerConfig::from_env().err().unwrap_or_else(|| {
+        anyhow::anyhow!("Arm 3 (flash summarization) assembled without a summarizer")
+    })
 }
 
 /// Build the judge work list from the selected variants intersected with the
@@ -1165,14 +1202,18 @@ mod tests {
     use wiremock::{Mock, MockServer, Request, Respond, ResponseTemplate};
 
     use super::{
-        RESULTS_JSONL, RunSelector, RunnerConfig, RunnerMode, build_judge_work_list, plan_run,
-        run_bounded, run_concurrency, run_corpus, select_variants,
+        RESULTS_JSONL, RunSelector, RunnerConfig, RunnerMode, assemble_arm_state,
+        build_judge_work_list, build_summarizer, plan_run, run_bounded, run_concurrency,
+        run_corpus, select_variants,
     };
-    use crate::arms::SelectionArm;
+    use crate::arms::{ArmConfig, SelectionArm};
     use crate::client::JevEndpoint;
     use crate::corpus::{CapturedEdge, Corpus, FailureClass, LabelledEdge, default_corpus};
     use crate::exhaustion::{CompletedKey, is_exhaustion};
     use crate::state::{PlanContext, PlanStep, WorkerOutput};
+
+    /// Serializes tests that mutate process environment variables.
+    static ENV_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
     #[tokio::test]
     async fn run_bounded_preserves_input_order_despite_completion_order() {
@@ -1252,7 +1293,6 @@ mod tests {
 
     #[tokio::test]
     async fn run_concurrency_env_override() {
-        static ENV_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
         let _guard = ENV_LOCK.lock().await;
 
         unsafe {
@@ -1270,6 +1310,75 @@ mod tests {
         assert_eq!(run_concurrency(), 1);
         unsafe {
             std::env::remove_var("RUN_CONCURRENCY");
+        }
+    }
+
+    #[test]
+    fn summarizer_is_not_built_when_arm3_absent() {
+        let summarizer = match build_summarizer(
+            RunnerMode::Live,
+            &[SelectionArm::HeadTruncation, SelectionArm::ClaimIndexed],
+        ) {
+            Ok(s) => s,
+            Err(e) => panic!("arms 1 and 2 must not require summarizer env: {e}"),
+        };
+        assert!(
+            summarizer.is_none(),
+            "a run without Arm 3 must not construct a summarizer"
+        );
+    }
+
+    #[tokio::test]
+    async fn arm3_without_summarizer_env_fails_loud() {
+        let _guard = ENV_LOCK.lock().await;
+
+        let saved: Vec<(&str, Option<String>)> = [
+            "SUMMARIZER_BASE_URL",
+            "SUMMARIZER_API_KEY",
+            "SUMMARIZER_MODEL",
+        ]
+        .into_iter()
+        .map(|key| {
+            let saved = std::env::var(key).ok();
+            unsafe {
+                std::env::remove_var(key);
+            }
+            (key, saved)
+        })
+        .collect();
+
+        let construction = match build_summarizer(RunnerMode::Live, SelectionArm::all()) {
+            Err(e) => e,
+            Ok(_) => panic!("live Arm 3 without summarizer env must fail at construction"),
+        };
+        assert_eq!(
+            construction.to_string(),
+            "SUMMARIZER_BASE_URL is required for live Arm 3 (flash summarization)"
+        );
+
+        let edge = dummy_edge("v0", "result zero").edge;
+        let assembly = match assemble_arm_state(
+            &edge,
+            SelectionArm::FlashSummarization,
+            &ArmConfig::default(),
+            None,
+        )
+        .await
+        {
+            Err(e) => e,
+            Ok(_) => panic!("Arm 3 assembled without a summarizer must fail loud"),
+        };
+        assert_eq!(assembly.to_string(), construction.to_string());
+
+        for (key, value) in saved {
+            match value {
+                Some(value) => unsafe {
+                    std::env::set_var(key, value);
+                },
+                None => unsafe {
+                    std::env::remove_var(key);
+                },
+            }
         }
     }
 
@@ -1366,7 +1475,6 @@ mod tests {
 
     #[tokio::test]
     async fn hard_error_in_scoring_preserves_completed_pairs() {
-        static ENV_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
         let _guard = ENV_LOCK.lock().await;
 
         let jev_server = MockServer::start().await;
