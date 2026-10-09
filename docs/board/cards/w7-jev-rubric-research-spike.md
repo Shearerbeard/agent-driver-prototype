@@ -177,6 +177,23 @@ prompt mid-dispatch is a failed pre-vet, not a surprise to debug.
 
 ## Log
 
+- 2026-10-08 LIVE PHASE, iteration 1, incident record (per the
+  user's notify-on-failure standing rule): the first cloud launch
+  halted ~2 min in - nine (arm, variant) pairs scored (cloud Jev
+  clean at concurrency 4), then every flash-arm call failed.
+  Diagnosis over three probes: (1) zai endpoint exonerated - a
+  6-burst and a 281KB-body curl both returned 200; (2) with the
+  summarizer timeout raised 30s -> 300s and serial execution, the
+  failure changed from "error sending request" to HTTP 200 with
+  EMPTY content: glm-5.3-flash burns its whole 2048-token
+  completion budget on reasoning for evidence-sized prompts, so
+  the original transport errors were slow responses hitting the
+  30s client timeout. Fix: SUMMARIZER_MAX_TOKENS=8192 (env, no
+  code change). NOTED for the report: the summarizer arm runs
+  glm-5.3-flash (zai) this iteration, not the card's
+  deepseek-v4.1-flash - no raw deepseek endpoint is available to
+  this session; divergence to rule at U(rubric). Relaunch resumed
+  from the resume state, concurrency 4. Board owner.
 - 2026-10-08 SCOPE RELOCATION (user ruling, supersedes the v3.2
   plan's placement): the edge verifier is an agent-driver-prototype
   feature, not jev-driver machinery - with jev-driver published to
