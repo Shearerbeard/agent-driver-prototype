@@ -42,16 +42,56 @@ dispositioned and fixed before any live spend.
 ## 3. What was measured (C5, held-out, 572 variants, 47 clean bases x 2 arms)
 
 Dataset: 147 edges x 11 classes = 1,617 variants, split 1,045
-calibration / 572 held-out at corpus repair (before any live run);
-all metrics below are held-out only. Formulas stated so every number
-is recomputable from `results.jsonl`.
+calibration / 572 held-out at corpus repair, before any live run.
+The held-out 572 = 52 scenario-bases x 10 mutated classes (520) + 47
+clean + 5 baseline_blocked; clean twins exist on 47 of the 52 bases,
+so same-scenario comparisons have 47 pairs per class. Each block
+below names its population: **[held-out]** evaluation,
+**[full corpus]** coherence counts, or **[whole card]** spend.
 
-### 3a. Threshold-free separation (AUROC of the composite)
+### 3a. First: what the two columns everywhere below mean
 
-AUROC = P(composite(clean) > composite(failure)) + 0.5 x P(equal),
-over all clean/failure pairs sharing a base edge (47 bases/class).
+Both columns are the **same sealed Jev scorer** - same rubric, same
+weights, same thresholds, judging the same worker outputs. The only
+difference is how the evidence packet handed to Jev was assembled:
 
-| failure class | claim_indexed | head_truncation |
+- **`claim_indexed` ("rich")**: the coordinator's smart assembly. The
+  worker's result is scanned for checkable claims (ids, timestamps,
+  values), the tool capture is searched for those values, and the
+  matching regions are packaged as the evidence, each region labeled
+  with what was cut. Bigger packet, more machinery.
+- **`head_truncation` ("cheap")**: the dumb-but-honest assembly. Take
+  the first N characters of the tool capture and mark the cut with a
+  visible `[truncated]` label. Small packet, no analysis.
+
+This is NOT "human-ish judge vs Jev" - the separate blinded-judge leg
+(K3) never ran. The two columns answer one question: *is the smart
+packaging worth its extra size and cost, or does the cheap honest cut
+judge just as well?*
+
+### 3b. Threshold-free separation, two ways **[held-out]**
+
+Two different questions, two metrics:
+
+1. **Same-scenario win rate**: pair each clean edge with its own
+   scenario's corrupted twin (47 pairs per class) and ask whether the
+   clean twin scores higher. This is the deployment-shaped question -
+   "does this edge look worse than the honest run of the same
+   scenario?"
+2. **Pooled AUROC**: over all 47x47 clean x corrupted pairs of a
+   class (cross-scenario included), P(clean scores higher) +
+   0.5 x P(tie). 1.0 perfect, 0.5 coin flip. This is the harder
+   cross-scenario question - "does an unknown corrupted edge rank
+   below an unknown honest one?" - and is where score-scale
+   differences between scenarios can bite.
+
+Same-scenario win rate: rich 46-47/47 (97.9-100%), cheap **47/47
+(100%) on every class**. Within a scenario, both assemblies order
+honest above corrupted essentially perfectly.
+
+Pooled AUROC:
+
+| failure class | rich | cheap |
 | --- | --- | --- |
 | distractor_aligned | 1.000 | 1.000 |
 | lossy_handoff | 1.000 | 1.000 |
@@ -63,59 +103,85 @@ over all clean/failure pairs sharing a base edge (47 bases/class).
 | contradictory_sources | 0.976 | 0.890 |
 | adversarial_injection | 0.933 | 0.814 |
 
-### 3b. Operating-point metrics (the verdict rule as shipped)
+Cross-scenario, the rich arm keeps >= 0.93 everywhere; the cheap arm
+drops to 0.81-0.93 on four classes (injection, missing_evidence,
+contradictory_sources, drifted).
 
-PASS iff composite >= 0.50 AND evidence_presence >= 0.30 AND no
-flags. Sensitivity = non-PASS rate per failure class; specificity =
-PASS rate on clean. Two-tier split of clean non-PASS: reject-grade
-(INSUFFICIENT_EVIDENCE or FLAG naming any dimension besides
-truncation) vs audit-grade (FLAG naming only truncation - honest
-budget loss, per the doctrine routed to audit, not rejection).
+### 3c. At the actual verdict threshold **[held-out]**
 
-| failure class | sens (rich) | sens (cheap) |
+The verdict rule as shipped, in decision order:
+
+1. If evidence_presence < 0.30 -> **INSUFFICIENT_EVIDENCE** (too
+   little evidence shown to judge at all).
+2. Else if ANY of: composite < 0.50, or a dimension below its cutoff
+   (grounding < 0.3, handoff < 0.3, scope < 0.3), or an information-
+   loss truncation flag (supported claims outside shown text, or
+   worker output cut) -> **FLAG**, naming the failed dimensions.
+   Labeled budget cuts alone (excerpts that still cover their claims,
+   upstream capture provenance) do NOT flag.
+3. Else -> **PASS**.
+
+- **Sensitivity** (per failure class): % of corrupted variants that
+  do NOT pass. 100% = every planted failure was caught.
+- **Specificity**: % of honest variants that pass. Misses here are
+  false accusations of honest workers - the costliest error - so 3d
+  splits them by why the honest edge failed.
+
+| failure class | sensitivity, rich | sensitivity, cheap |
 | --- | --- | --- |
 | distractor_aligned | 100.0% | 100.0% |
 | lossy_handoff | 100.0% | 100.0% |
 | scope_violation | 100.0% | 100.0% |
 | truncation | 100.0% | 100.0% |
 | fabricated_specifics | 75.0% | 63.5% |
-| drifted | 71.2% | 65.4% |
 | missing_evidence | 75.0% | 59.6% |
+| drifted | 71.2% | 65.4% |
 | contradictory_sources | 69.2% | 63.5% |
 | adversarial_injection | 57.7% | 53.8% |
 
-| clean-edge outcome (n=47/arm) | rich (claim_indexed) | cheap (head_truncation) |
+### 3d. When an honest edge fails, why does it fail? **[held-out, clean, n=47/arm]**
+
+The truncation doctrine says a labeled budget cut is not an
+accusation. So honest-edge failures split into two tiers:
+
+- **Reject-grade** (treated as suspected drift): INSUFFICIENT_EVIDENCE,
+  or a FLAG naming anything other than truncation.
+- **Audit-grade** (treated as "packet was honestly budget-limited,
+  worth a look, nothing wrong"): a FLAG naming *only* truncation.
+
+| honest-edge outcome | rich | cheap |
 | --- | --- | --- |
-| specificity (PASS) | 59.6% | 66.0% |
-| reject-grade FPR | **8.5%** (3 INSUF + 1 drift-dim) | 25.5% (9 INSUF + 3 drift-dim) |
-| audit-grade FPR | 31.9% (truncation-only) | 8.5% |
+| passed clean | 59.6% | 66.0% |
+| false accusation, reject-grade | **8.5%** | 25.5% |
+| audit-grade only | 31.9% | 8.5% |
 
-Honest reading: at the shipped threshold the rich arm is the better
-*reject* gate (8.5% reject-grade FPR at 71-100% sensitivity, weakest
-class adversarial_injection at 57.7%); the cheap arm's presence
-starvation pushes a quarter of honest edges to INSUFFICIENT_EVIDENCE.
-The cheap arm's advantage (half the tokens) buys threshold-free
-separation, not a better operating point - matching the two-tier
-design claim: cheap screening signal, rich-arm verdicts where
-rejection matters.
+Reading: the rich arm falsely accuses honest workers 8.5% of the
+time (4 of 47), and 79% of its clean misses (15 of 19) are mere
+budget reports. The cheap arm falsely accuses more (25.5% - 12 of 47;
+its blunt cut starves presence on honest edges) while costing 31%
+fewer tokens.
 
-### 3c. Pre-registered no-go arithmetic
+### 3e. Pre-registered no-go arithmetic **[held-out, clean vs fabricated]**
 
-Grounding-dim pairwise win rate on clean-vs-fabricated: 3/47 (rich),
-2/47 (cheap); presence-dim: 41/47, 42/47; composite with grounding
-dropped: 47/47 and 46/47 - identical to the full composite. The rule
-required grounding to beat presence-only by >10 points; it trails by
-~74. Rule fired; grounding demoted to telemetry.
+The plan required the grounding dimension to beat a presence-only
+signal by >10 points on clean-vs-fabricated pairs, or grounding does
+not earn its place. "Separates a pair" = the clean edge scores
+strictly higher than its corrupted twin on that dimension alone.
+Measured: grounding separates 3/47 (6.4%) rich and 2/47 (4.3%)
+cheap; presence separates 41/47 (87.2%) and 42/47 (89.4%) - gaps of
+80.9 and 85.1 points. Dropping grounding from the composite changes
+same-scenario separation by nothing. Rule fired; grounding demoted
+to audit telemetry.
 
-### 3d. Cost per judgment
+### 3f. Cost per judgment **[whole card]**
 
-Rich arm: mean 6,154 input tokens/edge, p50 165 ms, p95 415 ms.
-Cheap arm: mean 4,289 input tokens/edge, p50 155 ms, p95 464 ms.
-Whole card live spend: 3,234 scorer calls = 16.9M input tokens, plus
-the 193-call judge incident (~2-3M tokens), under ~$2 total at the
-run's pricing. Verdict dims are class-coherent: `scope_violation`
-flags scope_discipline 125/147; the `truncation` class flags
-handoff+truncation ~144/147.
+Rich: mean 6,154 input tokens/edge, p50 165 ms, p95 415 ms. Cheap:
+mean 4,289, p50 155 ms, p95 464 ms (6.9M vs 10.0M input tokens over
+1,617 edges each - 31% fewer). Whole card live spend: 3,234 scorer
+calls = 16.9M input tokens plus the 193-call judge incident (~2-3M
+tokens), under ~$2 total. **[full corpus]** verdict dims are
+class-coherent: `scope_violation` flags scope_discipline 125/147;
+the `truncation` class flags handoff+truncation ~144/147.
 
 ## 4. Findings
 
@@ -134,12 +200,15 @@ handoff+truncation ~144/147.
 3. **Presence is the workhorse.** Evidence-presence starvation
    separates distractor/lossy/fabricated classes nearly perfectly;
    INSUFFICIENT_EVIDENCE is signal, not noise.
-4. **The cheap arm suffices for gating; the rich arm buys
-   auditability.** Labeled head truncation matches claim-indexed
-   separation at half the tokens (6.9M vs 10.0M) and a third of the
-   clean-edge FLAG rate (19/133 vs 60/133, the rich arm's honest
-   evidence-budget loss). Design implication: a two-tier verifier -
-   cheap labeled gate, rich claim-indexed audit when a gate fires.
+4. **Two-tier operation, stated once.** Within a scenario both arms
+   order honest above corrupted essentially perfectly (same-scenario
+   win rate 97.9-100%), and the cheap arm gets there at 31% fewer
+   tokens - so cheap assembly is the screen. But at the actual reject
+   threshold the arms differ where it hurts: the rich arm falsely
+   accuses 8.5% of honest edges vs the cheap arm's 25.5%, and the
+   rich arm's flags name which claims failed. Operation: cheap
+   assembly screens (its cross-scenario AUROC 0.81-1.00 ranks risk),
+   rich-arm verdicts decide rejections.
 5. **Never grade a worker against its own echo.** Claims were
    grounding in the worker's own `submit_result` arguments - latent
    from day one, surfaced only when region attribution made it
@@ -157,10 +226,17 @@ handoff+truncation ~144/147.
 
 The experiment validated the concept: sealed-rubric edge gating is
 viable, cheap, and class-coherent, and the corpus/evidence machinery
-it needs is now specified (the contract). One component claim
+it needs is now specified (the contract). Same-scenario separation
+was 97.9-100% on both arms; pooled cross-scenario AUROC was 0.93-1.00
+(rich) and 0.81-1.00 (cheap). One component claim
 (grounding-as-ordinal) was disproven by its own pre-registered rule
-and demoted to telemetry at U(rubric). Nothing in the evidence argues
-against adoption; the contract (W14) carries adoption.
+and demoted to telemetry at U(rubric). The known limits any adopter
+inherits: adversarial_injection sensitivity is 57.7% at the shipped
+threshold (a threshold choice, not a separation failure), honest
+edges draw false accusations at 8.5% (rich) / 25.5% (cheap) reject
+grade, and no independent blinded judge (K3 leg) has yet audited the
+gate's agreement. Adoption is supported with those limits stated;
+the contract (W14) carries it.
 
 ## 6. Open items, deliberately
 
@@ -193,3 +269,36 @@ against adoption; the contract (W14) carries adoption.
   is_evidence_call, arms.rs region assembly/allocation, verdict.rs
   split flags, runner.rs rescore, examples/dump-state.rs +
   dump-request.rs + rescore.rs).
+
+## 8. Adversarial review ledger
+
+Reviewer: gpt-6.1-sol (in-harness rust-reviewer pin, bedrock route;
+codex CLI attempted first per user request but its ChatGPT-account
+auth does not carry gpt-6.1-sol). Author: GLM-5.3 (opencode board
+owner). Round 1 verdict: FAIL. Findings and dispositions:
+
+1. Verdict rule incomplete (no decision order, dimension cutoffs, or
+   composite-only outcome). FIXED: 3c now states the three-step
+   decision order with all cutoffs and the loss-flag condition.
+2. Metric denominators unexplained (572 vs 47 bases; AUROC pairing
+   and ties). FIXED: section 3 intro accounts 572 = 52x10 + 47 + 5,
+   explains the 47 clean twins, and both separation metrics define
+   their pairing and tie handling.
+3. 3d and section 4 gave inconsistent operational recommendations.
+   FIXED: finding 4 restated as the single two-tier recommendation
+   (cheap screens, rich rejects), consistent with 3d's reading.
+4. Grounding gap arithmetic wrong (~74 vs measured). FIXED: 3e now
+   states 80.9 / 85.1 points with the pair-separation definition.
+5. Population mixing (held-out promise vs full-corpus and whole-card
+   numbers). FIXED: every block labeled [held-out] / [full corpus] /
+   [whole card].
+6. "A third of clean misses are audit-grade" miscomputed the share.
+   FIXED: 3d now says 79% of the rich arm's 19 clean misses.
+7. "98-100% both arms" conflated two separation metrics. FIXED: 3b
+   splits same-scenario win rate (97.9-100%, cheap 100%) from pooled
+   AUROC (0.81-1.00); section 5 quotes both with names.
+8. "Half the tokens" overstated (actual 6.9M vs 10.0M). FIXED: 31%
+   fewer, stated in 3d, 3f, and finding 4.
+9. "Nothing argues against adoption" overreached. FIXED: section 5
+   now names the inherited limits (injection sensitivity 57.7%,
+   false-accusal rates, no independent-judge leg yet).
