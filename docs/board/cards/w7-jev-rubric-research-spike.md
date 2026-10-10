@@ -177,6 +177,16 @@ prompt mid-dispatch is a failed pre-vet, not a surprise to debug.
 
 ## Log
 
+- 2026-10-10 CONCLUSION REPORT written at user request:
+  `docs/board/notes/2026-10-10-w7-conclusions.md` - what was asked,
+  the corpus repair, C5 tables, seven findings (gate validated at
+  98-100% held-out; grounding-ordinal no-go'd by its own rule and
+  demoted to telemetry; presence is the workhorse; cheap-arm gating +
+  rich-arm audit two-tier design; self-echo exclusion; MISSING_INPUT
+  way-out; three-way truncation split), ~$2 total spend, and the
+  deliberately-open items (W14 adoption, Arm 3, Leg 2, extraction
+  precision). Close-vs-extend decision rests with the user after
+  reading it; ruling 2 (Arm 3 / Leg 2) still open. Board owner.
 - 2026-10-10 U(rubric) RULINGS (user): (1) composite gate ACCEPTED,
   grounding dimension DEMOTED per its pre-registered no-go rule -
   per-claim grounding stats remain as audit telemetry, the gate's
