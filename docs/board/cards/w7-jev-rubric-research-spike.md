@@ -177,6 +177,46 @@ prompt mid-dispatch is a failed pre-vet, not a surprise to debug.
 
 ## Log
 
+- 2026-10-09 EVIDENCE SCHEMA v2 landed (commit `a028fee`; executors
+  rust-write + 2x rust-fill on the deepseek pin; board owner verified
+  and owns git) - PAUSED HERE FOR SESSION COMPACTION; next session
+  resumes at the region-schema probe. What landed: per-claim windows
+  replaced by typed regions (tool attribution, args excerpt + bounded
+  result excerpt, span, full_region_chars = size-known-ahead,
+  source/assembly truncation split, claims reference regions by id);
+  submit_result self-echo excluded from the evidence corpus (claims
+  were grounding in the worker's own submission - latent since C0,
+  surfaced by region attribution); multi-call regions attributed
+  honestly; ValueWithUnit claims retry bare-number matching
+  (51.1% matches "pct": 51.1, exact decimal, no tolerance;
+  normalized_matches in grounding_stats). db-pool iter0-0 clean:
+  119 claims -> 2-3 regions, 13/119 -> 41/119 found; residual
+  not_found (78) is ids/timestamps/hostnames - worker-derived or
+  prose values genuinely absent from captures; the probe prices
+  whether that residual false-flags clean edges on grounding
+  (extraction-precision fix is the candidate next card if it does).
+  Review-packet material staged at `.review/jev-goldens/jev-review/`
+  (CRITERIA + 5 verbatim REQUEST batches + RAW-SOURCEs, browser HTML)
+  and doctrine logged in `.review/jev-goldens/JOURNAL.md` (driver
+  doctrine: unlabeled truncation is the root of evil; size known
+  ahead of scoring). APPROVED AND PENDING (user "go" 2026-10-09):
+  (1) region-schema probe - `cargo run -p edge-spike --bin edge-run
+  -- --live --slice 10 --arms 1,2 .review/w7-artifacts/c4b-region-probe`
+  (mkdir the dir first - known wart: bin/run.rs creates it after
+  run_corpus), 20 calls, judge 0 by selector; read truncation-flag
+  collapse, grounding on clean edges, composite stability vs c4;
+  (2) if probe holds, C5 full run arms 1,2 - `--live --arms 1,2
+  .review/w7-artifacts/c5-full-cloud` (~3,234 calls, ~38M input
+  tokens, ~$1.60-2.00; resume-safe via results.jsonl), then the
+  held-out report: per-class composites, pairwise clean-vs-failure
+  per arm (the hard gate), presence-only ablation (the >10-point
+  no-go rule, computable from the same artifacts), state-size/
+  truncation/latency columns; (3) Arm 3 still BLOCKED on missing
+  SUMMARIZER_* env (user-owned); Leg 2 judge deferred with its
+  dollar figure surfaced at U(rubric); judge.rs arm-3 fixture
+  summarizer issue logged 2026-10-09 must be fixed before Leg 2.
+  W7 commit chain this session: eef32e5 0743ff0 5829239 72c440a
+  20d0aa5 af43769 014e5c2 21cd145 0b6e567 a028fee. Board owner.
 - 2026-10-09 C3 + C4 live legs ran (cloud, jev-1.13.0; user-approved
   live). Commits `5829239` (baseline_blocked + selectors), `72c440a`
   (dry-run + judge leg respect selectors - a live smoke would otherwise
