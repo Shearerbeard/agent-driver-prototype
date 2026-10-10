@@ -41,22 +41,81 @@ dispositioned and fixed before any live spend.
 
 ## 3. What was measured (C5, held-out, 572 variants, 47 clean bases x 2 arms)
 
-| separation (clean > failure, same base) | claim_indexed | head_truncation |
+Dataset: 147 edges x 11 classes = 1,617 variants, split 1,045
+calibration / 572 held-out at corpus repair (before any live run);
+all metrics below are held-out only. Formulas stated so every number
+is recomputable from `results.jsonl`.
+
+### 3a. Threshold-free separation (AUROC of the composite)
+
+AUROC = P(composite(clean) > composite(failure)) + 0.5 x P(equal),
+over all clean/failure pairs sharing a base edge (47 bases/class).
+
+| failure class | claim_indexed | head_truncation |
 | --- | --- | --- |
-| composite, all 9 failure classes | 46-47/47 (98-100%) | 46-47/47 (98-100%) |
-| composite minus grounding | 47/47 (no change) | 47/47 (no change) |
-| grounding dimension alone, clean vs fabricated | 3/47 | 2/47 |
-| presence dimension alone, clean vs fabricated | 41/47 | 42/47 |
+| distractor_aligned | 1.000 | 1.000 |
+| lossy_handoff | 1.000 | 1.000 |
+| truncation | 0.999 | 0.976 |
+| drifted | 0.995 | 0.908 |
+| fabricated_specifics | 0.994 | 0.925 |
+| scope_violation | 0.991 | 0.923 |
+| missing_evidence | 0.979 | 0.866 |
+| contradictory_sources | 0.976 | 0.890 |
+| adversarial_injection | 0.933 | 0.814 |
 
-Verdict dims are class-coherent: `scope_violation` flags
-scope_discipline 125/147; the `truncation` class flags
-handoff+truncation ~144/147; `distractor`/`lossy_handoff` collapse
-presence (INSUFFICIENT_EVIDENCE-dominant on the rich arm,
-handoff-FLAG-dominant on the cheap arm).
+### 3b. Operating-point metrics (the verdict rule as shipped)
 
-Operating cost: p50 155-165 ms, p95 ~460 ms per judgment; 16.9M
-input tokens for 3,234 scorer calls (~5.2k tokens/edge); ~$2 total
-live spend for the entire card including the judge incident.
+PASS iff composite >= 0.50 AND evidence_presence >= 0.30 AND no
+flags. Sensitivity = non-PASS rate per failure class; specificity =
+PASS rate on clean. Two-tier split of clean non-PASS: reject-grade
+(INSUFFICIENT_EVIDENCE or FLAG naming any dimension besides
+truncation) vs audit-grade (FLAG naming only truncation - honest
+budget loss, per the doctrine routed to audit, not rejection).
+
+| failure class | sens (rich) | sens (cheap) |
+| --- | --- | --- |
+| distractor_aligned | 100.0% | 100.0% |
+| lossy_handoff | 100.0% | 100.0% |
+| scope_violation | 100.0% | 100.0% |
+| truncation | 100.0% | 100.0% |
+| fabricated_specifics | 75.0% | 63.5% |
+| drifted | 71.2% | 65.4% |
+| missing_evidence | 75.0% | 59.6% |
+| contradictory_sources | 69.2% | 63.5% |
+| adversarial_injection | 57.7% | 53.8% |
+
+| clean-edge outcome (n=47/arm) | rich (claim_indexed) | cheap (head_truncation) |
+| --- | --- | --- |
+| specificity (PASS) | 59.6% | 66.0% |
+| reject-grade FPR | **8.5%** (3 INSUF + 1 drift-dim) | 25.5% (9 INSUF + 3 drift-dim) |
+| audit-grade FPR | 31.9% (truncation-only) | 8.5% |
+
+Honest reading: at the shipped threshold the rich arm is the better
+*reject* gate (8.5% reject-grade FPR at 71-100% sensitivity, weakest
+class adversarial_injection at 57.7%); the cheap arm's presence
+starvation pushes a quarter of honest edges to INSUFFICIENT_EVIDENCE.
+The cheap arm's advantage (half the tokens) buys threshold-free
+separation, not a better operating point - matching the two-tier
+design claim: cheap screening signal, rich-arm verdicts where
+rejection matters.
+
+### 3c. Pre-registered no-go arithmetic
+
+Grounding-dim pairwise win rate on clean-vs-fabricated: 3/47 (rich),
+2/47 (cheap); presence-dim: 41/47, 42/47; composite with grounding
+dropped: 47/47 and 46/47 - identical to the full composite. The rule
+required grounding to beat presence-only by >10 points; it trails by
+~74. Rule fired; grounding demoted to telemetry.
+
+### 3d. Cost per judgment
+
+Rich arm: mean 6,154 input tokens/edge, p50 165 ms, p95 415 ms.
+Cheap arm: mean 4,289 input tokens/edge, p50 155 ms, p95 464 ms.
+Whole card live spend: 3,234 scorer calls = 16.9M input tokens, plus
+the 193-call judge incident (~2-3M tokens), under ~$2 total at the
+run's pricing. Verdict dims are class-coherent: `scope_violation`
+flags scope_discipline 125/147; the `truncation` class flags
+handoff+truncation ~144/147.
 
 ## 4. Findings
 
