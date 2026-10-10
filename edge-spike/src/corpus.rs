@@ -37,12 +37,44 @@ pub struct CapturedEdge {
     pub confidence: Option<String>,
 }
 
+/// Character-span of one tool call inside the flattened capture.
+#[derive(Debug, Clone)]
+pub struct ToolCallSpan {
+    pub tool_call_id: String,
+    pub tool_name: String,
+    pub arguments: serde_json::Value,
+    pub result: String,
+    pub start_char: usize,
+    pub end_char: usize,
+}
+
+/// True when a captured tool call is worker evidence: real tool I/O the
+/// worker observed. The worker's own `submit_result` submission is excluded so
+/// claims cannot be grounded in the worker echoing itself.
+#[must_use]
+pub fn is_evidence_call(tool_name: &str) -> bool {
+    tool_name != "submit_result"
+}
+
 impl CapturedEdge {
     /// Full tool capture as a single string for deterministic pre-check.
     #[must_use]
     pub fn full_capture(&self) -> String {
+        self.full_capture_with_index().0
+    }
+
+    /// Full tool capture plus the character span of each tool call inside it.
+    /// `submit_result` submissions are omitted; see [`is_evidence_call`].
+    #[must_use]
+    pub fn full_capture_with_index(&self) -> (String, Vec<ToolCallSpan>) {
         let mut out = String::new();
-        for call in &self.tool_calls {
+        let mut spans = Vec::new();
+        for call in self
+            .tool_calls
+            .iter()
+            .filter(|call| is_evidence_call(&call.tool_name))
+        {
+            let start_char = out.chars().count();
             writeln!(out, "tool: {}", call.tool_name).unwrap_or(());
             if let Ok(args) = serde_json::to_string_pretty(&call.arguments) {
                 out.push_str(&args);
@@ -51,8 +83,17 @@ impl CapturedEdge {
             out.push_str("result:\n");
             out.push_str(&call.result);
             out.push_str("\n---\n");
+            let end_char = out.chars().count();
+            spans.push(ToolCallSpan {
+                tool_call_id: call.tool_call_id.clone(),
+                tool_name: call.tool_name.clone(),
+                arguments: call.arguments.clone(),
+                result: call.result.clone(),
+                start_char,
+                end_char,
+            });
         }
-        out
+        (out, spans)
     }
 
     /// Detect the honest baseline-blocker structural signal from the C1 audit:

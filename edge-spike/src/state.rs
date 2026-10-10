@@ -35,18 +35,40 @@ pub struct WorkerOutput {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum FoundIn {
+    /// Claim text was found inside a tool-capture region. The concrete
+    /// region is referenced by [`ClaimRef::region_id`].
     ToolCapture,
     ContextProvided,
     NotFound,
 }
 
-/// One extracted claim plus its bounded evidence window.
+/// V2 evidence schema: shared regions referenced by claims.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ClaimEvidence {
+pub struct ClaimEvidenceV2 {
+    pub regions: Vec<EvidenceRegion>,
+    pub claims: Vec<ClaimRef>,
+}
+
+/// One bounded region of the flattened tool capture.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EvidenceRegion {
+    pub region_id: usize,
+    pub tool_call_id: String,
+    pub tool_name: String,
+    pub args_excerpt: String,
+    pub excerpt: Option<String>,
+    pub span: (usize, usize),
+    pub full_region_chars: usize,
+    pub source_truncated: bool,
+    pub truncated: bool,
+}
+
+/// A claim and its resolved region reference.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ClaimRef {
     pub claim: String,
     pub found_in: FoundIn,
-    pub window: Option<String>,
-    pub truncated: bool,
+    pub region_id: Option<usize>,
 }
 
 /// The full state payload sent to Jev for one edge.
@@ -58,7 +80,7 @@ pub struct EdgeState {
     pub plan_context: PlanContext,
     pub worker_output: WorkerOutput,
     pub context_provided: String,
-    pub claim_evidence: Vec<ClaimEvidence>,
+    pub claim_evidence: ClaimEvidenceV2,
 }
 
 impl EdgeState {
@@ -66,7 +88,7 @@ impl EdgeState {
     #[must_use]
     pub fn char_len(&self) -> usize {
         serde_json::to_string(self)
-            .map(|s| s.len())
+            .map(|s| s.chars().count())
             .unwrap_or(usize::MAX)
     }
 }

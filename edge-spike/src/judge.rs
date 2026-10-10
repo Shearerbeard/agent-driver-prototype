@@ -105,12 +105,29 @@ impl JudgeClient {
     ) -> anyhow::Result<String> {
         let summarizer = FixtureSummarizer;
         let state = assemble_state(&labelled.edge, arm, arm_config, &summarizer).await?;
-        let evidence = state
-            .claim_evidence
-            .iter()
-            .map(|c| format!("- {} (found in {:?})", c.claim, c.found_in))
-            .collect::<Vec<_>>()
-            .join("\n");
+        let mut evidence_lines = Vec::new();
+        for region in &state.claim_evidence.regions {
+            let marker = if region.excerpt.is_some() {
+                ""
+            } else {
+                " [degraded]"
+            };
+            evidence_lines.push(format!(
+                "- region {}: {} ({} claims){marker}",
+                region.region_id,
+                region.tool_name,
+                state
+                    .claim_evidence
+                    .claims
+                    .iter()
+                    .filter(|c| c.region_id == Some(region.region_id))
+                    .count()
+            ));
+        }
+        for claim in &state.claim_evidence.claims {
+            evidence_lines.push(format!("- {} (found in {:?})", claim.claim, claim.found_in));
+        }
+        let evidence = evidence_lines.join("\n");
         let context = state.context_provided;
         Ok(format!(
             "You are a blind judge evaluating a worker output against its assigned task.\n\

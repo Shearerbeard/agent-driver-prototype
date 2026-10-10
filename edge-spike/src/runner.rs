@@ -1050,7 +1050,14 @@ async fn score_one(
     let extraction_started = Instant::now();
     let claims = extract_claims(&state.worker_output.result);
     let full_capture = labelled.edge.full_capture();
-    let (_, grounding_stats) = resolve_claims(&claims, &full_capture, &state.context_provided);
+    let (_, mut grounding_stats) = resolve_claims(&claims, &full_capture, &state.context_provided);
+    grounding_stats.regions_total = state.claim_evidence.regions.len();
+    grounding_stats.regions_degraded = state
+        .claim_evidence
+        .regions
+        .iter()
+        .filter(|r| r.excerpt.is_none() && r.truncated)
+        .count();
     let extraction_ms = extraction_started.elapsed().as_millis() as u64;
 
     let retrieval_started = Instant::now();
@@ -1110,7 +1117,7 @@ async fn score_one(
             || labelled.edge.plan_context.siblings.len() != state.plan_context.siblings.len(),
         worker_output: state.worker_output.truncated,
         context_provided: state.context_provided.len() >= config.arm_config.context_provided_cap,
-        evidence: state.claim_evidence.iter().any(|c| c.truncated),
+        evidence: state.claim_evidence.regions.iter().any(|r| r.truncated),
         source: labelled.edge.worker_output.truncated
             || labelled
                 .edge
