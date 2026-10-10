@@ -24,8 +24,9 @@ use crate::rubric::{EdgeRubric, EdgeRubricAnswers};
 use crate::state::EdgeState;
 use crate::summarizer::{FixtureSummarizer, FlashSummarizer, LiveSummarizer, SummarizerConfig};
 use crate::verdict::{
-    AnswerSummary, TokenUsage, TruncationFlags, Verdict, VerdictArtifact, VerifierErrorDetail,
-    VerifierErrorReason, Weights, hash_state, resolve_verdict, score_composite,
+    AnswerSummary, EvidenceSummary, TokenUsage, TruncationFlags, Verdict, VerdictArtifact,
+    VerifierErrorDetail, VerifierErrorReason, Weights, hash_state, resolve_verdict,
+    resolve_verdict_from_summary, score_composite, score_composite_from_summary,
 };
 
 /// Scripted Jev response for one edge (in-memory only; not serialized).
@@ -1109,22 +1110,8 @@ async fn score_one(
     let fan_out_ms = 0u64;
     let state_hash = hash_state(state);
     let state_chars = state.char_len();
-    let truncation_flags = TruncationFlags {
-        goal: state.goal.len() >= config.arm_config.goal_cap,
-        plan_step: state.plan_step.task.len() >= config.arm_config.plan_step_cap,
-        plan_context: labelled.edge.plan_context.consumers.len()
-            != state.plan_context.consumers.len()
-            || labelled.edge.plan_context.siblings.len() != state.plan_context.siblings.len(),
-        worker_output: state.worker_output.truncated,
-        context_provided: state.context_provided.len() >= config.arm_config.context_provided_cap,
-        evidence: state.claim_evidence.regions.iter().any(|r| r.truncated),
-        source: labelled.edge.worker_output.truncated
-            || labelled
-                .edge
-                .tool_calls
-                .iter()
-                .any(|c| c.result.contains(" [truncated]")),
-    };
+    let truncation_flags = truncation_flags(state, &labelled.edge, &config.arm_config);
+    let evidence_summary = EvidenceSummary::from(&state.claim_evidence);
 
     let artifact = match score_result {
         Ok((answers, response_model, usage)) => {
@@ -1144,6 +1131,7 @@ async fn score_one(
                 composite,
                 verdict,
                 truncation_flags,
+                evidence_summary,
                 verifier_error: None,
                 latency_ms: crate::verdict::StageLatencies {
                     extraction_ms,
@@ -1182,6 +1170,7 @@ async fn score_one(
                     composite: 0.0,
                     verdict: Verdict::VerifierError,
                     truncation_flags,
+                    evidence_summary,
                     verifier_error: Some(VerifierErrorDetail {
                         reason: VerifierErrorReason::RequestRejected,
                         detail,
@@ -1210,6 +1199,126 @@ async fn score_one(
         arm,
         artifact,
     })
+}
+
+/// Compute the truncation flags for an assembled state.
+///
+/// `evidence` is true only for real information loss: a supported claim's hit
+/// positions fall outside its region's shown excerpt. `evidence_excerpted`
+/// records bounded-but-covered budgeting and never drives the verdict.
+#[must_use]
+pub fn truncation_flags(
+    state: &EdgeState,
+    edge: &CapturedEdge,
+    config: &ArmConfig,
+) -> TruncationFlags {
+    TruncationFlags {
+        goal: state.goal.len() >= config.goal_cap,
+        plan_step: state.plan_step.task.len() >= config.plan_step_cap,
+        plan_context: edge.plan_context.consumers.len() != state.plan_context.consumers.len()
+            || edge.plan_context.siblings.len() != state.plan_context.siblings.len(),
+        worker_output: state.worker_output.truncated,
+        context_provided: state.context_provided.len() >= config.context_provided_cap,
+        evidence: state
+            .claim_evidence
+            .regions
+            .iter()
+            .any(|r| r.uncovered_hits > 0),
+        evidence_excerpted: state
+            .claim_evidence
+            .regions
+            .iter()
+            .any(|r| r.is_excerpted()),
+        source: edge.worker_output.truncated
+            || edge
+                .tool_calls
+                .iter()
+                .any(|c| c.result.contains(" [truncated]")),
+    }
+}
+
+/// Before/after record for one rescored row.
+#[derive(Debug, Clone)]
+pub struct RescoreDelta {
+    pub variant_id: String,
+    pub arm: SelectionArm,
+    pub old_verdict: Verdict,
+    pub new_verdict: Verdict,
+    pub old_flags: TruncationFlags,
+    pub new_flags: TruncationFlags,
+}
+
+/// Outcome of an offline rescore pass over a saved run directory.
+#[derive(Debug, Clone)]
+pub struct RescoreOutcome {
+    pub deltas: Vec<RescoreDelta>,
+    pub written: std::path::PathBuf,
+}
+
+/// Offline policy-change instrument.
+///
+/// Rebuilds each saved row's state deterministically from `corpus.json` (the
+/// same assembly code path as live), recomputes the truncation flags under the
+/// current policy, and recomputes composite + verdict from the SAVED answers.
+/// The scorer is never called. Writes `results-rescored.jsonl` beside the
+/// input. Uses [`ArmConfig::default`]; a run with a non-default arm config
+/// must be re-scored rather than rescored.
+pub async fn rescore_run_dir(dir: &Path) -> anyhow::Result<RescoreOutcome> {
+    let corpus: Corpus = serde_json::from_str(&std::fs::read_to_string(dir.join("corpus.json"))?)?;
+    let text = std::fs::read_to_string(dir.join(RESULTS_JSONL))?;
+    let mut rescored = Vec::new();
+    let mut deltas = Vec::new();
+    let config = ArmConfig::default();
+
+    for line in text.lines() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        let mut row: ScoredEdge = serde_json::from_str(line)?;
+        let labelled = corpus
+            .calibration
+            .iter()
+            .chain(corpus.held_out.iter())
+            .find(|e| e.variant_id == row.variant_id)
+            .ok_or_else(|| anyhow::anyhow!("variant not found in corpus: {}", row.variant_id))?;
+        let state = assemble_state(&labelled.edge, row.arm, &config, &FixtureSummarizer).await?;
+
+        let old_verdict = row.artifact.verdict.clone();
+        let old_flags = row.artifact.truncation_flags.clone();
+        let new_flags = truncation_flags(&state, &labelled.edge, &config);
+        let (composite, dims) =
+            score_composite_from_summary(&row.artifact.answers, &row.artifact.weights, &new_flags);
+        let new_verdict = resolve_verdict_from_summary(
+            &row.artifact.answers,
+            composite,
+            &dims,
+            &row.artifact.weights,
+        );
+
+        row.artifact.truncation_flags = new_flags.clone();
+        row.artifact.evidence_summary = EvidenceSummary::from(&state.claim_evidence);
+        row.artifact.composite = composite;
+        row.artifact.verdict = new_verdict.clone();
+        deltas.push(RescoreDelta {
+            variant_id: row.variant_id.clone(),
+            arm: row.arm,
+            old_verdict,
+            new_verdict,
+            old_flags,
+            new_flags,
+        });
+        rescored.push(row);
+    }
+
+    let written = dir.join("results-rescored.jsonl");
+    let mut out = String::new();
+    for row in &rescored {
+        out.push_str(&serde_json::to_string(row)?);
+        out.push('\n');
+    }
+    std::fs::write(&written, out)?;
+
+    Ok(RescoreOutcome { deltas, written })
 }
 
 /// Classify a Jev client error as a non-retryable request rejection.
@@ -1291,11 +1400,13 @@ mod tests {
     use super::{
         RESULTS_JSONL, RunSelector, RunnerConfig, RunnerMode, ScriptedTransport,
         assemble_arm_state, build_judge_work_list, build_summarizer, default_response, plan_run,
-        run_bounded, run_concurrency, run_corpus, score_one, select_variants,
+        run_bounded, run_concurrency, run_corpus, score_one, select_variants, truncation_flags,
     };
     use crate::arms::{ArmConfig, SelectionArm};
     use crate::client::JevEndpoint;
-    use crate::corpus::{CapturedEdge, Corpus, FailureClass, LabelledEdge, default_corpus};
+    use crate::corpus::{
+        CapturedEdge, Corpus, FailureClass, LabelledEdge, ToolCall, default_corpus,
+    };
     use crate::exhaustion::{CompletedKey, is_exhaustion};
     use crate::state::{PlanContext, PlanStep, WorkerOutput};
 
@@ -1970,5 +2081,100 @@ mod tests {
             arm_acc.verifier_error_count, 1,
             "arm accounting must count the verifier error"
         );
+    }
+
+    fn edge_with_trailing_filler(variant_id: &str, worker_truncated: bool) -> LabelledEdge {
+        let mut edge = dummy_edge(variant_id, "task_HEAD00001 150ms");
+        edge.edge.worker_output.truncated = worker_truncated;
+        edge.edge.tool_calls = vec![ToolCall {
+            tool_call_id: "tc1".to_owned(),
+            tool_name: "query".to_owned(),
+            arguments: serde_json::json!({}),
+            result: format!("task_HEAD00001 150ms\n{}", "z".repeat(8_000)),
+            success: true,
+        }];
+        edge
+    }
+
+    /// A bounded head excerpt that still covers every claim hit is budgeting,
+    /// not real loss: `evidence` stays false, `evidence_excerpted` records the
+    /// bound, and nothing drives a truncation verdict.
+    #[tokio::test]
+    async fn bounded_head_excerpt_covering_hits_does_not_flag_evidence_loss() {
+        let edge = edge_with_trailing_filler("head-cover", false);
+        let config = ArmConfig::default();
+        let state = assemble_arm_state(&edge.edge, SelectionArm::HeadTruncation, &config, None)
+            .await
+            .unwrap_or_else(|e| panic!("assemble: {e}"));
+
+        let flags = truncation_flags(&state, &edge.edge, &config);
+        assert!(
+            !flags.evidence,
+            "claims all sit in the head excerpt, so there is no evidence loss"
+        );
+        assert!(
+            flags.evidence_excerpted,
+            "the head excerpt is shorter than the full capture: informational only"
+        );
+        assert!(
+            !flags.any(),
+            "a bounded-but-covered excerpt must not drive the verdict"
+        );
+    }
+
+    /// A supported claim whose only shown occurrence falls outside its
+    /// region's excerpt is real information loss and still drives
+    /// `FLAG{truncation}`.
+    #[tokio::test]
+    async fn supported_hit_outside_region_excerpt_still_flags_truncation() {
+        // Claims spread far enough apart to split into several regions, each
+        // wider than the excerpt budget can cover. Every claim is unique to
+        // its line, so a region's own claims lose their hit when its excerpt
+        // is bounded to fit.
+        let mut capture = String::new();
+        let mut result = String::new();
+        for i in 0..25 {
+            let line = format!("task_SPREAD{i:05} 150ms");
+            result.push_str(&line);
+            result.push('\n');
+            capture.push_str(&line);
+            capture.push('\n');
+            capture.push_str(&"z".repeat(1_300));
+        }
+        let mut edge = dummy_edge("ci-loss", &result);
+        edge.edge.tool_calls = vec![ToolCall {
+            tool_call_id: "tc1".to_owned(),
+            tool_name: "query".to_owned(),
+            arguments: serde_json::json!({}),
+            result: capture,
+            success: true,
+        }];
+        let config = ArmConfig::default();
+        let state = assemble_arm_state(&edge.edge, SelectionArm::ClaimIndexed, &config, None)
+            .await
+            .unwrap_or_else(|e| panic!("assemble: {e}"));
+
+        let flags = truncation_flags(&state, &edge.edge, &config);
+        assert!(
+            flags.evidence,
+            "a supported claim outside the shown excerpt is real loss: {:?}",
+            state.claim_evidence.regions
+        );
+        assert!(flags.any(), "real evidence loss must drive truncation");
+    }
+
+    /// `worker_output` truncation remains verdict-driving.
+    #[tokio::test]
+    async fn worker_output_truncation_stays_verdict_driving() {
+        let edge = edge_with_trailing_filler("worker-flag", true);
+        let config = ArmConfig::default();
+        let state = assemble_arm_state(&edge.edge, SelectionArm::HeadTruncation, &config, None)
+            .await
+            .unwrap_or_else(|e| panic!("assemble: {e}"));
+
+        let flags = truncation_flags(&state, &edge.edge, &config);
+        assert!(flags.worker_output);
+        assert!(!flags.evidence);
+        assert!(flags.any());
     }
 }

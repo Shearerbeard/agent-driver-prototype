@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::claim::GroundingStats;
 use crate::rubric::EdgeRubricAnswers;
-use crate::state::EdgeState;
+use crate::state::{ClaimEvidenceV2, EdgeState, FoundIn};
 
 /// Final verdict enum.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -63,12 +63,69 @@ pub struct VerdictArtifact {
     pub composite: f64,
     pub verdict: Verdict,
     pub truncation_flags: TruncationFlags,
+    /// Compact region/claim coverage summary. Informational only; serde
+    /// defaulted so artifacts written before the field existed still parse.
+    #[serde(default)]
+    pub evidence_summary: EvidenceSummary,
     /// Set only when the verdict is [`Verdict::VerifierError`].
     #[serde(default)]
     pub verifier_error: Option<VerifierErrorDetail>,
     pub latency_ms: StageLatencies,
     pub tokens: TokenUsage,
     pub timestamp: String,
+}
+
+/// Compact per-region evidence row recorded on the artifact.
+///
+/// Deliberately excludes the excerpt text: the report needs the size and
+/// coverage of each region, not its bytes.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct EvidenceRegionSummary {
+    pub region_id: usize,
+    pub tool_name: String,
+    pub full_region_chars: usize,
+    pub excerpt_chars: usize,
+    pub source_truncated: bool,
+    pub truncated: bool,
+    /// Supported claims referencing this region that the shown excerpt does
+    /// not cover.
+    pub uncovered_hits: usize,
+}
+
+/// Compact evidence summary for one scored edge.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct EvidenceSummary {
+    pub regions: Vec<EvidenceRegionSummary>,
+    pub claims_total: usize,
+    pub claims_supported: usize,
+}
+
+impl From<&ClaimEvidenceV2> for EvidenceSummary {
+    fn from(evidence: &ClaimEvidenceV2) -> Self {
+        let regions = evidence
+            .regions
+            .iter()
+            .map(|r| EvidenceRegionSummary {
+                region_id: r.region_id,
+                tool_name: r.tool_name.clone(),
+                full_region_chars: r.full_region_chars,
+                excerpt_chars: r.excerpt.as_ref().map_or(0, |e| e.chars().count()),
+                source_truncated: r.source_truncated,
+                truncated: r.truncated,
+                uncovered_hits: r.uncovered_hits,
+            })
+            .collect();
+        let claims_supported = evidence
+            .claims
+            .iter()
+            .filter(|c| c.found_in != FoundIn::NotFound)
+            .count();
+        Self {
+            regions,
+            claims_total: evidence.claims.len(),
+            claims_supported,
+        }
+    }
 }
 
 /// Composite weights, thresholds, and normalization denominators.
@@ -128,12 +185,17 @@ const GROUNDING_MAX_INDEX: f64 = 3.0;
 
 /// Per-field truncation flags.
 ///
-/// The six named fields record **assembly**-time truncation: a bounded field
-/// the arm's state assembly actually capped. `source` is a separate
-/// provenance flag for truncation that pre-existed in the capture (the C0
-/// ` [truncated]` marker on a worker output or tool result). It is reported
-/// separately so a capture-level cut does not inflate the arm's assembly
-/// truncation rate; [`TruncationFlags::any`] therefore ignores it.
+/// The six named verdict-driving fields record **assembly**-time information
+/// loss: a bounded field the arm's state assembly actually capped. `source` is
+/// a separate provenance flag for truncation that pre-existed in the capture
+/// (the C0 ` [truncated]` marker on a worker output or tool result); it is
+/// **upstream-capture provenance, never verdict-driving**. `evidence` is true
+/// only when a supported claim's hit positions fall outside the shown region
+/// excerpt (real information loss), not merely when an excerpt is bounded.
+/// `evidence_excerpted` records that latter case (a bounded excerpt that still
+/// covers every claim hit) and is informational only.
+///
+/// [`TruncationFlags::any`] ignores both `source` and `evidence_excerpted`.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct TruncationFlags {
     pub goal: bool,
@@ -141,7 +203,11 @@ pub struct TruncationFlags {
     pub plan_context: bool,
     pub worker_output: bool,
     pub context_provided: bool,
+    /// Real evidence loss: a supported claim hit outside its region excerpt.
     pub evidence: bool,
+    /// Informational: some region excerpt is shorter than the full region.
+    #[serde(default)]
+    pub evidence_excerpted: bool,
     /// Capture-level (pre-existing) truncation marker, not an assembly cap.
     pub source: bool,
 }
@@ -239,7 +305,10 @@ pub fn score_composite(
 }
 
 impl TruncationFlags {
-    /// True if any field is truncated.
+    /// True if any verdict-driving field is truncated.
+    ///
+    /// `source` (upstream-capture provenance) and `evidence_excerpted`
+    /// (bounded-but-covered budgeting) are deliberately excluded.
     #[must_use]
     pub fn any(&self) -> bool {
         self.goal
@@ -420,6 +489,7 @@ mod tests {
             composite: 0.404_25,
             verdict: Verdict::Pass,
             truncation_flags: TruncationFlags::default(),
+            evidence_summary: EvidenceSummary::default(),
             verifier_error: None,
             latency_ms: StageLatencies::default(),
             tokens: TokenUsage::default(),
@@ -444,5 +514,87 @@ mod tests {
         assert_eq!(artifact.weights.fidelity_levels, 4.0);
         assert_eq!(artifact.weights.alignment_levels, 2.0);
         assert_eq!(artifact.weights.grounding_levels, 3.0);
+    }
+
+    #[test]
+    fn evidence_excerpted_is_informational_only() {
+        let flags = TruncationFlags {
+            evidence_excerpted: true,
+            source: true,
+            ..TruncationFlags::default()
+        };
+        assert!(
+            !flags.any(),
+            "excerpted/source must not drive the truncation flag"
+        );
+
+        let summary = AnswerSummary {
+            evidence_presence: 0.9,
+            task_fidelity: 0.0,
+            goal_alignment: 0.0,
+            evidence_grounding: 0.0,
+            handoff_integrity: 0.9,
+            scope_discipline: 0.9,
+        };
+        let weights = Weights::default();
+        let (composite, dims) = score_composite_from_summary(&summary, &weights, &flags);
+        assert!(
+            !dims.contains(&"truncation".to_owned()),
+            "informational flags must not add a truncation dim: {dims:?}"
+        );
+        assert_eq!(
+            resolve_verdict_from_summary(&summary, composite, &dims, &weights),
+            Verdict::Pass
+        );
+    }
+
+    #[test]
+    fn old_artifact_without_new_fields_still_deserializes() {
+        let artifact = VerdictArtifact {
+            rubric_version: "v2".to_owned(),
+            weights_version: "v2-polarity-fixed".to_owned(),
+            weights: Weights::default(),
+            resolved_model_id: "jev-1.13.0".to_owned(),
+            state_hash: "hash".to_owned(),
+            state_chars: 1,
+            answers: AnswerSummary {
+                evidence_presence: 0.9,
+                task_fidelity: 0.0,
+                goal_alignment: 0.0,
+                evidence_grounding: 0.0,
+                handoff_integrity: 0.9,
+                scope_discipline: 0.9,
+            },
+            grounding_stats: GroundingStats::default(),
+            composite: 0.9,
+            verdict: Verdict::Pass,
+            truncation_flags: TruncationFlags {
+                evidence: true,
+                source: true,
+                ..TruncationFlags::default()
+            },
+            evidence_summary: EvidenceSummary::default(),
+            verifier_error: None,
+            latency_ms: StageLatencies::default(),
+            tokens: TokenUsage::default(),
+            timestamp: "0".to_owned(),
+        };
+
+        // Strip the two fields this change added to mimic a pre-change line.
+        let mut value = serde_json::to_value(&artifact).expect("serialize");
+        value
+            .as_object_mut()
+            .expect("artifact object")
+            .remove("evidence_summary");
+        value["truncation_flags"]
+            .as_object_mut()
+            .expect("flags object")
+            .remove("evidence_excerpted");
+
+        let parsed: VerdictArtifact = serde_json::from_value(value).expect("old artifact parses");
+        assert_eq!(parsed.verdict, Verdict::Pass);
+        assert!(parsed.truncation_flags.evidence);
+        assert!(!parsed.truncation_flags.evidence_excerpted);
+        assert!(parsed.evidence_summary.regions.is_empty());
     }
 }

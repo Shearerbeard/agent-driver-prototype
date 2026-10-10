@@ -218,8 +218,8 @@ mod tests {
     use crate::claim::GroundingStats;
     use crate::corpus::FailureClass;
     use crate::verdict::{
-        AnswerSummary, TokenUsage, TruncationFlags, VerdictArtifact, VerifierErrorDetail,
-        VerifierErrorReason, Weights,
+        AnswerSummary, EvidenceSummary, TokenUsage, TruncationFlags, VerdictArtifact,
+        VerifierErrorDetail, VerifierErrorReason, Weights,
     };
 
     fn artifact(composite: f64, verdict: Verdict) -> VerdictArtifact {
@@ -247,6 +247,7 @@ mod tests {
             composite,
             verdict,
             truncation_flags: TruncationFlags::default(),
+            evidence_summary: EvidenceSummary::default(),
             verifier_error,
             latency_ms: StageLatencies::default(),
             tokens: TokenUsage::default(),

@@ -65,7 +65,8 @@ pub struct ArmConfig {
     pub plan_context_cap: usize,
     pub worker_output_cap: usize,
     pub context_provided_cap: usize,
-    /// Floor for a per-region excerpt before the region degrades to `None`.
+    /// Smallest excerpt size to try before a region degrades to `None`. A
+    /// still-smaller excerpt that fits the budget may be kept.
     pub region_floor: usize,
     pub fan_out_threshold: usize,
     /// Maximum characters of the enclosing tool call's arguments to keep as
@@ -73,6 +74,10 @@ pub struct ArmConfig {
     pub args_excerpt_cap: usize,
     /// Cluster capture hit positions within this many characters into one region.
     pub region_cluster_gap: usize,
+    /// Per-region excerpt budget. A region whose hit span exceeds this is
+    /// split at its widest internal hit gap until every piece fits, so a
+    /// region's excerpt can cover its own hits.
+    pub region_excerpt_budget: usize,
 }
 
 impl Default for ArmConfig {
@@ -88,28 +93,36 @@ impl Default for ArmConfig {
             fan_out_threshold: 1_000,
             args_excerpt_cap: 400,
             region_cluster_gap: 1_500,
+            region_excerpt_budget: 4_000,
         }
     }
 }
 
 fn assemble_head_truncation(edge: &CapturedEdge, config: &ArmConfig) -> anyhow::Result<EdgeState> {
     let full = edge.full_capture();
-    let excerpt = truncate_chars(&full, config.state_budget_chars / 4);
-    let truncated = full.chars().count() > excerpt.chars().count();
+    let full_len = full.chars().count();
+    let limit = config.state_budget_chars / 4;
+    let excerpt = truncate_chars(&full, limit);
+    let truncated = full_len > excerpt.chars().count();
+    // The head arm carries one synthetic claim reference, not the worker's
+    // real claims, so it has no supported hit positions to lose: excerpting
+    // the capture is labeled budgeting, not verdict-driving information loss.
     let region = EvidenceRegion {
         region_id: 0,
         tool_call_id: "head".to_owned(),
         tool_name: "head_truncation".to_owned(),
         args_excerpt: String::new(),
         excerpt: Some(excerpt),
-        span: (0, full.chars().count()),
-        full_region_chars: full.chars().count(),
+        span: (0, full_len),
+        full_region_chars: full_len,
         source_truncated: edge
             .tool_calls
             .iter()
             .filter(|c| is_evidence_call(&c.tool_name))
             .any(|c| c.result.contains(" [truncated]")),
         truncated,
+        excerpt_range: Some((0, full_len.min(limit))),
+        uncovered_hits: 0,
     };
     let claim_evidence = ClaimEvidenceV2 {
         regions: vec![region],
@@ -152,8 +165,9 @@ fn assemble_claim_indexed(edge: &CapturedEdge, config: &ArmConfig) -> anyhow::Re
     let mut state = build_fixed_state(edge, config);
     assert_fixed_within_budget(&state, config, SelectionArm::ClaimIndexed)?;
 
-    state.claim_evidence = build_region_evidence(&state, config, &full, &tool_index, resolved);
+    state.claim_evidence = build_region_evidence(&state, config, &full, &tool_index, &resolved);
     trim_regions_to_budget(&mut state, config.state_budget_chars);
+    apply_region_coverage(&mut state.claim_evidence, &resolved);
     assert_within_budget(
         &state,
         config.state_budget_chars,
@@ -174,7 +188,7 @@ async fn assemble_flash_summary(
     let mut state = build_fixed_state(edge, config);
     assert_fixed_within_budget(&state, config, SelectionArm::FlashSummarization)?;
 
-    let mut evidence = build_region_evidence(&state, config, &full, &tool_index, resolved);
+    let mut evidence = build_region_evidence(&state, config, &full, &tool_index, &resolved);
     for region in &mut evidence.regions {
         if let Some(excerpt) = &region.excerpt {
             let summarized = summarizer
@@ -185,6 +199,7 @@ async fn assemble_flash_summary(
     }
     state.claim_evidence = evidence;
     trim_regions_to_budget(&mut state, config.state_budget_chars);
+    apply_region_coverage(&mut state.claim_evidence, &resolved);
     assert_within_budget(
         &state,
         config.state_budget_chars,
@@ -217,43 +232,81 @@ fn build_fixed_state(edge: &CapturedEdge, config: &ArmConfig) -> EdgeState {
     }
 }
 
-/// Fixed-size JSON cost of the `claim_evidence` object beyond the variable
-/// region excerpts. Includes the wrapper, per-region metadata (including the
-/// bounded `args_excerpt`), and per-claim text + punctuation.
-fn evidence_v2_fixed_cost(
-    candidates: &[RegionCandidate],
-    resolved: &[ClaimResolution],
-    args_excerpt_cap: usize,
-) -> usize {
-    let wrapper = 100;
-    let region_meta = candidates.len() * (180 + args_excerpt_cap);
-    let claims: usize = resolved
-        .iter()
-        .map(|r| r.claim.text.chars().count() + 55)
-        .sum();
-    wrapper + region_meta + claims
+/// Borrowed view of the evidence object, so its serialized size can be
+/// measured without owning a copy of the regions and claims.
+#[derive(serde::Serialize)]
+struct EvidenceRef<'a> {
+    regions: &'a [EvidenceRegion],
+    claims: &'a [ClaimRef],
 }
 
-/// Cluster sorted hit positions into regions where adjacent hits are within
-/// `max_gap` characters.
-fn cluster_positions(positions: &[usize], max_gap: usize) -> Vec<(usize, usize)> {
-    if positions.is_empty() {
-        return Vec::new();
-    }
-    let mut regions = Vec::new();
-    let mut start = positions[0];
-    let mut end = positions[0];
-    for &pos in positions.iter().skip(1) {
-        if pos.saturating_sub(end) <= max_gap {
-            end = pos;
-        } else {
-            regions.push((start, end));
-            start = pos;
-            end = pos;
+/// Serialized character length of one region entry, exactly as serde writes it.
+fn region_entry_chars(region: &EvidenceRegion) -> usize {
+    serde_json::to_string(region)
+        .map(|s| s.chars().count())
+        .unwrap_or(usize::MAX)
+}
+
+/// Serialized character length of the whole `claim_evidence` object.
+fn evidence_chars(regions: &[EvidenceRegion], claims: &[ClaimRef]) -> usize {
+    serde_json::to_string(&EvidenceRef { regions, claims })
+        .map(|s| s.chars().count())
+        .unwrap_or(usize::MAX)
+}
+
+/// Cluster sorted hit positions into groups where adjacent hits are within
+/// `max_gap` characters. Positions are assumed sorted and deduplicated.
+fn cluster_positions(positions: &[usize], max_gap: usize) -> Vec<Vec<usize>> {
+    let mut clusters: Vec<Vec<usize>> = Vec::new();
+    for &pos in positions {
+        match clusters.last_mut() {
+            Some(cluster)
+                if pos.saturating_sub(*cluster.last().expect("cluster non-empty")) <= max_gap =>
+            {
+                cluster.push(pos);
+            }
+            _ => clusters.push(vec![pos]),
         }
     }
-    regions.push((start, end));
-    regions
+    clusters
+}
+
+/// Cut a hit cluster at its widest internal gap, returning the two pieces.
+fn split_once(mut cluster: Vec<usize>) -> (Vec<usize>, Vec<usize>) {
+    let last = *cluster.last().expect("cluster non-empty");
+    let mut cut = 0usize;
+    for i in 1..cluster.len() - 1 {
+        if cluster[i + 1] - cluster[i] > cluster[cut + 1] - cluster[cut] {
+            cut = i;
+        }
+    }
+    // Among equally wide gaps, take the one nearest the span midpoint so the
+    // recursion halves the chain instead of peeling off one hit at a time.
+    let widest = cluster[cut + 1] - cluster[cut];
+    let mid = cluster[0] + (last - cluster[0]) / 2;
+    for i in 0..cluster.len() - 1 {
+        if cluster[i + 1] - cluster[i] == widest
+            && cluster[i + 1].abs_diff(mid) < cluster[cut + 1].abs_diff(mid)
+        {
+            cut = i;
+        }
+    }
+    let right = cluster.split_off(cut + 1);
+    (cluster, right)
+}
+
+/// Split a chained hit cluster until every piece's span fits `target`, cutting
+/// at the widest gap between consecutive hits. This undoes single-linkage
+/// chaining while leaving genuinely tight clusters intact.
+fn split_cluster(cluster: Vec<usize>, target: usize) -> Vec<Vec<usize>> {
+    let last = *cluster.last().expect("cluster non-empty");
+    if cluster.len() < 2 || last + 1 - cluster[0] <= target {
+        return vec![cluster];
+    }
+    let (left, right) = split_once(cluster);
+    let mut pieces = split_cluster(left, target);
+    pieces.extend(split_cluster(right, target));
+    pieces
 }
 
 fn build_args_excerpt(args: &serde_json::Value, cap: usize) -> String {
@@ -261,11 +314,18 @@ fn build_args_excerpt(args: &serde_json::Value, cap: usize) -> String {
     truncate_chars(&raw, cap)
 }
 
-fn take_region_excerpt(full: &str, span: (usize, usize), target: usize) -> String {
+/// Take the bounded excerpt for a region and return it with the character
+/// range it covers within `full`.
+fn take_region_excerpt(
+    full: &str,
+    span: (usize, usize),
+    target: usize,
+) -> (String, (usize, usize)) {
     let (span_start, span_end) = span;
     let span_len = span_end - span_start;
     if span_len <= target {
-        return full.chars().skip(span_start).take(span_len).collect();
+        let text = full.chars().skip(span_start).take(span_len).collect();
+        return (text, (span_start, span_end));
     }
     let mid = (span_start + span_end) / 2;
     let half = target / 2;
@@ -278,7 +338,50 @@ fn take_region_excerpt(full: &str, span: (usize, usize), target: usize) -> Strin
     if end - start < target {
         adj_start = end.saturating_sub(target);
     }
-    full.chars().skip(adj_start).take(end - adj_start).collect()
+    let text = full.chars().skip(adj_start).take(end - adj_start).collect();
+    (text, (adj_start, end))
+}
+
+/// Count, per region, the supported claims that reference it but whose hit
+/// positions fall outside its shown excerpt.
+///
+/// A claim is covered when at least one of its occurrences is inside the
+/// excerpt of the region it references; otherwise the judge cannot recover its
+/// support. Regions with no supported claims stay at zero: excerpting them is
+/// budgeting, not information loss.
+fn apply_region_coverage(evidence: &mut ClaimEvidenceV2, resolved: &[ClaimResolution]) {
+    for region in &mut evidence.regions {
+        region.uncovered_hits = 0;
+    }
+    for claim_ref in &evidence.claims {
+        if claim_ref.found_in != FoundIn::ToolCapture {
+            continue;
+        }
+        let Some(region_id) = claim_ref.region_id else {
+            continue;
+        };
+        let Some(resolution) = resolved.iter().find(|r| r.claim.text == claim_ref.claim) else {
+            continue;
+        };
+        if resolution.positions.is_empty() {
+            continue;
+        }
+        let Some(region) = evidence
+            .regions
+            .iter_mut()
+            .find(|r| r.region_id == region_id)
+        else {
+            continue;
+        };
+        let covered = resolution.positions.iter().any(|pos| {
+            region
+                .excerpt_range
+                .is_some_and(|(start, end)| *pos >= start && *pos < end)
+        });
+        if !covered {
+            region.uncovered_hits += 1;
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -325,7 +428,7 @@ fn build_region_evidence(
     config: &ArmConfig,
     full: &str,
     tool_index: &[ToolCallSpan],
-    resolved: Vec<ClaimResolution>,
+    resolved: &[ClaimResolution],
 ) -> ClaimEvidenceV2 {
     // Collect all capture hit positions.
     let mut all_positions: Vec<usize> = resolved
@@ -336,15 +439,22 @@ fn build_region_evidence(
     all_positions.dedup();
 
     let clusters = cluster_positions(&all_positions, config.region_cluster_gap);
+    let clusters: Vec<Vec<usize>> = clusters
+        .into_iter()
+        .flat_map(|cluster| split_cluster(cluster, config.region_excerpt_budget))
+        .collect();
     let mut candidates: Vec<RegionCandidate> = clusters
         .into_iter()
         .enumerate()
-        .map(|(id, cluster)| RegionCandidate {
-            region_id: id,
-            span: cluster,
-            first_pos: cluster.0,
-            support: Vec::new(),
-            tool: region_tool_attribution(tool_index, cluster),
+        .map(|(id, cluster)| {
+            let span = (cluster[0], cluster[cluster.len() - 1] + 1);
+            RegionCandidate {
+                region_id: id,
+                span,
+                first_pos: span.0,
+                support: Vec::new(),
+                tool: region_tool_attribution(tool_index, span),
+            }
         })
         .collect();
 
@@ -395,30 +505,11 @@ fn build_region_evidence(
         }
     }
 
-    let fixed_cost = evidence_v2_fixed_cost(&candidates, &resolved, config.args_excerpt_cap);
-    let budget = config
-        .state_budget_chars
-        .saturating_sub(fixed_state.char_len())
-        .saturating_sub(fixed_cost);
-
-    let regions: Vec<EvidenceRegion> = if candidates.is_empty() {
-        Vec::new()
-    } else {
-        allocate_regions(
-            &candidates,
-            budget,
-            config.region_floor,
-            config.args_excerpt_cap,
-            full,
-        )
-    };
-
-    // If the budget was zero, all capture-backed claims degrade to references.
     let claims: Vec<ClaimRef> = resolved
-        .into_iter()
+        .iter()
         .enumerate()
         .map(|(idx, resolution)| ClaimRef {
-            claim: resolution.claim.text,
+            claim: resolution.claim.text.clone(),
             found_in: resolution.found_in,
             region_id: if resolution.found_in == FoundIn::ToolCapture {
                 claim_to_region[idx].or_else(|| {
@@ -432,118 +523,123 @@ fn build_region_evidence(
         })
         .collect();
 
+    // Allowance for the whole `claim_evidence` object: the state budget less the
+    // fixed fields, with the empty evidence skeleton swapped back in so the
+    // measured object replaces it exactly.
+    let empty_evidence = ClaimEvidenceV2 {
+        regions: Vec::new(),
+        claims: Vec::new(),
+    };
+    let empty_cost = serde_json::to_string(&empty_evidence)
+        .map(|s| s.chars().count())
+        .unwrap_or(0);
+    let evidence_budget = config
+        .state_budget_chars
+        .saturating_sub(fixed_state.char_len())
+        .saturating_add(empty_cost);
+
+    let regions: Vec<EvidenceRegion> = if candidates.is_empty() {
+        Vec::new()
+    } else {
+        allocate_regions(&candidates, evidence_budget, config, full, &claims)
+    };
+
     ClaimEvidenceV2 { regions, claims }
 }
 
-/// Allocate excerpts to ranked regions under the evidence budget.
+/// Attribute one region's provenance to the captured tool call(s) it overlaps.
+fn region_attribution(
+    candidate: &RegionCandidate,
+    args_excerpt_cap: usize,
+) -> (String, String, String, bool) {
+    match &candidate.tool {
+        RegionTool::Single(t) => (
+            t.tool_call_id.clone(),
+            t.tool_name.clone(),
+            build_args_excerpt(&t.arguments, args_excerpt_cap),
+            t.result.contains(" [truncated]"),
+        ),
+        RegionTool::Multi { source_truncated } => (
+            String::new(),
+            "multi".to_owned(),
+            String::new(),
+            *source_truncated,
+        ),
+        RegionTool::None => (String::new(), String::new(), String::new(), false),
+    }
+}
+
+/// Build a region entry showing `target` excerpt characters, or a
+/// reference-only entry when `target` is zero.
+fn region_for(
+    candidate: &RegionCandidate,
+    target: usize,
+    full: &str,
+    config: &ArmConfig,
+    span_len: usize,
+) -> EvidenceRegion {
+    let (excerpt, truncated, excerpt_range) = if target == 0 {
+        (None, true, None)
+    } else {
+        let (text, range) = take_region_excerpt(full, candidate.span, target);
+        (Some(text), target < span_len, Some(range))
+    };
+    let (tool_call_id, tool_name, args_excerpt, source_truncated) =
+        region_attribution(candidate, config.args_excerpt_cap);
+    EvidenceRegion {
+        region_id: candidate.region_id,
+        tool_call_id,
+        tool_name,
+        args_excerpt,
+        excerpt,
+        span: candidate.span,
+        full_region_chars: span_len,
+        source_truncated,
+        truncated,
+        excerpt_range,
+        uncovered_hits: 0,
+    }
+}
+
+/// Allocate excerpts to ranked regions by their real serialized cost.
+///
+/// Each region in rank order takes the largest power-of-two share of its span
+/// that fits the remaining `claim_evidence` budget, halving down to
+/// [`ArmConfig::region_floor`] before degrading to a reference-only entry. No
+/// region is ever dropped: a degraded region is still named by its claims.
 fn allocate_regions(
     candidates: &[RegionCandidate],
     budget: usize,
-    floor: usize,
-    args_excerpt_cap: usize,
+    config: &ArmConfig,
     full: &str,
+    claims: &[ClaimRef],
 ) -> Vec<EvidenceRegion> {
-    let mut active: Vec<usize> = (0..candidates.len()).collect();
-    let mut allocations: Vec<Option<usize>> = vec![None; candidates.len()];
-
-    loop {
-        if active.is_empty() {
-            break;
-        }
-        let n = active.len().max(1);
-        let share = budget / n;
-        if share < floor {
-            // Degrade the tail region.
-            let tail = *active.last().expect("active non-empty");
-            allocations[tail] = None;
-            active.pop();
-            continue;
-        }
-
-        // Compute desired size for each active region.
-        let mut total = 0usize;
-        for &i in &active {
-            let span_len = candidates[i].span.1 - candidates[i].span.0;
-            let want = share.min(span_len).max(floor);
-            total += want;
-        }
-
-        if total <= budget {
-            for &i in &active {
-                let span_len = candidates[i].span.1 - candidates[i].span.0;
-                allocations[i] = Some(share.min(span_len));
+    // Cost of the object with no regions; each region then adds its own entry
+    // plus one separator/bracket slot.
+    let empty_cost = evidence_chars(&[], claims).saturating_sub(1);
+    let mut region_cost = 0usize;
+    let mut regions: Vec<EvidenceRegion> = Vec::with_capacity(candidates.len());
+    for candidate in candidates {
+        let span_len = candidate.span.1 - candidate.span.0;
+        let mut target = span_len;
+        loop {
+            let region = region_for(candidate, target, full, config, span_len);
+            let entry = region_entry_chars(&region) + 1;
+            if empty_cost + region_cost + entry <= budget {
+                region_cost += entry;
+                regions.push(region);
+                break;
             }
-            break;
-        }
-
-        // Proportional shrink.
-        let factor = budget as f64 / total as f64;
-        let mut below_floor = Vec::new();
-        for &i in &active {
-            let span_len = candidates[i].span.1 - candidates[i].span.0;
-            let target = (span_len.max(floor) as f64 * factor) as usize;
-            if target < floor {
-                below_floor.push(i);
+            if target <= config.region_floor {
+                let region = region_for(candidate, 0, full, config, span_len);
+                region_cost += region_entry_chars(&region) + 1;
+                regions.push(region);
+                break;
             }
+            target /= 2;
         }
-
-        if below_floor.is_empty() {
-            for &i in &active {
-                let span_len = candidates[i].span.1 - candidates[i].span.0;
-                let target = ((span_len.max(floor) as f64 * factor) as usize)
-                    .min(span_len)
-                    .max(floor);
-                allocations[i] = Some(target);
-            }
-            break;
-        }
-
-        // Degrade the tail active region that fell below the floor.
-        let tail = *below_floor.last().expect("below_floor non-empty");
-        allocations[tail] = None;
-        active.retain(|i| *i != tail);
     }
-
-    candidates
-        .iter()
-        .enumerate()
-        .map(|(idx, candidate)| {
-            let span_len = candidate.span.1 - candidate.span.0;
-            let (excerpt, truncated) = match allocations[idx] {
-                Some(0) | None => (None, true),
-                Some(target) => {
-                    let excerpt = take_region_excerpt(full, candidate.span, target);
-                    (Some(excerpt), target < span_len)
-                }
-            };
-            let (tool_call_id, tool_name, args_excerpt, source_truncated) = match &candidate.tool {
-                RegionTool::Single(t) => (
-                    t.tool_call_id.clone(),
-                    t.tool_name.clone(),
-                    build_args_excerpt(&t.arguments, args_excerpt_cap),
-                    t.result.contains(" [truncated]"),
-                ),
-                RegionTool::Multi { source_truncated } => (
-                    String::new(),
-                    "multi".to_owned(),
-                    String::new(),
-                    *source_truncated,
-                ),
-                RegionTool::None => (String::new(), String::new(), String::new(), false),
-            };
-            EvidenceRegion {
-                region_id: candidate.region_id,
-                tool_call_id,
-                tool_name,
-                args_excerpt,
-                excerpt,
-                span: candidate.span,
-                full_region_chars: span_len,
-                source_truncated,
-                truncated,
-            }
-        })
-        .collect()
+    regions
 }
 
 /// If the assembled state still exceeds the budget, degrade tail regions
@@ -558,6 +654,7 @@ fn trim_regions_to_budget(state: &mut EdgeState, budget: usize) {
             .rposition(|r| r.excerpt.is_some())
         {
             state.claim_evidence.regions[idx].excerpt = None;
+            state.claim_evidence.regions[idx].excerpt_range = None;
             state.claim_evidence.regions[idx].truncated = true;
         } else {
             break;
@@ -630,7 +727,7 @@ fn truncate_plan_context(ctx: &PlanContext, limit: usize) -> PlanContext {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::claim::ClaimClass;
+    use crate::claim::{ClaimClass, ExtractedClaim};
     use crate::corpus::{CapturedEdge, ToolCall};
     use crate::state::{FoundIn, PlanContext, PlanStep, WorkerOutput};
 
@@ -1141,15 +1238,21 @@ mod tests {
         }
         let result = result_lines.join("\n");
 
-        // Make each region artificially large so they cannot all fit.
-        let filler = "x".repeat(4_000);
+        // Make each region artificially large so they cannot all fit: spread the
+        // hits inside one cluster (gaps below `region_cluster_gap`) so the
+        // region span is wide, not just the enclosing tool result.
+        let edge_filler = "x".repeat(4_000);
+        let gap = "x".repeat(600);
         for cluster in 0..cluster_count {
-            let mut call_result = vec![filler.clone()];
+            let mut call_result = vec![edge_filler.clone()];
             for i in 0..claims_per_cluster {
                 let token = format!("task_D{cluster:02}{i:03}");
                 call_result.push(format!("{token} 150ms pool-{cluster:02}"));
+                if i + 1 < claims_per_cluster {
+                    call_result.push(gap.clone());
+                }
             }
-            call_result.push(filler.clone());
+            call_result.push(edge_filler.clone());
             capture_calls.push(ToolCall {
                 tool_call_id: format!("tc{cluster}"),
                 tool_name: "query".to_owned(),
@@ -1220,6 +1323,180 @@ mod tests {
     }
 
     #[test]
+    fn region_entry_chars_matches_serde_serialization() {
+        let region = EvidenceRegion {
+            region_id: 3,
+            tool_call_id: "tc-3".to_owned(),
+            tool_name: "query".to_owned(),
+            args_excerpt: "{\"pool\":\"db-pool-03\"}".to_owned(),
+            excerpt: Some("task_DB03 150ms db-pool-03".to_owned()),
+            span: (10, 50),
+            full_region_chars: 40,
+            source_truncated: false,
+            truncated: true,
+            excerpt_range: Some((10, 40)),
+            uncovered_hits: 0,
+        };
+        let expected = serde_json::to_string(&region)
+            .expect("serialize region")
+            .chars()
+            .count();
+        assert_eq!(region_entry_chars(&region), expected);
+
+        let mut longer = region.clone();
+        longer.excerpt = Some("x".repeat(100));
+        assert!(
+            region_entry_chars(&longer) > expected,
+            "a longer excerpt must cost more"
+        );
+    }
+
+    /// db-pool-shaped: spread hits across ~12 regions whose real entry sizes
+    /// (not an inflated per-region estimate) decide the allocation.
+    fn db_pool_regions_edge() -> CapturedEdge {
+        let cluster_count = 12;
+        let claims_per_cluster = 2;
+
+        let mut result_lines = Vec::new();
+        let mut capture_calls = Vec::new();
+        for cluster in 0..cluster_count {
+            for i in 0..claims_per_cluster {
+                let token = format!("task_R{cluster:02}{i:03}");
+                result_lines.push(format!("Node {token} latency 150ms."));
+            }
+        }
+        let result = result_lines.join("\n");
+
+        let edge_filler = "z".repeat(1_000);
+        let gap = "w".repeat(800);
+        for cluster in 0..cluster_count {
+            let mut call_result = vec![edge_filler.clone()];
+            for i in 0..claims_per_cluster {
+                let token = format!("task_R{cluster:02}{i:03}");
+                call_result.push(format!("{token} 150ms db-pool-{cluster:02}"));
+                if i + 1 < claims_per_cluster {
+                    call_result.push(gap.clone());
+                }
+            }
+            call_result.push(edge_filler.clone());
+            capture_calls.push(ToolCall {
+                tool_call_id: format!("tc{cluster}"),
+                tool_name: "query".to_owned(),
+                arguments: serde_json::json!({"pool": format!("db-pool-{cluster:02}")}),
+                result: call_result.join("\n"),
+                success: true,
+            });
+        }
+
+        CapturedEdge {
+            scenario: "db-pool-regions".to_owned(),
+            iteration: 0,
+            task_id: 0,
+            worker_id: "db-analyst".to_owned(),
+            goal: "diagnose db latency".to_owned(),
+            plan_step: PlanStep {
+                task: "find slow pools".to_owned(),
+                worker_role: "db-analyst".to_owned(),
+                depends_on: Vec::new(),
+            },
+            plan_context: PlanContext {
+                consumers: Vec::new(),
+                siblings: Vec::new(),
+            },
+            context_provided: String::new(),
+            worker_output: WorkerOutput {
+                summary: "db findings".to_owned(),
+                result,
+                truncated: false,
+            },
+            tool_calls: capture_calls,
+            confidence: None,
+        }
+    }
+
+    #[test]
+    fn db_pool_shaped_regions_keep_excerpts_and_reduce_uncovered() {
+        let edge = db_pool_regions_edge();
+        let mut config = ArmConfig::default();
+        // Pin the allowance for the whole `claim_evidence` object to the tight
+        // db-pool-shaped budget the allocation must pack against.
+        config.state_budget_chars = build_fixed_state(&edge, &config).char_len() + 7_700;
+
+        let state = assemble_claim_indexed(&edge, &config).unwrap();
+        assert!(
+            state.char_len() <= config.state_budget_chars,
+            "state {} chars exceeds budget {}",
+            state.char_len(),
+            config.state_budget_chars
+        );
+        assert!(
+            state.claim_evidence.regions.len() >= 10,
+            "expected ~12 regions, got {}",
+            state.claim_evidence.regions.len()
+        );
+        let with_excerpt = state
+            .claim_evidence
+            .regions
+            .iter()
+            .filter(|r| r.excerpt.is_some())
+            .count();
+        assert!(
+            with_excerpt >= 2,
+            "real entry sizes must let several regions keep excerpts, got {with_excerpt}"
+        );
+        let uncovered: usize = state
+            .claim_evidence
+            .regions
+            .iter()
+            .map(|r| r.uncovered_hits)
+            .sum();
+        assert!(
+            uncovered < 22,
+            "uncovered hits must stay below the pre-fix 22, got {uncovered}"
+        );
+    }
+
+    #[test]
+    fn tiny_region_excerpt_budget_degrades_to_references() {
+        let edge = degradation_edge();
+        let config = ArmConfig {
+            state_budget_chars: 6_500,
+            region_excerpt_budget: 1_500,
+            ..Default::default()
+        };
+
+        let state = assemble_claim_indexed(&edge, &config)
+            .expect("a tighter region split budget must not hard-fail assembly");
+        assert!(
+            state.char_len() <= config.state_budget_chars,
+            "state {} chars exceeds budget {}",
+            state.char_len(),
+            config.state_budget_chars
+        );
+        assert!(
+            state.claim_evidence.regions.len() > 5,
+            "the tighter split budget must yield more regions, got {}",
+            state.claim_evidence.regions.len()
+        );
+        assert!(
+            state
+                .claim_evidence
+                .regions
+                .iter()
+                .any(|r| r.excerpt.is_none()),
+            "the tail must degrade to reference-only rather than hard-fail"
+        );
+        for claim in &state.claim_evidence.claims {
+            if claim.found_in == FoundIn::ToolCapture {
+                assert!(
+                    claim.region_id.is_some(),
+                    "a degraded region must still be named by its claim"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn claim_evidence_v2_round_trips_through_serde() {
         let evidence = ClaimEvidenceV2 {
             regions: vec![EvidenceRegion {
@@ -1232,6 +1509,8 @@ mod tests {
                 full_region_chars: 11,
                 source_truncated: false,
                 truncated: false,
+                excerpt_range: Some((0, 11)),
+                uncovered_hits: 0,
             }],
             claims: vec![ClaimRef {
                 claim: "host-001".to_owned(),
@@ -1246,5 +1525,276 @@ mod tests {
         assert_eq!(parsed.claims.len(), 1);
         assert_eq!(parsed.regions[0].region_id, 0);
         assert_eq!(parsed.claims[0].region_id, Some(0));
+    }
+
+    fn coverage_region(
+        excerpt_range: Option<(usize, usize)>,
+        excerpt_len: usize,
+    ) -> EvidenceRegion {
+        EvidenceRegion {
+            region_id: 0,
+            tool_call_id: "tc".to_owned(),
+            tool_name: "query".to_owned(),
+            args_excerpt: String::new(),
+            excerpt: Some("x".repeat(excerpt_len)),
+            span: (0, 200),
+            full_region_chars: 200,
+            source_truncated: false,
+            truncated: true,
+            excerpt_range,
+            uncovered_hits: 0,
+        }
+    }
+
+    fn tool_claim_ref() -> ClaimRef {
+        ClaimRef {
+            claim: "150ms".to_owned(),
+            found_in: FoundIn::ToolCapture,
+            region_id: Some(0),
+        }
+    }
+
+    fn resolved_at(positions: Vec<usize>) -> Vec<ClaimResolution> {
+        vec![ClaimResolution {
+            claim: ExtractedClaim {
+                text: "150ms".to_owned(),
+                class: ClaimClass::ValueWithUnit,
+            },
+            found_in: FoundIn::ToolCapture,
+            positions,
+        }]
+    }
+
+    #[test]
+    fn bounded_excerpt_covering_all_hits_is_budgeting_not_loss() {
+        let mut evidence = ClaimEvidenceV2 {
+            regions: vec![coverage_region(Some((90, 170)), 80)],
+            claims: vec![tool_claim_ref()],
+        };
+
+        apply_region_coverage(&mut evidence, &resolved_at(vec![120]));
+
+        assert_eq!(
+            evidence.regions[0].uncovered_hits, 0,
+            "the referenced claim's hit is inside the shown excerpt"
+        );
+        assert!(
+            evidence.regions[0].is_excerpted(),
+            "an 80-char excerpt of a 200-char region is excerpted (informational)"
+        );
+    }
+
+    #[test]
+    fn any_shown_occurrence_keeps_a_claim_recoverable() {
+        let mut evidence = ClaimEvidenceV2 {
+            regions: vec![coverage_region(Some((90, 170)), 80)],
+            claims: vec![tool_claim_ref()],
+        };
+
+        // One occurrence is dropped, but another is shown, so the judge can
+        // still recover the claim.
+        apply_region_coverage(&mut evidence, &resolved_at(vec![50, 120]));
+
+        assert_eq!(evidence.regions[0].uncovered_hits, 0);
+    }
+
+    #[test]
+    fn hit_outside_region_excerpt_is_real_loss() {
+        let mut evidence = ClaimEvidenceV2 {
+            regions: vec![coverage_region(Some((90, 170)), 80)],
+            claims: vec![tool_claim_ref()],
+        };
+
+        apply_region_coverage(&mut evidence, &resolved_at(vec![50]));
+
+        assert_eq!(
+            evidence.regions[0].uncovered_hits, 1,
+            "the claim's only hit at 50 falls outside the shown excerpt"
+        );
+    }
+
+    #[test]
+    fn region_without_supported_claims_is_budgeting_only() {
+        let mut evidence = ClaimEvidenceV2 {
+            regions: vec![coverage_region(None, 0)],
+            claims: vec![ClaimRef {
+                claim: "150ms".to_owned(),
+                found_in: FoundIn::NotFound,
+                region_id: None,
+            }],
+        };
+        // The only hit lies outside the region span, so the region has no
+        // supported claims and losing its excerpt is not information loss.
+        let resolved = resolved_at(vec![500]);
+
+        apply_region_coverage(&mut evidence, &resolved);
+
+        assert_eq!(evidence.regions[0].uncovered_hits, 0);
+    }
+
+    /// Hits every ~1.2k chars over ~20k. A single repeated claim answers to
+    /// every hit, so the shown excerpt only needs to keep one occurrence for
+    /// the claim to stay recoverable.
+    fn chained_edge() -> CapturedEdge {
+        let mut capture = String::new();
+        for i in 0..17 {
+            capture.push_str("150ms\n");
+            if i < 16 {
+                capture.push_str(&"y".repeat(1_150));
+            }
+        }
+        CapturedEdge {
+            scenario: "chained".to_owned(),
+            iteration: 0,
+            task_id: 0,
+            worker_id: "analyst".to_owned(),
+            goal: "diagnose".to_owned(),
+            plan_step: PlanStep {
+                task: "find latency".to_owned(),
+                worker_role: "analyst".to_owned(),
+                depends_on: Vec::new(),
+            },
+            plan_context: PlanContext {
+                consumers: Vec::new(),
+                siblings: Vec::new(),
+            },
+            context_provided: String::new(),
+            worker_output: WorkerOutput {
+                summary: "chained".to_owned(),
+                result: "150ms".to_owned(),
+                truncated: false,
+            },
+            tool_calls: vec![ToolCall {
+                tool_call_id: "tc1".to_owned(),
+                tool_name: "query".to_owned(),
+                arguments: serde_json::json!({}),
+                result: capture,
+                success: true,
+            }],
+            confidence: None,
+        }
+    }
+
+    /// The same ~1.2k-spaced hits, but every line carries a distinct claim, so
+    /// each region owns its claims and a degraded region is real loss.
+    fn distinct_chained_edge() -> CapturedEdge {
+        let mut capture = String::new();
+        let mut result = String::new();
+        for i in 0..17 {
+            let token = format!("task_CHN{i:05}");
+            result.push_str(&token);
+            result.push('\n');
+            capture.push_str(&token);
+            capture.push_str(" 150ms\n");
+            if i < 16 {
+                capture.push_str(&"y".repeat(1_120));
+            }
+        }
+        CapturedEdge {
+            scenario: "chained-distinct".to_owned(),
+            iteration: 0,
+            task_id: 0,
+            worker_id: "analyst".to_owned(),
+            goal: "diagnose".to_owned(),
+            plan_step: PlanStep {
+                task: "find latency".to_owned(),
+                worker_role: "analyst".to_owned(),
+                depends_on: Vec::new(),
+            },
+            plan_context: PlanContext {
+                consumers: Vec::new(),
+                siblings: Vec::new(),
+            },
+            context_provided: String::new(),
+            worker_output: WorkerOutput {
+                summary: "chained".to_owned(),
+                result,
+                truncated: false,
+            },
+            tool_calls: vec![ToolCall {
+                tool_call_id: "tc1".to_owned(),
+                tool_name: "query".to_owned(),
+                arguments: serde_json::json!({}),
+                result: capture,
+                success: true,
+            }],
+            confidence: None,
+        }
+    }
+
+    /// A single-linkage chain over ~20k must be cut into small regions, each
+    /// excerpt covering the hit(s) its claims rest on. The excerpts are still
+    /// bounded (budgeting), just not lossy.
+    #[test]
+    fn chained_regions_split_until_excerpts_cover_their_hits() {
+        let edge = chained_edge();
+        let config = ArmConfig {
+            state_budget_chars: 14_000,
+            ..Default::default()
+        };
+        let state = assemble_claim_indexed(&edge, &config).unwrap();
+
+        assert!(state.char_len() <= config.state_budget_chars);
+        assert!(
+            state.claim_evidence.regions.len() >= 5,
+            "chained hits should split into 5+ regions, got {}",
+            state.claim_evidence.regions.len()
+        );
+
+        let uncovered: usize = state
+            .claim_evidence
+            .regions
+            .iter()
+            .map(|r| r.uncovered_hits)
+            .sum();
+        assert_eq!(
+            uncovered, 0,
+            "every referenced claim must keep a shown hit: {:?}",
+            state.claim_evidence.regions
+        );
+        assert!(
+            state
+                .claim_evidence
+                .regions
+                .iter()
+                .any(|r| r.is_excerpted()),
+            "bounded-but-covered regions must record as excerpted"
+        );
+    }
+
+    /// When the budget cannot show every region, the degraded tail is real
+    /// loss only because its claims' hits are uncovered.
+    #[test]
+    fn over_budget_tail_degradation_flags_loss_only_when_hits_uncovered() {
+        let edge = distinct_chained_edge();
+        let config = ArmConfig {
+            state_budget_chars: 5_000,
+            ..Default::default()
+        };
+        let state = assemble_claim_indexed(&edge, &config).unwrap();
+        assert!(state.char_len() <= config.state_budget_chars);
+
+        let degraded = state
+            .claim_evidence
+            .regions
+            .iter()
+            .filter(|r| r.excerpt.is_none() && r.truncated)
+            .count();
+        assert!(
+            degraded > 0,
+            "expected the tail to degrade: {:?}",
+            state.claim_evidence.regions
+        );
+
+        let uncovered: usize = state
+            .claim_evidence
+            .regions
+            .iter()
+            .map(|r| r.uncovered_hits)
+            .sum();
+        assert!(
+            uncovered > 0,
+            "a degraded region with supported claims is real loss"
+        );
     }
 }

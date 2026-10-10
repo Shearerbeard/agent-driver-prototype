@@ -61,6 +61,30 @@ pub struct EvidenceRegion {
     pub full_region_chars: usize,
     pub source_truncated: bool,
     pub truncated: bool,
+    /// Character range of the shown `excerpt` within the flattened capture, or
+    /// `None` when no excerpt was shown. Used only for the coverage roll-up;
+    /// skipped in serialization so the wire state and its hash are unchanged.
+    #[serde(skip)]
+    pub excerpt_range: Option<(usize, usize)>,
+    /// Supported claims that reference this region and whose hit positions the
+    /// shown excerpt does not cover. Internal to the verdict; skipped in
+    /// serialization.
+    #[serde(skip)]
+    pub uncovered_hits: usize,
+}
+
+impl EvidenceRegion {
+    /// True when the shown excerpt is shorter than the full region text.
+    ///
+    /// This is the informational `evidence_excerpted` signal: merely budgeting
+    /// the region is not, by itself, real information loss.
+    #[must_use]
+    pub fn is_excerpted(&self) -> bool {
+        match &self.excerpt {
+            Some(e) => e.chars().count() < self.full_region_chars,
+            None => self.full_region_chars > 0,
+        }
+    }
 }
 
 /// A claim and its resolved region reference.
