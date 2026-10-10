@@ -28,6 +28,7 @@ Admission test: where does the diff land.
 | [W11](w11-typed-evidence-architecture.md) | Typed evidence artifacts + JEV-ranked context assembly - architecture | jev | backlog | W10 | smart | S -> A -> D -> U(architecture) |
 | [W12](w12-edge-gating-policy.md) | Edge gating policy - verifier verdicts affect control flow (deferred; own plan after W10) | jev | backlog | W10 | smart | S -> A -> D -> U(code-review) |
 | [W13](w13-full-rca-baseline.md) | Full RCA baseline against the prototype - 12 scenarios x 3 iters, verifier off | jev | backlog | W8, S107 | smart | S -> A -> M -> D -> U(code-review) |
+| [W14](w14-delegation-evidence-contract.md) | Adopt the delegation and evidence contract in the real drivers | jev | backlog | W7 | smart | S -> A -> D -> U(code-review) |
 | [S103](s103-coordinator-mcp-filter.md) | Coordinator MCP access filtered by [agent].mcp_filter | - | ready | - | smart | S -> A -> U(code-review) @ S |
 | [S104](s104-mezmo-orchestrated-config-parity.md) | Mezmo-orchestrated config parity - [agent.llm] from TOML, one warning per unimplemented section | - | backlog | - | smart | S -> A -> M -> U(mezmo-config) |
 | [S105](s105-main-drift-catch-up.md) | Main-drift catch-up shortlist (inventory-gated) | - | backlog | - | smart | S -> A -> U(code-review) |

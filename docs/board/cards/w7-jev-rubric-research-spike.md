@@ -177,6 +177,24 @@ prompt mid-dispatch is a failed pre-vet, not a surprise to debug.
 
 ## Log
 
+- 2026-10-10 U(rubric) RULINGS (user): (1) composite gate ACCEPTED,
+  grounding dimension DEMOTED per its pre-registered no-go rule -
+  per-claim grounding stats remain as audit telemetry, the gate's
+  signal rides presence/handoff/scope/fidelity; (3) contract
+  document MINTED at
+  `docs/board/notes/2026-10-10-delegation-evidence-contract.md` with
+  card W14 (jev lane, depends W7) tracking adoption in the real
+  drivers. Ruling (2) OPEN pending user: Arm 3 needs
+  `SUMMARIZER_BASE_URL`/`SUMMARIZER_API_KEY`/`SUMMARIZER_MODEL`
+  exported (OpenAI-compatible endpoint; opencode-go deepseek flash is
+  the intended fit; user's zshenv is the home; key value never needs
+  to enter chat) - slice cost ~$0.30; Leg 2 judge is
+  `us.moonshotai.kimi-k3` via the existing bedrock bearer (opt-in
+  `--judge` since `d3c46ef`), blocked first on the judge.rs
+  FixtureSummarizer bug (judge would audit fixture-summarized windows
+  under Arm 3) and on constrained-dims hardening (193-call incident
+  showed free-form dims and a degenerate VERDICT parse that hard-
+  aborted the leg), 1,144 calls ~$1-2 when approved. Board owner.
 - 2026-10-09 C5 FULL RUN COMPLETE (user-approved ~3,234 calls; actual
   16.9M input + 358k output tokens, under the ~38M estimate;
   `.review/w7-artifacts/c5-full-cloud`; lat p50 155-165ms p95

@@ -33,6 +33,8 @@ kanban-plugin: board
 	Depends: W10. Gates: S -> A -> D -> U(code-review). Executor: smart. Lane: jev.
 - [ ] **W13** [Full RCA baseline against the prototype - 12 scenarios x 3 iters, verifier off](w13-full-rca-baseline.md)
 	Depends: W8, S107. Gates: S -> A -> M -> D -> U(code-review). Executor: smart. Lane: jev.
+- [ ] **W14** [Adopt the delegation and evidence contract in the real drivers](w14-delegation-evidence-contract.md)
+	Depends: W7. Gates: S -> A -> D -> U(code-review). Executor: smart. Lane: jev.
 - [ ] **S104** [Mezmo-orchestrated config parity - [agent.llm] from TOML, one warning per unimplemented section](s104-mezmo-orchestrated-config-parity.md)
 	Depends: none. Gates: S -> A -> M -> U(mezmo-config). Executor: smart.
 - [ ] **S105** [Main-drift catch-up shortlist (inventory-gated)](s105-main-drift-catch-up.md)
