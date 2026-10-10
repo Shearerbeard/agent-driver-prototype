@@ -177,6 +177,32 @@ prompt mid-dispatch is a failed pre-vet, not a surprise to debug.
 
 ## Log
 
+- 2026-10-09 REGION PROBE ran (post-compaction resume; 20 calls,
+  `.review/w7-artifacts/c4b-region-probe`; commit chain unchanged,
+  verified card/w7 clean + boardkit OK first). Wire state verified
+  region-based (db-pool: 2 regions, 121 claim references, 22.9k-char
+  request). Model-side healthy: claim_indexed grounding p50 1.85/3
+  (residual 78 not-found claims did NOT false-flag grounding - the
+  model judges from regions, p50 46 not-found per edge is priced in),
+  presence p50 0.37, composites p50 0.723/0.752, 1 INSUFFICIENT_EVIDENCE
+  (dual-incident on head_truncation - adversarial arm starved presence,
+  real signal), 1 clean PASS pair (checkout iter0-2, the only capture
+  with no upstream truncation). BUT verdict-level collapse did NOT
+  happen: 19/20 FLAG{truncation} because `TruncationFlags::any()`
+  (verdict.rs:244) fires on (a) `source` = upstream July-capture
+  truncation, present on nearly every edge, zero drift signal, and
+  (b) `evidence` = region excerpt < full_region_chars with all claim
+  hits still covered = honest budgeting per the driver doctrine.
+  FLAG{truncation} currently measures SIZE, not drift. PAUSED FOR
+  USER RULING (doctrine owner): proposed verdict policy - `source`
+  never verdict-driving; `evidence` FLAGs only when a supported
+  claim's hit positions fall outside the shown excerpt (real loss);
+  `worker_output` stays FLAG-driving (claims reference text the judge
+  cannot see). Fix is code-side rescoring of saved artifacts (zero
+  new live calls) since score_composite is deterministic from saved
+  answers + flags; then C5. Also confirmed reporting wart: artifacts
+  do not serialize claim_evidence (no region columns for the held-out
+  report) - must fix before the C5 report. Board owner.
 - 2026-10-09 EVIDENCE SCHEMA v2 landed (commit `a028fee`; executors
   rust-write + 2x rust-fill on the deepseek pin; board owner verified
   and owns git) - PAUSED HERE FOR SESSION COMPACTION; next session
