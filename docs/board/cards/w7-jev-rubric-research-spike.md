@@ -177,6 +177,34 @@ prompt mid-dispatch is a failed pre-vet, not a surprise to debug.
 
 ## Log
 
+- 2026-10-09 SPLIT-FLAG RULING APPLIED through three offline fixes,
+  all committed (`983aa3d`; 3x rust-fill on the deepseek pin, board
+  owner verified + owns git; zero additional live calls - rescore
+  recomputes flags/verdicts from saved probe answers). (1) Verdict
+  policy per user ruling: `evidence` FLAGs only when a supported
+  claim's hits fall outside the shown excerpt; `evidence_excerpted`
+  (bounded-but-covering) and `source` (upstream July cuts) are
+  labeled budgeting, recorded, never verdict-driving; `worker_output`
+  stays driving. (2) Region discovery un-chains single-linkage
+  mega-regions: split at widest internal gap until each region's span
+  fits its 4000c excerpt budget (db-pool: 2 -> 12 regions). (3)
+  Allocation measures real serialized entry size (150-350c) instead
+  of reserving 580/region, degrades full-or-reference-only; region
+  count alone can no longer fail assembly. Rescored probe: 19/20
+  truncation flags -> 8 honest ones; adversarial head arm = labeled
+  budgeting (6 PASS, db-pool worker_output FLAG, dual-incident
+  INSUFFICIENT_EVIDENCE); claim_indexed residual FLAGs are real loss
+  (e.g. db-pool: 9 claims' hits beyond the evidence budget - 4 shown
+  excerpts, 8 reference-only regions). CAVEAT: rescored verdicts pair
+  saved model answers with new flags - policy preview, not live
+  evidence; C5 produces the real numbers under the new assembly.
+  Full 1,617-variant replay green. NEXT: C5 full run arms 1,2
+  (~3,234 calls, ~38M input tokens, ~$1.60-2.00, resume-safe) into
+  `.review/w7-artifacts/c5-full-cloud`, then held-out report
+  (per-class composites, pairwise clean-vs-failure per arm,
+  presence-only ablation no-go rule >10pts, size/truncation/latency
+  columns from the new evidence_summary). Awaiting user go at the
+  spend boundary. Board owner.
 - 2026-10-09 REGION PROBE ran (post-compaction resume; 20 calls,
   `.review/w7-artifacts/c4b-region-probe`; commit chain unchanged,
   verified card/w7 clean + boardkit OK first). Wire state verified
