@@ -107,6 +107,7 @@ mod tests {
         RunnerConfig {
             mode: RunnerMode::Live,
             selector,
+            judge: true,
             ..RunnerConfig::default()
         }
     }
@@ -168,6 +169,70 @@ mod tests {
             plan.judge_calls,
             SelectionArm::all().len(),
             "a selected held-out edge is judged once per arm"
+        );
+    }
+
+    #[test]
+    fn dry_run_default_judge_off_reports_zero() {
+        let corpus = default_corpus().unwrap_or_else(|e| panic!("default corpus: {e}"));
+        let config = RunnerConfig {
+            mode: RunnerMode::Live,
+            selector: RunSelector::All,
+            ..RunnerConfig::default()
+        };
+
+        let plan = plan_run(&corpus, &config).unwrap_or_else(|e| panic!("plan_run: {e}"));
+
+        assert_eq!(plan.judge_calls, 0, "judge must be off unless selected");
+        assert!(
+            plan.format().contains("Judge calls: 0"),
+            "preview must show zero judge calls when off: {}",
+            plan.format()
+        );
+    }
+
+    #[tokio::test]
+    async fn live_default_judge_off_makes_no_judge_calls_with_env_set() {
+        let _guard = ENV_LOCK.lock().await;
+
+        let jev_server = MockServer::start().await;
+        let sum_server = MockServer::start().await;
+        let judge_server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path("/v1/systemone"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(jev_ok_response()))
+            .mount(&jev_server)
+            .await;
+
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(summary_ok_response()))
+            .mount(&sum_server)
+            .await;
+
+        set_live_env(&jev_server.uri(), &sum_server.uri(), &judge_server.uri());
+
+        let corpus = held_out_corpus(1);
+        let config = RunnerConfig {
+            mode: RunnerMode::Live,
+            endpoint: JevEndpoint::Cloud,
+            ..Default::default()
+        };
+        let result = run_corpus(&corpus, &config, None)
+            .await
+            .unwrap_or_else(|e| panic!("run_corpus failed: {e}"));
+
+        clear_live_env();
+
+        assert!(
+            result.judge_results.is_empty(),
+            "judge off must produce zero judge results"
+        );
+        let received = judge_server.received_requests().await.unwrap_or_default();
+        assert!(
+            received.is_empty(),
+            "judge endpoint must not be called when judge is off: {received:?}"
         );
     }
 
@@ -587,6 +652,7 @@ mod tests {
         let config = RunnerConfig {
             mode: RunnerMode::Live,
             endpoint: JevEndpoint::Cloud,
+            judge: true,
             ..Default::default()
         };
         let dir = tempfile::tempdir().unwrap_or_else(|e| panic!("temp dir: {e}"));
@@ -667,6 +733,7 @@ mod tests {
         let config = RunnerConfig {
             mode: RunnerMode::Live,
             endpoint: JevEndpoint::Cloud,
+            judge: true,
             ..Default::default()
         };
 

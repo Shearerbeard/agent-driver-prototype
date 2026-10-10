@@ -5,6 +5,7 @@
 //!   cargo run -p edge-spike --bin edge-run -- --live [artifact-dir]
 //!   cargo run -p edge-spike --bin edge-run -- --live --local-gateway [artifact-dir]
 //!   cargo run -p edge-spike --bin edge-run -- --live --dry-run [artifact-dir]
+//!   cargo run -p edge-spike --bin edge-run -- --live --judge [artifact-dir]
 
 use std::collections::HashSet;
 use std::env;
@@ -24,6 +25,7 @@ async fn main() -> anyhow::Result<()> {
     let mut live = env::var("LIVE").is_ok_and(|v| v == "1" || v.eq_ignore_ascii_case("true"));
     let mut local_gateway = false;
     let mut dry_run = false;
+    let mut judge = false;
     let mut selector = RunSelector::All;
     let mut arms: Option<Vec<SelectionArm>> = None;
     let mut artifact_dir: Option<PathBuf> = None;
@@ -33,6 +35,7 @@ async fn main() -> anyhow::Result<()> {
             "--live" => live = true,
             "--local-gateway" => local_gateway = true,
             "--dry-run" => dry_run = true,
+            "--judge" => judge = true,
             "--edge" => {
                 let id = args
                     .next()
@@ -88,6 +91,7 @@ async fn main() -> anyhow::Result<()> {
         arms,
         mode,
         endpoint,
+        judge,
         ..RunnerConfig::default()
     };
 

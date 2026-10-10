@@ -123,6 +123,9 @@ pub struct RunnerConfig {
     pub arms: Vec<SelectionArm>,
     /// Variant subset selector.
     pub selector: RunSelector,
+    /// Run the Leg-2 judge after scoring. Opt-in: the judge spends external
+    /// calls on the held-out split and must never run unless selected.
+    pub judge: bool,
 }
 
 impl Default for RunnerConfig {
@@ -135,6 +138,7 @@ impl Default for RunnerConfig {
             endpoint: JevEndpoint::Cloud,
             arms: SelectionArm::all().to_vec(),
             selector: RunSelector::All,
+            judge: false,
         }
     }
 }
@@ -240,7 +244,7 @@ pub fn plan_run(corpus: &Corpus, config: &RunnerConfig) -> anyhow::Result<RunPla
         }
     }
 
-    if config.mode == RunnerMode::Live {
+    if config.judge && config.mode == RunnerMode::Live {
         let held_out_ids: HashSet<&str> = corpus
             .held_out
             .iter()
@@ -522,7 +526,7 @@ where
 }
 
 /// Run the corpus through every arm using replay or live scoring, then judge
-/// the held-out split when live.
+/// the held-out split when live and the judge is selected.
 ///
 /// If `output_dir` is provided, each completed scoring and judge call is
 /// appended to `results.jsonl` / `judge_results.jsonl` and the completed-key
@@ -658,7 +662,7 @@ pub async fn run_corpus(
         ));
     }
 
-    let (judge_results, judge_error) = if config.mode == RunnerMode::Live {
+    let (judge_results, judge_error) = if config.judge && config.mode == RunnerMode::Live {
         run_judge(corpus, &selected, config, &mut completed, output_dir).await
     } else {
         (Vec::new(), None)
@@ -1853,6 +1857,7 @@ mod tests {
             let config = RunnerConfig {
                 mode: RunnerMode::Live,
                 selector,
+                judge: true,
                 ..RunnerConfig::default()
             };
             let plan = plan_run(&corpus, &config).unwrap_or_else(|e| panic!("{e}"));
