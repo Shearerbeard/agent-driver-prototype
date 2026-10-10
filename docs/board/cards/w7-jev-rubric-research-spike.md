@@ -177,6 +177,45 @@ prompt mid-dispatch is a failed pre-vet, not a surprise to debug.
 
 ## Log
 
+- 2026-10-09 C5 FULL RUN COMPLETE (user-approved ~3,234 calls; actual
+  16.9M input + 358k output tokens, under the ~38M estimate;
+  `.review/w7-artifacts/c5-full-cloud`; lat p50 155-165ms p95
+  ~460ms). HELD-OUT RESULTS (572 variants, 47 clean bases x 2 arms):
+  composite separates clean from EVERY failure class at 46-47/47
+  (98-100%) on both arms - the sealed v2 rubric + region-evidence
+  state works as an edge-level drift gate. BUT the pre-registered
+  NO-GO RULE FIRES for the grounding dimension: on held-out
+  clean-vs-fabricated, grounding-dim separation is 3/47 (claim_indexed)
+  and 2/47 (head) vs presence-dim 41/47 and 42/47; dropping grounding
+  from the composite changes nothing (47/47 both arms). Mechanism:
+  a single 0-3 ordinal over 100+ extracted claims cannot see sparse
+  fabrication (mutations touch a few claims); presence/handoff/scope/
+  fidelity carry the signal. ARM COMPARISON: separation identical;
+  head_truncation is cheaper and cleaner at the gate level (states
+  p50 11.5k vs 19.8k chars, 6.9M vs 10.0M tokens, clean FLAG rate
+  19/133 vs 60/133 - claim_indexed's honest evidence-budget loss
+  flags nearly half of honest workers on big edges). Claim-indexing
+  buys AUDITABILITY (per-claim found/not-found, uncovered counts,
+  FLAG dims that say why), not separation. Verdict dims are
+  class-coherent: scope_violation -> scope_discipline 125/147;
+  truncation class -> handoff+truncation 143-144/147; distractor/
+  lossy -> INSUFFICIENT_EVIDENCE-dominant on claim_indexed,
+  handoff-FLAG-dominant on head. INCIDENT (root-caused + fixed in
+  `d3c46ef`): the run fell into Leg-2 judge after scoring because
+  judge was env-gated, not flag-gated - 193 unapproved judge calls
+  (est. ~2-3M tokens, order $0.10-0.30) fired before a hard parse
+  error ("VERDICT: prefix missing"; one reply degenerated into prose
+  inside the dims array - free-form dims, exactly the fragility the
+  constrained verdict was for). Judge is now opt-in via `--judge`;
+  the 193 records are an order-biased preview, not evidence. Judge
+  leg remains deferred with its 1,144-call cost figure. U(rubric)
+  GATE OPEN - rulings requested: (1) accept the composite gate and
+  demote/rework the grounding dimension per the no-go rule;
+  (2) Arm 3 (needs SUMMARIZER_* env) and Leg 2 judge (needs judge.rs
+  fixture fix + constrained-dims hardening + spend approval) -
+  proceed or close; (3) mint the delegation/evidence contract
+  document + its boardkit card (jev lane) from the doctrine +
+  schema findings. Board owner.
 - 2026-10-09 SPLIT-FLAG RULING APPLIED through three offline fixes,
   all committed (`983aa3d`; 3x rust-fill on the deepseek pin, board
   owner verified + owns git; zero additional live calls - rescore
