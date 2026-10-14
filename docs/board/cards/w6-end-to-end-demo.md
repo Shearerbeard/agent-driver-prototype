@@ -92,6 +92,28 @@ Gate T.
 
 ## Log
 
+- 2026-10-14 STAGE 1 (DRY-RUN ENABLEMENT) COMPLETE under the vetted
+  v3 plan (`~/.opencode/plan/w6-dryrun-plan.md`, three frontier rounds
+  PASS): the Gate T handout and `restart-world.sh` are in the
+  integration worktree's `.review/w6/`; the four sequenced proofs all
+  passed live (no-pidfile refusal; bootstrap adopting the overnight
+  stack by port-exact stops cross-checked against legacy pidfiles;
+  receiver-down refusal with zero world churn, its printed relaunch
+  command then verified working; end-to-end kill-restart-health-fresh-
+  incident cycle exit 0); the evidence-receipt canary ran through the
+  restarted stack (16s, 139 aura events, render parses); both legs'
+  transcripts render demo-quality (NO-GO material exists). Gate A
+  (python-reviewer, kimi-k2.7-code, read-only, cross-family) round 1
+  found one HIGH drift - the handout's approval step was browser
+  fiction (the receiver is a JSON API; approval is
+  `w6-demo decide <id> --approve`, originating in the plan's own
+  Stage-2 prose, erratum recorded in the plan ledger) - fixed and
+  round-2 CLEAN. Two harness-side set -e bugs in the new helper were
+  found and fixed by the proofs themselves. Stage 2 (Mike's dry run,
+  Gate T) is unblocked; the handout is his entry point. Evidence:
+  [2026-10-14-w6-rehearsal.md](../evidence/2026-10-14-w6-rehearsal.md)
+  (Stage 1 section) and `.review/w6/stage1-morning.md` in the
+  integration worktree. Board owner.
 - 2026-10-14 GATE M COMPLETE - BOTH LEGS. Run two (the unwind) landed
   on attempt five (run2e, 357s, 296,672 tokens): state read replicas 3,
   scale applied 3->6 with its declared rollback bound to the captured

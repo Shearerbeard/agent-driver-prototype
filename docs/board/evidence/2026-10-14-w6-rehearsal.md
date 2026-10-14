@@ -169,3 +169,42 @@ recorded above).
 
 Gate M (both legs) complete: the heal and the unwind are proven live.
 The go/no-go gate for the demo follows this record.
+
+## Stage 1 (morning-of-demo): dry-run enablement
+
+Plan: `~/.opencode/plan/w6-dryrun-plan.md` (v3 FINAL; three frontier
+review rounds, PASS · PASS · PASS; findings 8 → 5 → 1 → 0 open).
+Full verbatim record: `.review/w6/stage1-morning.md` in the integration
+worktree. Summary:
+
+- **Artifacts:** `restart-world.sh` (world lifecycle: pidfile-only
+  exact kills, `--check` / `--bootstrap` / full-cycle modes, receiver
+  checked first and never restarted, fresh-incident confirmation) and
+  `handout.md` (Gate T handout, six parts) in `.review/w6/`.
+- **Proofs, all passed live:** no-pidfile refusal (exit 1, bootstrap
+  guidance); bootstrap (port-exact stops of the overnight mock/shim
+  cross-checked against legacy pidfiles, relaunch under `pids/`);
+  receiver-down refusal (no world churn, printed relaunch command then
+  run and verified); end-to-end cycle exit 0.
+- **Canary on the restarted stack:** 16s, 139 `aura.*` events, render
+  parses (142 events). NO-GO material verified: both legs' renders are
+  demo-quality; run2e's RunRecord tells the unwind story verbatim.
+- **Two harness bugs found by the proofs, fixed same session:** a
+  `set -e` AND-list in `stop_exact` killed the script silently on a
+  clean process exit; `port_pid`'s grep exit-1 under pipefail on an
+  empty port did the same via command substitution. Both are the
+  failure class the sequenced proofs exist to catch.
+- **Gate A (python-reviewer, kimi-k2.7-code, cross-family, read-only):**
+  round 1 AUDIT: DRIFT - 9 claims confirmed, one HIGH (browser-UI
+  fiction in the handout's approval step; the receiver is a JSON API,
+  approval is `w6-demo decide <id> --approve`; the fiction originated
+  in the plan's Stage-2 prose, so the vetted plan carried it and the
+  frontier rounds refined around it - plan erratum recorded). Fixed to
+  the CLI flow (pending → decide --approve, full-uuid warning,
+  two-terminal framing); round 2 AUDIT: CLEAN, one advisory adopted
+  (404 wording: the decide terminal shows the error, the run does not).
+
+Stage 2 (Mike's dry run, Gate T) is unblocked; entry point is the
+handout. Demo-morning step zero is pinned in it:
+`./restart-world.sh --check`.
+
