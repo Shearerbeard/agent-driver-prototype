@@ -1,7 +1,7 @@
 ---
 id: W6
 title: End-to-end demo - investigate, propose, approve, apply, heal, unwind
-status: backlog
+status: in-progress
 depends: [W2, W3, W4, W5]
 serialize-with: []
 lineage: isolated-branch
@@ -92,6 +92,40 @@ Gate T.
 
 ## Log
 
+- 2026-10-14 Pulled in-progress early under Mike's rulings (2026-10-13,
+  this flow): (1) the demo runs against the pushed `w5-ops-surface`
+  branch pre-merge - a logged override of this card's `depends: W5`,
+  his call; (2) run one steers toward the ground-truth fix (scale
+  payments to 6); (3) run two uses the canary lever - a step calling
+  `ops_scale_app` on nonexistent app `canary-ghost` after the scale,
+  with a declared rollback on every mutating step (stage-1's recorded
+  all-null tendency would leave nothing to unwind). The demo plan (v3,
+  frontier-reviewed PASS over three rounds, ledger in the plan file at
+  `~/.opencode/plan/w6-demo-prep-plan.md`) drives this card's Gate M/T
+  legs. Assembly (Stage 1) complete in the integration worktree's
+  gitignored `.review/w6/`: builds green, the 15 offline workflow tests
+  green at `3b51402`, fail-loud `[workflow]` validation proven, provider
+  lane probed (zai glm-5.3, model list 200), and the evidence-receipt
+  canary passed THROUGH the demo surface itself - `w6-demo run` (20s
+  smoke completion, live stdout, capture 13,455 bytes / 108 `aura.*`
+  events) read back and re-parsed by `w6-demo render`. Fixed-port
+  amendment to the pinned canary: on `--port 8964` (8787 taken on this
+  machine) no `SHIM_PORT=` line prints (that is `--port 0` only);
+  receipt is proven by listener + SSE round-trip. FINDING minted as
+  W14 (approval status-shape mismatch): the mirror - and per
+  aura-sandbox probe.sh the real governance service - answers a
+  query-keyed status GET, while W4's ratified wire polls the
+  path-suffix form; wire-proven (POST 207 / path-suffix 404 /
+  query-keyed 207). This card's live approval leg runs the loopback
+  receiver its own deliverable names (`w6-demo
+  approve`, speaking the ruled W4 wire: 207 pending / 200 decided
+  `{"approved","reason"}` / immutable decided rows); Gate A (frontier
+  seat, PASS, 2 minors fixed same turn) ruled that disposition
+  in-scope, pending Mike's ratification at the micro gate before the
+  first paid run. Wire-safety proven for the swap: both receivers
+  bind 127.0.0.1 only; no outbound client code in the mirror; the
+  public governance URI appears in no demo config or script. Board
+  owner.
 - 2026-09-29 Minted backlog behind W2/W3/W4/W5. Board owner.
 - 2026-10-05 Mint-drift hygiene (same pass as W2's Gate U tick):
   `lineage` corrected `none` -> `isolated-branch`, Branch section

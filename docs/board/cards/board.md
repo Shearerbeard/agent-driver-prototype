@@ -11,6 +11,8 @@ kanban-plugin: board
 	Depends: none. Gates: S -> A -> U(code-review) @ S. Executor: smart.
 
 ## In Progress
+- [ ] **W6** [End-to-end demo - investigate, propose, approve, apply, heal, unwind](w6-end-to-end-demo.md)
+	Depends: W2, W3, W4, W5. Gates: S -> A -> M -> T @ S. Executor: any.
 - [ ] **W7** [JEV rubric research spike - synthetic edge corpus, sealed rubric, accuracy + latency read](w7-jev-rubric-research-spike.md)
 	Depends: none. Gates: S -> A -> D -> U(rubric) @ S. Executor: smart. Lane: jev.
 
@@ -21,8 +23,6 @@ kanban-plugin: board
 	Depends: none. Gates: S -> A -> D -> U(code-review) @ A. Executor: smart. Lane: jev.
 
 ## Backlog
-- [ ] **W6** [End-to-end demo - investigate, propose, approve, apply, heal, unwind](w6-end-to-end-demo.md)
-	Depends: W2, W3, W4, W5. Gates: S -> A -> M -> T. Executor: any.
 - [ ] **W9** [EdgeVerifier seam + JevEdgeVerifier - observe-only verdict artifacts per submitted edge](w9-edge-verifier-seam.md)
 	Depends: W7. Gates: S(skeleton) -> A(design panel) -> U(type-surface) -> S(fill) -> A -> D -> U(code-review). Executor: smart. Lane: jev.
 - [ ] **W10** [RCA verifier experiment - verdict/outcome correlation, score deltas, latency and cost report](w10-rca-verifier-experiment.md)
@@ -33,6 +33,8 @@ kanban-plugin: board
 	Depends: W10. Gates: S -> A -> D -> U(code-review). Executor: smart. Lane: jev.
 - [ ] **W13** [Full RCA baseline against the prototype - 12 scenarios x 3 iters, verifier off](w13-full-rca-baseline.md)
 	Depends: W8, S107. Gates: S -> A -> M -> D -> U(code-review). Executor: smart. Lane: jev.
+- [ ] **W14** [Approval status-shape mismatch - shim's path-suffix poll vs the query-keyed governance wire](w14-approval-status-shape-mismatch.md)
+	Depends: none. Gates: S -> A -> U(code-review). Executor: smart.
 - [ ] **S104** [Mezmo-orchestrated config parity - [agent.llm] from TOML, one warning per unimplemented section](s104-mezmo-orchestrated-config-parity.md)
 	Depends: none. Gates: S -> A -> M -> U(mezmo-config). Executor: smart.
 - [ ] **S105** [Main-drift catch-up shortlist (inventory-gated)](s105-main-drift-catch-up.md)

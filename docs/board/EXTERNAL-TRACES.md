@@ -12,16 +12,21 @@ and who owes the follow-up.
 
 ## Traces
 
-- SB23 harness - the gov-mirror human UI and poll-fault verbs, W6's
-  live approval surface; repo `aura-sandbox` @
+- SB23 harness - the gov-mirror human UI and poll-fault verbs; was
+  minted as W6's live approval surface, superseded 2026-10-14 by the
+  W14 mismatch finding (the mirror answers a query-keyed status GET;
+  W4's ratified wire polls the path-suffix form, so the mirror 404s the
+  shim's poll - W6's live leg runs a loopback receiver instead); repo
+  `aura-sandbox` @
   `https://github.com/answerbook/aura-sandbox` (public; findable from
   any machine); path board at repo root, card
   `docs/board/cards/sb23-gov-mirror-ui-and-faults.md`, id prefix SB;
   visibility public repo / branch pushed (`mshearer/hitl-governance-dev-poll`
   at `725c941` since 2026-10-07, fetchable from any machine); verified
-  2026-10-07; owed the aura-sandbox board owner's close-outs of Gate M
+  2026-10-14; owed the aura-sandbox board owner's close-outs of Gate M
   and the U(code-review)/T boxes on the card (substance passed; the
-  boxes stay open).
+  boxes stay open), plus W14's ruling deciding whether the mirror gains
+  the path-suffix route.
 - Family registry - the aura family manifest that resolves `refs:`
   short-codes and `boardkit boards`; repo `mezmo/aura` @
   `https://github.com/mezmo/aura` (locate this machine's local

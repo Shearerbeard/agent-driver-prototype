@@ -20,7 +20,7 @@ Admission test: where does the diff land.
 | [W3](w3-workflow-executor.md) | Deterministic workflow executor - resolve, apply, unwind, residual reporting | - | done | W2 | smart | S -> A -> U(code-review) |
 | [W4](w4-sync-approval-wire.md) | Sync approval wire - notify POST, status poll with blocking hold | - | done | W2 | smart | S -> A -> U(code-review) -> U(wire-contract) |
 | [W5](w5-mock-mcp-ops-surface.md) | Mock-mcp ops surface - three remediation tools, per-session healing, ground truth | - | in-review | - | smart | S -> A -> U(code-review) @ U |
-| [W6](w6-end-to-end-demo.md) | End-to-end demo - investigate, propose, approve, apply, heal, unwind | - | backlog | W2, W3, W4, W5 | any | S -> A -> M -> T |
+| [W6](w6-end-to-end-demo.md) | End-to-end demo - investigate, propose, approve, apply, heal, unwind | - | in-progress | W2, W3, W4, W5 | any | S -> A -> M -> T @ S |
 | [W7](w7-jev-rubric-research-spike.md) | JEV rubric research spike - synthetic edge corpus, sealed rubric, accuracy + latency read | jev | in-progress | - | smart | S -> A -> D -> U(rubric) @ S |
 | [W8](w8-prototype-rca-harness.md) | Prototype RCA harness - contract-retrofitted config, runner wrapper, single-scenario smoke | jev | in-review | - | smart | S -> A -> D -> U(code-review) @ A |
 | [W9](w9-edge-verifier-seam.md) | EdgeVerifier seam + JevEdgeVerifier - observe-only verdict artifacts per submitted edge | jev | backlog | W7 | smart | S(skeleton) -> A(design panel) -> U(type-surface) -> S(fill) -> A -> D -> U(code-review) |
@@ -28,6 +28,7 @@ Admission test: where does the diff land.
 | [W11](w11-typed-evidence-architecture.md) | Typed evidence artifacts + JEV-ranked context assembly - architecture | jev | backlog | W10 | smart | S -> A -> D -> U(architecture) |
 | [W12](w12-edge-gating-policy.md) | Edge gating policy - verifier verdicts affect control flow (deferred; own plan after W10) | jev | backlog | W10 | smart | S -> A -> D -> U(code-review) |
 | [W13](w13-full-rca-baseline.md) | Full RCA baseline against the prototype - 12 scenarios x 3 iters, verifier off | jev | backlog | W8, S107 | smart | S -> A -> M -> D -> U(code-review) |
+| [W14](w14-approval-status-shape-mismatch.md) | Approval status-shape mismatch - shim's path-suffix poll vs the query-keyed governance wire | - | backlog | - | smart | S -> A -> U(code-review) |
 | [S103](s103-coordinator-mcp-filter.md) | Coordinator MCP access filtered by [agent].mcp_filter | - | ready | - | smart | S -> A -> U(code-review) @ S |
 | [S104](s104-mezmo-orchestrated-config-parity.md) | Mezmo-orchestrated config parity - [agent.llm] from TOML, one warning per unimplemented section | - | backlog | - | smart | S -> A -> M -> U(mezmo-config) |
 | [S105](s105-main-drift-catch-up.md) | Main-drift catch-up shortlist (inventory-gated) | - | backlog | - | smart | S -> A -> U(code-review) |
