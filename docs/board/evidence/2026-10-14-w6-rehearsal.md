@@ -208,3 +208,53 @@ Stage 2 (Mike's dry run, Gate T) is unblocked; entry point is the
 handout. Demo-morning step zero is pinned in it:
 `./restart-world.sh --check`.
 
+## Stage 2 (Gate T): Mike's dry run - GO
+
+Three end-to-end Mike-driven runs, each proposed, approved by Mike at
+the receiver, and completed with `outcome: Complete` (verify re-read
+replicas 6, image unchanged): decisions `01a13ad4` (~14:33Z),
+`01a13add` (investigated the post-heal world and restored the baseline
+anyway), and `01a13ae5` (~14:51Z, the final verification run). One
+earlier hold timed out cleanly (Mike reading, before the hold was
+raised to 900s); one earlier run was killed at 90s by the board
+owner's world restart colliding with it (14:20:37 start vs 14:22:06
+restart; the shim's graceful SIGTERM close initially read as an engine
+failure). Mike's branch selection: **GO** - he drives the live demo.
+
+Harness work done during the dry run, all in `.review/w6` demo
+material (zero `src/` in either repo, freeze held):
+
+- Live output de-spammed (token-delta reasoning events quieted;
+  nameless OpenAI-style chunks dropped from the live view, kept in
+  captures); task lines show worker + task id; tool completions
+  resolve the tool name via call-id correlation with duration.
+- Approval hold raised 300s -> 900s (demo pacing).
+- Receiver persists every notify payload to
+  `notifications/<decision_id>.json` - the approver's-eye workflow on
+  disk, including the shim's `rendered` briefing.
+- `w6-demo pending` redesigned: labeled blocks (DECISION / BRIEFING /
+  PROPOSED WORKFLOW) with export flow arrows (`-> scale.rollback` vs
+  `context only`), `$from` bindings shown inline, and pre-filled
+  decide commands; decided rows collapse to one-liners.
+- Display files carved for the audience: `workflow-heal.json`,
+  `workflow-canary.json` (executed records, verbatim engine output
+  embedded), `workflow-heal-proposed.json` (clearly-labeled
+  reconstruction - the rehearsal-era as-notified payloads predate the
+  disk dump), plus full render transcripts.
+- `restart-world.sh` gained a live-run guard (refuses to cycle with an
+  established :8964 client connection) after the collision above; the
+  guard's first version false-positived on ss's header line (fixed:
+  data-lines-only). Honest note: its true-positive path (refusing
+  under an actually-live run) is plausible-but-unproven; the two
+  firings during run C's live window are consistent with either.
+
+Stack disposition at close (Mike's ruling - the stack stays up): mock
+:9992, shim :8964 (900s hold), and receiver :9397 were all left
+running as-is; the receiver holds the three decided rows, and the
+notification payloads persist on disk. `restart-world.sh` remains the
+between-legs freshen if wanted.
+
+Spend today: three full heal runs + three smoke canaries + the killed
+run's investigation phase.
+
+

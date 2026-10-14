@@ -92,6 +92,22 @@ Gate T.
 
 ## Log
 
+- 2026-10-14 STAGE 2 (GATE T) COMPLETE - GO. Mike drove three
+  end-to-end runs live, approving each at the receiver; all three
+  completed with the heal verified (replicas 6, image unchanged).
+  His ruling at the gate: GO for the live demo, stack left running
+  untouched per his call. Session-day harness work (all demo
+  material, no src/): live-output de-spam + worker/task/tool lines,
+  900s approval hold, receiver notify-payload persistence to
+  notifications/, the pending redesign (blocks, export flow arrows,
+  pre-filled decide commands), audience display files
+  (workflow-*.json + transcripts), and a live-run guard in
+  restart-world.sh after a restart/run collision killed one attempt
+  (guard's own header-line false-positive fixed same session). Stage
+  3 (W16/W17 minting with cite spot-checks) remains the named next
+  action, post-demo per plan. Evidence:
+  [2026-10-14-w6-rehearsal.md](../evidence/2026-10-14-w6-rehearsal.md)
+  (Stage 2 section). Board owner.
 - 2026-10-14 STAGE 1 (DRY-RUN ENABLEMENT) COMPLETE under the vetted
   v3 plan (`~/.opencode/plan/w6-dryrun-plan.md`, three frontier rounds
   PASS): the Gate T handout and `restart-world.sh` are in the
