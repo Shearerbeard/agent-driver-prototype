@@ -28,6 +28,7 @@ flowchart TD
   W5["W5 Mock-mcp ops surface - three reme…"]:::inreview
   W6["W6 End-to-end demo - investigate, pr…"]:::inprogress
   W14["W14 Approval status-shape mismatch - …"]:::backlog
+  W15["W15 propose_workflow tool description…"]:::backlog
   S103["S103 Coordinator MCP access filtered b…"]:::ready
   S104["S104 Mezmo-orchestrated config parity …"]:::backlog
   S105["S105 Main-drift catch-up shortlist (in…"]:::backlog

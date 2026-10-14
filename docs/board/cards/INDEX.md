@@ -29,6 +29,7 @@ Admission test: where does the diff land.
 | [W12](w12-edge-gating-policy.md) | Edge gating policy - verifier verdicts affect control flow (deferred; own plan after W10) | jev | backlog | W10 | smart | S -> A -> D -> U(code-review) |
 | [W13](w13-full-rca-baseline.md) | Full RCA baseline against the prototype - 12 scenarios x 3 iters, verifier off | jev | backlog | W8, S107 | smart | S -> A -> M -> D -> U(code-review) |
 | [W14](w14-approval-status-shape-mismatch.md) | Approval status-shape mismatch - shim's path-suffix poll vs the query-keyed governance wire | - | backlog | - | smart | S -> A -> U(code-review) |
+| [W15](w15-propose-tool-description-drift.md) | propose_workflow tool description drift - says nothing executes, the ruled behavior is approve-gated apply | - | backlog | - | any | S -> A -> U(code-review) |
 | [S103](s103-coordinator-mcp-filter.md) | Coordinator MCP access filtered by [agent].mcp_filter | - | ready | - | smart | S -> A -> U(code-review) @ S |
 | [S104](s104-mezmo-orchestrated-config-parity.md) | Mezmo-orchestrated config parity - [agent.llm] from TOML, one warning per unimplemented section | - | backlog | - | smart | S -> A -> M -> U(mezmo-config) |
 | [S105](s105-main-drift-catch-up.md) | Main-drift catch-up shortlist (inventory-gated) | - | backlog | - | smart | S -> A -> U(code-review) |

@@ -92,6 +92,26 @@ Gate T.
 
 ## Log
 
+- 2026-10-14 GATE M, RUN ONE (the heal) - the first live execution of
+  the full chain, proven end to end. Attempt 1 (steered v1): 14
+  proposals, one approved, executor ran, step-1 export miss
+  (`$.image` - the response nests under `deployment`), clean unwind,
+  residual empty, no mutation. Attempt 2 (the one sanctioned steering
+  adjustment - prompt pins the export paths, the ops-verify workaround,
+  and the `$from` rollback binding): OUTCOME COMPLETE - state Applied
+  (captured replicas 3 / payments:1.42.0), scale Applied 3->6 (the
+  exact ground-truth clause set, so healing fired at that instant per
+  W5's pinned predicate), verify Applied (re-read 6). 526s, 373,678
+  tokens, one approval decided mid-hold. Evidence:
+  [2026-10-14-w6-rehearsal.md](../evidence/2026-10-14-w6-rehearsal.md).
+  Findings: export paths are response-shape knowledge the prompt must
+  carry (process, fixed in-run); the propose_workflow description says
+  "nothing executes" while the ruled behavior is approve-gated apply -
+  minted as W15 (propose-tool description drift); the schema-subset
+  refusal blocked get_log_histogram as a step (known W2/DESIGN gap,
+  demonstrated live - 13 of 14 attempt-1 proposals died on it);
+  step-shape rejections persist (known, accepted). Run two (the
+  unwind) next on a fresh world; go/no-go follows it. Board owner.
 - 2026-10-14 Pulled in-progress early under Mike's rulings (2026-10-13,
   this flow): (1) the demo runs against the pushed `w5-ops-surface`
   branch pre-merge - a logged override of this card's `depends: W5`,

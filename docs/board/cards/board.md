@@ -35,6 +35,8 @@ kanban-plugin: board
 	Depends: W8, S107. Gates: S -> A -> M -> D -> U(code-review). Executor: smart. Lane: jev.
 - [ ] **W14** [Approval status-shape mismatch - shim's path-suffix poll vs the query-keyed governance wire](w14-approval-status-shape-mismatch.md)
 	Depends: none. Gates: S -> A -> U(code-review). Executor: smart.
+- [ ] **W15** [propose_workflow tool description drift - says nothing executes, the ruled behavior is approve-gated apply](w15-propose-tool-description-drift.md)
+	Depends: none. Gates: S -> A -> U(code-review). Executor: any.
 - [ ] **S104** [Mezmo-orchestrated config parity - [agent.llm] from TOML, one warning per unimplemented section](s104-mezmo-orchestrated-config-parity.md)
 	Depends: none. Gates: S -> A -> M -> U(mezmo-config). Executor: smart.
 - [ ] **S105** [Main-drift catch-up shortlist (inventory-gated)](s105-main-drift-catch-up.md)
