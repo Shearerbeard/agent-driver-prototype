@@ -92,6 +92,24 @@ Gate T.
 
 ## Log
 
+- 2026-10-14 GATE M COMPLETE - BOTH LEGS. Run two (the unwind) landed
+  on attempt five (run2e, 357s, 296,672 tokens): state read replicas 3,
+  scale applied 3->6 with its declared rollback bound to the captured
+  count, the canary step failed at the world's unknown-app gate
+  (`Unknown app canary-ghost`), and the executor unwound both
+  completed steps in reverse - rollback_failure None, residual []. The
+  four earlier attempts failed harness-side, not product-side, and are
+  recorded plainly in the evidence: two approval-watch bugs (a
+  blind-approved probe; a goal-path mismatch that denied the real
+  drill - the deny leg proven working), a truncated-decision_id bug
+  (four live hold timeouts), and a prompt facts-block not ported
+  (step-1 export miss again). Every failure mode surfaced a live leg
+  the offline tests could only simulate. Both Gate M legs of this
+  card's deliverable are now proven live: the heal (run one-b) and the
+  unwind (run two-e). Evidence:
+  [2026-10-14-w6-rehearsal.md](../evidence/2026-10-14-w6-rehearsal.md)
+  (now covering both runs with full stats). Go/no-go gate next, then
+  the Gate T handout. Board owner.
 - 2026-10-14 GATE M, RUN ONE (the heal) - the first live execution of
   the full chain, proven end to end. Attempt 1 (steered v1): 14
   proposals, one approved, executor ran, step-1 export miss

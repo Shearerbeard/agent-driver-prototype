@@ -1,6 +1,4 @@
-# W6 rehearsal run one - the heal (2026-10-14)
-
-The first live executions of the workflow-approval chain in this
+# W6 rehearsal - runs one and two: the heal and the unwind (2026-10-14)The first live executions of the workflow-approval chain in this
 prototype's history: investigate → propose → notify → blocking hold →
 human approve → deterministic apply. Two attempts against the
 world-based rig (mock-mcp-service `w5-ops-surface` @ `1d6be81`,
@@ -101,3 +99,73 @@ contacted by anything in the demo path.
 Gate M (run one, the heal): the chain is proven live end to end; the
 heal landed on the ground-truth fix. Run two (the unwind) follows on a
 fresh world; the go/no-go gate follows it.
+
+## Run two (the unwind) - five attempts, one success, every failure mine
+
+The prototype's legs held throughout; the retries were all harness-side
+(the approval watch) or prompt-side (a facts block not ported). The
+full sequence:
+
+- **2a** (run2.sse, 886s+, 671,537 tok): the watch blind-approved the
+  model's cautious first proposal - a no-op probe, `ops_scale_app
+  payments 6->6` on the post-heal world - then exited, leaving three
+  later proposals (the drill included) to ride the full 300s hold to
+  `workflow approval timed out` (twice) before the model answered. My
+  restart of the world had silently failed (both restart commands died
+  at their own pkill before reaching the mock-service lines), so this
+  run also investigated a stale post-heal world - the no-op probe's
+  `previous_replicas: 6` is what exposed that.
+- **2b** (run2b.sse, 721s, 802,563 tok): the watch's goal matcher read
+  `payload.goal` while the goal lives at `payload.workflow.goal`, so it
+  blind-DENIED the model's real 3-step drill (which contained
+  `canary-ghost`). The deny leg itself worked exactly as designed: the
+  model received the decision and replanned. It did not resubmit.
+- **2c** (run2c.sse, ~1,200s, 571,587 tok): the watch printed a
+  13-char truncated decision_id and parsed that back out for the
+  decide - every approve 404'd on an unknown id, and the drill timed
+  out twice more (timeout leg now demonstrated live four times).
+- **2d** (run2d.sse, 791s, 650,676 tok): watch fixed (full-id decides;
+  2 drills approved, 1 probe denied - the deny leg again clean). Both
+  drills died at step 1: `ExportPathMissing $.image` - the canary
+  prompt had never received run one's v2 facts block (export paths,
+  histogram refusal); prompt-side miss, mine.
+- **2e** (run2e.sse, 357s, 296,672 tok): facts ported. THE UNWIND,
+  live and exact:
+
+```text
+state:  Unwound      (read: replicas 3, image payments:1.42.0)
+scale:  Unwound      (applied 3 -> 6, declared rollback bound to the captured count)
+canary: Failed       (Sidecar ToolCall: Unknown app `canary-ghost` for scenario
+                      `db-pool-exhaustion`; known apps: api-gateway, catalog,
+                      checkout, inventory, payments)
+verify: NotStarted
+outcome: Failed { step: canary, rollback_failure: None, residual: [] }
+```
+
+The canary failed at the world's unknown-app gate exactly as scripted;
+the executor ran the completed steps' declared rollbacks in reverse
+(scale back to 3, state nothing to undo); no rollback failed; nothing
+residual. 12 propose calls total, one approval decided mid-hold.
+
+## Run stats, all paid runs
+
+| Run | Wall | Tokens | Result |
+|---|---|---|---|
+| 1 (v1) | 886s | not captured (usage event past capture tail) | step-1 export miss, clean unwind, no mutation |
+| 1b (v2) | 526s | 373,678 | **heal: Complete, 3/3 applied, scale 3->6 ground truth** |
+| 2a | 1,696s | 671,537 | probe no-op approved; 3 holds timed out (watch bug) |
+| 2b | 721s | 802,563 | real drill denied on a goal-path bug (deny leg proven) |
+| 2c | ~1,200s | 571,587 | decides 404'd on truncated ids; 2 more hold timeouts |
+| 2d | 791s | 650,676 | watch fixed; both drills died at step 1 (facts not ported) |
+| 2e | 357s | 296,672 | **unwind: canary failed at the gate; reverse rollbacks ran; residual []** |
+
+Legs exercised live across the program: propose-time validation
+refusals, notify + 2s poll hold, human APPROVE (heal, drill), human
+DENY (probe), hold TIMEOUT (four), approval-gated apply, export
+resolution failure, clean unwind with declared reverse-order rollbacks,
+residual reporting. Total spend ~3.4M subscription tokens across seven
+runs (plan budgeted ~4; the overage is the watch/prompt iterations,
+recorded above).
+
+Gate M (both legs) complete: the heal and the unwind are proven live.
+The go/no-go gate for the demo follows this record.
