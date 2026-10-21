@@ -175,6 +175,284 @@ prompt mid-dispatch is a failed pre-vet, not a surprise to debug.
   adversarial characterization, thresholds proposal (marked provisional).
   STOPS - W9 does not start on an unapproved rubric.
 
+## Log
+
+- 2026-10-20 LINEAGE REPAIR + RELOCATION (user ruling, this session's
+  exit-state review): the spike leaves the prototype repo - experiment
+  harnesses belong in the experiments monorepo, not the driver tree.
+  edge-spike now lives at `ai-experiments/jev-edge-spike/` (crate plus
+  the w7-iter1 / w7-artifacts / jev-goldens artifact stores,
+  git-ignored there; tests green at relocation; pushed). This branch
+  preserves the as-run history, now including the offline rescore
+  instrument the conclusions cite (`4519a5a`; workspace-member removal
+  `5a4ddcf`; branch pushed as the archival record). This card's log is
+  now the single factual record: the 2026-10-08 incident /
+  iteration-1 / no-go / reversal block (recorded on main while the
+  live work ran on card/w7) and the 2026-10-09/10
+  repair-through-conclusions block (recorded on card/w7) are merged
+  chronologically below, entries verbatim, shared entries kept once.
+  boardkit.toml's charter line updated the same turn. Board owner.
+- 2026-10-20 RENUMBER (user ruling): the delegation/evidence contract
+  card, minted on card/w7 as W14 on 2026-10-10, collided with the W14
+  minted on main 2026-10-13 from W6's demo prep (approval
+  status-shape mismatch) - one id, two cards, two unmerged branches.
+  The contract card is now W16 (file, frontmatter, and every reference
+  in this card, the conclusions doc, and the contract doc updated);
+  the approval-shape card keeps W14, the id main's registry and
+  EXTERNAL-TRACES already carry. W6's stage-3 minting takes next-free
+  ids when it runs. Board owner.
+
+- 2026-10-10 CONCLUSION REPORT written at user request:
+  `docs/board/notes/2026-10-10-w7-conclusions.md` - what was asked,
+  the corpus repair, C5 tables, seven findings (gate validated at
+  98-100% held-out; grounding-ordinal no-go'd by its own rule and
+  demoted to telemetry; presence is the workhorse; cheap-arm gating +
+  rich-arm audit two-tier design; self-echo exclusion; MISSING_INPUT
+  way-out; three-way truncation split), ~$2 total spend, and the
+  deliberately-open items (W16 adoption, Arm 3, Leg 2, extraction
+  precision). Close-vs-extend decision rests with the user after
+  reading it; ruling 2 (Arm 3 / Leg 2) still open. Board owner.
+- 2026-10-10 U(rubric) RULINGS (user): (1) composite gate ACCEPTED,
+  grounding dimension DEMOTED per its pre-registered no-go rule -
+  per-claim grounding stats remain as audit telemetry, the gate's
+  signal rides presence/handoff/scope/fidelity; (3) contract
+  document MINTED at
+  `docs/board/notes/2026-10-10-delegation-evidence-contract.md` with
+  card W14 (jev lane, depends W7) tracking adoption in the real
+  drivers. Ruling (2) OPEN pending user: Arm 3 needs
+  `SUMMARIZER_BASE_URL`/`SUMMARIZER_API_KEY`/`SUMMARIZER_MODEL`
+  exported (OpenAI-compatible endpoint; opencode-go deepseek flash is
+  the intended fit; user's zshenv is the home; key value never needs
+  to enter chat) - slice cost ~$0.30; Leg 2 judge is
+  `us.moonshotai.kimi-k3` via the existing bedrock bearer (opt-in
+  `--judge` since `d3c46ef`), blocked first on the judge.rs
+  FixtureSummarizer bug (judge would audit fixture-summarized windows
+  under Arm 3) and on constrained-dims hardening (193-call incident
+  showed free-form dims and a degenerate VERDICT parse that hard-
+  aborted the leg), 1,144 calls ~$1-2 when approved. Board owner.
+- 2026-10-09 C5 FULL RUN COMPLETE (user-approved ~3,234 calls; actual
+  16.9M input + 358k output tokens, under the ~38M estimate;
+  `.review/w7-artifacts/c5-full-cloud`; lat p50 155-165ms p95
+  ~460ms). HELD-OUT RESULTS (572 variants, 47 clean bases x 2 arms):
+  composite separates clean from EVERY failure class at 46-47/47
+  (98-100%) on both arms - the sealed v2 rubric + region-evidence
+  state works as an edge-level drift gate. BUT the pre-registered
+  NO-GO RULE FIRES for the grounding dimension: on held-out
+  clean-vs-fabricated, grounding-dim separation is 3/47 (claim_indexed)
+  and 2/47 (head) vs presence-dim 41/47 and 42/47; dropping grounding
+  from the composite changes nothing (47/47 both arms). Mechanism:
+  a single 0-3 ordinal over 100+ extracted claims cannot see sparse
+  fabrication (mutations touch a few claims); presence/handoff/scope/
+  fidelity carry the signal. ARM COMPARISON: separation identical;
+  head_truncation is cheaper and cleaner at the gate level (states
+  p50 11.5k vs 19.8k chars, 6.9M vs 10.0M tokens, clean FLAG rate
+  19/133 vs 60/133 - claim_indexed's honest evidence-budget loss
+  flags nearly half of honest workers on big edges). Claim-indexing
+  buys AUDITABILITY (per-claim found/not-found, uncovered counts,
+  FLAG dims that say why), not separation. Verdict dims are
+  class-coherent: scope_violation -> scope_discipline 125/147;
+  truncation class -> handoff+truncation 143-144/147; distractor/
+  lossy -> INSUFFICIENT_EVIDENCE-dominant on claim_indexed,
+  handoff-FLAG-dominant on head. INCIDENT (root-caused + fixed in
+  `d3c46ef`): the run fell into Leg-2 judge after scoring because
+  judge was env-gated, not flag-gated - 193 unapproved judge calls
+  (est. ~2-3M tokens, order $0.10-0.30) fired before a hard parse
+  error ("VERDICT: prefix missing"; one reply degenerated into prose
+  inside the dims array - free-form dims, exactly the fragility the
+  constrained verdict was for). Judge is now opt-in via `--judge`;
+  the 193 records are an order-biased preview, not evidence. Judge
+  leg remains deferred with its 1,144-call cost figure. U(rubric)
+  GATE OPEN - rulings requested: (1) accept the composite gate and
+  demote/rework the grounding dimension per the no-go rule;
+  (2) Arm 3 (needs SUMMARIZER_* env) and Leg 2 judge (needs judge.rs
+  fixture fix + constrained-dims hardening + spend approval) -
+  proceed or close; (3) mint the delegation/evidence contract
+  document + its boardkit card (jev lane) from the doctrine +
+  schema findings. Board owner.
+- 2026-10-09 SPLIT-FLAG RULING APPLIED through three offline fixes,
+  all committed (`983aa3d`; 3x rust-fill on the deepseek pin, board
+  owner verified + owns git; zero additional live calls - rescore
+  recomputes flags/verdicts from saved probe answers). (1) Verdict
+  policy per user ruling: `evidence` FLAGs only when a supported
+  claim's hits fall outside the shown excerpt; `evidence_excerpted`
+  (bounded-but-covering) and `source` (upstream July cuts) are
+  labeled budgeting, recorded, never verdict-driving; `worker_output`
+  stays driving. (2) Region discovery un-chains single-linkage
+  mega-regions: split at widest internal gap until each region's span
+  fits its 4000c excerpt budget (db-pool: 2 -> 12 regions). (3)
+  Allocation measures real serialized entry size (150-350c) instead
+  of reserving 580/region, degrades full-or-reference-only; region
+  count alone can no longer fail assembly. Rescored probe: 19/20
+  truncation flags -> 8 honest ones; adversarial head arm = labeled
+  budgeting (6 PASS, db-pool worker_output FLAG, dual-incident
+  INSUFFICIENT_EVIDENCE); claim_indexed residual FLAGs are real loss
+  (e.g. db-pool: 9 claims' hits beyond the evidence budget - 4 shown
+  excerpts, 8 reference-only regions). CAVEAT: rescored verdicts pair
+  saved model answers with new flags - policy preview, not live
+  evidence; C5 produces the real numbers under the new assembly.
+  Full 1,617-variant replay green. NEXT: C5 full run arms 1,2
+  (~3,234 calls, ~38M input tokens, ~$1.60-2.00, resume-safe) into
+  `.review/w7-artifacts/c5-full-cloud`, then held-out report
+  (per-class composites, pairwise clean-vs-failure per arm,
+  presence-only ablation no-go rule >10pts, size/truncation/latency
+  columns from the new evidence_summary). Awaiting user go at the
+  spend boundary. Board owner.
+- 2026-10-09 REGION PROBE ran (post-compaction resume; 20 calls,
+  `.review/w7-artifacts/c4b-region-probe`; commit chain unchanged,
+  verified card/w7 clean + boardkit OK first). Wire state verified
+  region-based (db-pool: 2 regions, 121 claim references, 22.9k-char
+  request). Model-side healthy: claim_indexed grounding p50 1.85/3
+  (residual 78 not-found claims did NOT false-flag grounding - the
+  model judges from regions, p50 46 not-found per edge is priced in),
+  presence p50 0.37, composites p50 0.723/0.752, 1 INSUFFICIENT_EVIDENCE
+  (dual-incident on head_truncation - adversarial arm starved presence,
+  real signal), 1 clean PASS pair (checkout iter0-2, the only capture
+  with no upstream truncation). BUT verdict-level collapse did NOT
+  happen: 19/20 FLAG{truncation} because `TruncationFlags::any()`
+  (verdict.rs:244) fires on (a) `source` = upstream July-capture
+  truncation, present on nearly every edge, zero drift signal, and
+  (b) `evidence` = region excerpt < full_region_chars with all claim
+  hits still covered = honest budgeting per the driver doctrine.
+  FLAG{truncation} currently measures SIZE, not drift. PAUSED FOR
+  USER RULING (doctrine owner): proposed verdict policy - `source`
+  never verdict-driving; `evidence` FLAGs only when a supported
+  claim's hit positions fall outside the shown excerpt (real loss);
+  `worker_output` stays FLAG-driving (claims reference text the judge
+  cannot see). Fix is code-side rescoring of saved artifacts (zero
+  new live calls) since score_composite is deterministic from saved
+  answers + flags; then C5. Also confirmed reporting wart: artifacts
+  do not serialize claim_evidence (no region columns for the held-out
+  report) - must fix before the C5 report. Board owner.
+- 2026-10-09 EVIDENCE SCHEMA v2 landed (commit `a028fee`; executors
+  rust-write + 2x rust-fill on the deepseek pin; board owner verified
+  and owns git) - PAUSED HERE FOR SESSION COMPACTION; next session
+  resumes at the region-schema probe. What landed: per-claim windows
+  replaced by typed regions (tool attribution, args excerpt + bounded
+  result excerpt, span, full_region_chars = size-known-ahead,
+  source/assembly truncation split, claims reference regions by id);
+  submit_result self-echo excluded from the evidence corpus (claims
+  were grounding in the worker's own submission - latent since C0,
+  surfaced by region attribution); multi-call regions attributed
+  honestly; ValueWithUnit claims retry bare-number matching
+  (51.1% matches "pct": 51.1, exact decimal, no tolerance;
+  normalized_matches in grounding_stats). db-pool iter0-0 clean:
+  119 claims -> 2-3 regions, 13/119 -> 41/119 found; residual
+  not_found (78) is ids/timestamps/hostnames - worker-derived or
+  prose values genuinely absent from captures; the probe prices
+  whether that residual false-flags clean edges on grounding
+  (extraction-precision fix is the candidate next card if it does).
+  Review-packet material staged at `.review/jev-goldens/jev-review/`
+  (CRITERIA + 5 verbatim REQUEST batches + RAW-SOURCEs, browser HTML)
+  and doctrine logged in `.review/jev-goldens/JOURNAL.md` (driver
+  doctrine: unlabeled truncation is the root of evil; size known
+  ahead of scoring). APPROVED AND PENDING (user "go" 2026-10-09):
+  (1) region-schema probe - `cargo run -p edge-spike --bin edge-run
+  -- --live --slice 10 --arms 1,2 .review/w7-artifacts/c4b-region-probe`
+  (mkdir the dir first - known wart: bin/run.rs creates it after
+  run_corpus), 20 calls, judge 0 by selector; read truncation-flag
+  collapse, grounding on clean edges, composite stability vs c4;
+  (2) if probe holds, C5 full run arms 1,2 - `--live --arms 1,2
+  .review/w7-artifacts/c5-full-cloud` (~3,234 calls, ~38M input
+  tokens, ~$1.60-2.00; resume-safe via results.jsonl), then the
+  held-out report: per-class composites, pairwise clean-vs-failure
+  per arm (the hard gate), presence-only ablation (the >10-point
+  no-go rule, computable from the same artifacts), state-size/
+  truncation/latency columns; (3) Arm 3 still BLOCKED on missing
+  SUMMARIZER_* env (user-owned); Leg 2 judge deferred with its
+  dollar figure surfaced at U(rubric); judge.rs arm-3 fixture
+  summarizer issue logged 2026-10-09 must be fixed before Leg 2.
+  W7 commit chain this session: eef32e5 0743ff0 5829239 72c440a
+  20d0aa5 af43769 014e5c2 21cd145 0b6e567 a028fee. Board owner.
+- 2026-10-09 C3 + C4 live legs ran (cloud, jev-1.13.0; user-approved
+  live). Commits `5829239` (baseline_blocked + selectors), `72c440a`
+  (dry-run + judge leg respect selectors - a live smoke would otherwise
+  have fired 1144 unpreviewed judge calls; caught in dry-run), `20d0aa5`
+  (summarizer built only when arm 3 selected), `af43769` (state_chars +
+  honest truncation flags, source vs assembly split), `014e5c2`
+  (whole-request budget packing + per-item resilience). C3 smoke
+  (1 edge x 2 arms): claim-indexed PASS 0.919 vs head-truncation
+  FLAG{truncation} 0.757 on a clean edge - Tony's predicted selection
+  failure reproduced in two calls; latency 279/349ms. C4 slice (10 clean
+  edges x 2 arms, one halt recovered by C2 resume): FIRST LIVE FINDING -
+  FLAG{truncation} dominates both arms on clean edges (Arm 1: 9/10 +
+  1 INSUFFICIENT_EVIDENCE, expected demonstration; Arm 2: 9/10 at
+  composite p50 0.879 - NOT expected). Cause: ~100 claims/edge cannot
+  all keep windows under the 24k-char budget, so tail degradation sets
+  the evidence-truncation flag on nearly every edge; the flag is honest
+  but as a binary verdict it is uninformative at this budget. Composite
+  ordering, latency (Arm 2 p50 186ms), and cost (~12k input tokens/call)
+  all healthy; post-fix states fit budget (23.5k chars; one pre-fix
+  artifact at 68.7k chars survives in results.jsonl as the before-case).
+  Measured ~2 chars/token on this JSON: the 32k-token ceiling maps to
+  ~64k chars, so a ~48k-char budget would roughly halve degradation.
+  OPEN for U(rubric): (a) FLAG{truncation} semantics - flag vs reported
+  column vs degradation-fraction threshold; (b) budget sweep before or
+  as part of the full run. Known warts logged: bin/run.rs creates the
+  output dir after run_corpus (operator mkdir needed); judge.rs assembles
+  arm-3 windows with the fixture summarizer on live runs (must fix before
+  Leg 2); plan's summarize/fan-out routing branches unwired (W9 concern);
+  report tables lack a state-size column; truncation_count covers
+  assembly only; char_len is byte length; " [truncated]" literal in 3
+  files. Board owner.
+- 2026-10-09 Repair chunks C0-C2 landed (offline, zero spend; commits
+  `eef32e5`, `0743ff0`; executors rust-write/general lanes on the new
+  deepseek pin; board owner re-verified clippy/fmt/test tails and owns
+  git). C0: corpus re-keyed by (iteration, task_id) - 147 honest edges
+  (42 chimeras eliminated), 1617 variants, split 1045/572; tool calls
+  joined started/completed by tool_call_id; `[truncated]` markers now set
+  honest flags (1223 tool results); worker outputs from attested
+  submit_result args with confidence recorded on CapturedEdge (still
+  excluded from scorer state); context_provided emptied (source carries no
+  dep info; aura workers received no prior-work frame); variant
+  fabrication reworked, label-telegraphing prefixes neutralized.
+  C1 (label audit, `.review/jev-goldens/label-audit.md`, working
+  material): ALL 14 trace-analyst edges (every scenario, iteration 1,
+  task 1) are EXPLICIT FAILURES labelled Clean - `find_trace_analysis_component`
+  returned empty targets and each worker honestly reported it could not
+  do the analysis, yet success=true; 9.5% of the baseline is corrupt;
+  refusal-phrase screening is an unreliable proxy (precision 0.16) while
+  the structural signal (empty-targets tool result) is exact;
+  confidence self-rank unreliable (one total-failure edge self-reported
+  high). Recommendation pending user ruling: a `baseline_blocked` bucket
+  for the 14 trace-analyst edges (useful as negative-path fixtures, not
+  clean positives) before any live scoring. C2: append-per-item durable
+  persistence (results.jsonl / judge_results.jsonl, flush per line,
+  torn-final-line recovery, resume from the logs) - an interruption now
+  loses at most the item in flight, replacing the
+  hold-everything-in-memory shape the driver flagged. Next: C3
+  single-edge live smoke (3 calls) WAITS on explicit user approval;
+  the baseline_blocked downgrade is recommended BEFORE C3 so the smoke
+  reads against an honest clean baseline. Board owner.
+- 2026-10-09 SCOPE AMENDMENT (pending user ruling at U(rubric)): corpus
+  repair gates the live spend. Driver instruction: continue the experiment
+  ("we're close, barring a few minor changes") but bite the repair into
+  smaller chunks before the long corpus, and fix the runner's
+  hold-everything-in-memory-till-the-end shape (an expensive-mistake door).
+  Evidence journal `.review/jev-goldens/JOURNAL.md` (working material) +
+  adversarial review by the GPT-6.1-sol rust-reviewer seat (VERDICT FAIL,
+  3 BLOCKING upheld) established: (1) the July corpus parser keys by bare
+  `task_id` across two plan iterations that reuse ids 0/1/2, folding 147
+  dispatches into 105 chimeric edges; (2) the parser ignores
+  `tool_call_started` and marks pre-truncated results `truncated: false`;
+  (3) the offline 0.89 pairwise is scoring-math FIXTURE math
+  (`runner.rs` selects answers from `labelled.class`), NOT empirical
+  capability evidence; (4) "clean" originals are unaudited and synthetic
+  variants telegraph their labels. Repair chunks: C0 parser re-key by
+  (iteration, task_id) + read tool_call_started + honor truncation + honest
+  context_provided; C1 baseline-label audit of "clean" originals; C2
+  append-per-edge persistence (results.jsonl, resume reads the log) so a
+  halt loses nothing scored; C3 single-edge live smoke (3 calls); C4 small
+  calibration slice (~30 calls); C5 explicit go/no-go for the full corpus
+  informed by C3/C4 latency/cost/validity. CLAIM NARROWED: July supports a
+  restricted synthetic-grounding capability read only; the full
+  six-dimensional capability claim is NOT supported by this corpus. The
+  0.89 fixture number is withdrawn as capability evidence. Pin changes
+  (driver-ruled): rust-write/rust-fill/python-write and the general/explore
+  summarize seats now pin `opencode-go/deepseek-v4.1-flash` for cheaper/faster
+  proto code building; rust-reviewer stays GPT-6.1-sol to hold the
+  reviewer-differs-from-author invariant against the deepseek writer pool.
+  Board owner.
+
 - 2026-10-08 ROOT CAUSE + REVERSAL after 3 adversarial review
   rounds (GPT-6.1-sol; codex CLI rejected the model on the
   ChatGPT account, ran via the in-harness Bedrock pin - same
@@ -289,6 +567,7 @@ prompt mid-dispatch is a failed pre-vet, not a surprise to debug.
   against `jev-latest` (client.rs pins it; kev-9b is the gateway's
   other resident model and was never selected); the report numbers
   come from cloud Jev. Board owner.
+
 - 2026-10-08 Phase 1 (offline legs) landed: `edge-spike/` member in
   the jev-driver workspace, commit `d1a598c` on card/w7 (17 files,
   +2774). Executor: rust-write lane (Kimi), two dispatches plus a

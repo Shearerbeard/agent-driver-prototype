@@ -6,7 +6,7 @@ Ready requires every entry in Depends to be done; the session
 running the board promotes eligible cards (PROCESS.md,
 Delegation protocol).
 
-CHARTER - owns: all work scoped to agent-driver-prototype: the workflow-proposal mechanism (W1-W6), the re-minted CLI-drivability tail (S103, S104, S105, S107, S110), and the JEV edge-verification workstream (W7-W13: the edge verifier with its typed evidence, plus the RCA eval harness; W7's spike lives in this repo's edge-spike workspace member per the 2026-10-08 relocation ruling, W8's wrapper and W13/W10's results land in ai-experiments - external-repo, shas logged)
+CHARTER - owns: all work scoped to agent-driver-prototype: the workflow-proposal mechanism (W1-W6), the re-minted CLI-drivability tail (S103, S104, S105, S107, S110), and the JEV edge-verification workstream (W7-W13: the edge verifier with its typed evidence, plus the RCA eval harness; W7's spike lived in this repo 2026-10-08..20 (edge-spike workspace member) and now lives in ai-experiments/jev-edge-spike - external-repo, as-run history on the pushed card/w7 branch; W8's wrapper and W13/W10's results land in ai-experiments - external-repo, shas logged)
 Not here: aura product implementation (the governance workstream owns the AURA Workflows direction), agent-driver-rs crate internals (the agent-driver-rs-adr board owns those), terminalbench-aura rig-scoped cards (the tb board keeps those), mock-mcp-service internals beyond W5's ops surface
 Route adr -> agent-driver-rs crate internals incl. adr/A18 (S110's pull gate): the agent-driver-rs-adr board in aura-session-docs
 Route governance -> the AURA Workflows direction and its open decisions: workstreams/governance.md in aura-session-docs (surface, never edit; garden process)
@@ -30,6 +30,7 @@ Admission test: where does the diff land.
 | [W13](w13-full-rca-baseline.md) | Full RCA baseline against the prototype - 12 scenarios x 3 iters, verifier off | jev | backlog | W8, S107 | smart | S -> A -> M -> D -> U(code-review) |
 | [W14](w14-approval-status-shape-mismatch.md) | Approval status-shape mismatch - shim's path-suffix poll vs the query-keyed governance wire | - | backlog | - | smart | S -> A -> U(code-review) |
 | [W15](w15-propose-tool-description-drift.md) | propose_workflow tool description drift - says nothing executes, the ruled behavior is approve-gated apply | - | backlog | - | any | S -> A -> U(code-review) |
+| [W16](w16-delegation-evidence-contract.md) | Adopt the delegation and evidence contract in the real drivers | jev | backlog | W7 | smart | S -> A -> D -> U(code-review) |
 | [S103](s103-coordinator-mcp-filter.md) | Coordinator MCP access filtered by [agent].mcp_filter | - | ready | - | smart | S -> A -> U(code-review) @ S |
 | [S104](s104-mezmo-orchestrated-config-parity.md) | Mezmo-orchestrated config parity - [agent.llm] from TOML, one warning per unimplemented section | - | backlog | - | smart | S -> A -> M -> U(mezmo-config) |
 | [S105](s105-main-drift-catch-up.md) | Main-drift catch-up shortlist (inventory-gated) | - | backlog | - | smart | S -> A -> U(code-review) |

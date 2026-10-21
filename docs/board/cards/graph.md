@@ -20,6 +20,7 @@ flowchart TD
     W11["W11 Typed evidence artifacts + JEV-ra…"]:::backlog
     W12["W12 Edge gating policy - verifier ver…"]:::backlog
     W13["W13 Full RCA baseline against the pro…"]:::backlog
+    W16["W16 Adopt the delegation and evidence…"]:::backlog
   end
   W1["W1 Workflow type skeleton - spec, bi…"]:::done
   W2["W2 propose_workflow through the fact…"]:::done
@@ -50,6 +51,7 @@ flowchart TD
   W12 -.- W9
   W8 --> W13
   S107 --> W13
+  W7 --> W16
   S103 -.- S104
   S104 -.- W9
   S107 -.- W9
