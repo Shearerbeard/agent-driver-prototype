@@ -57,9 +57,20 @@ and who owes the follow-up.
   `Shearerbeard/agent-driver-prototype`, PR #21 (card/w4 ->
   integration/workflow) merged 2026-10-07 as `9f3dc4a` and W2's
   U(proposal-quality) accepted 2026-10-07 - both decisions settled;
-  repo `Shearerbeard/ai-experiments`, branch `w5-ops-surface` pushed
-  (tip logged on W5's card); visibility pushed; verified 2026-10-07;
+  repo `answerbook/ai-experiments`, branch `w5-ops-surface` pushed
+  (tip logged on W5's card); visibility pushed; verified 2026-10-20;
   owed Mike's PR decision on W5's branch.
+- JEV spike home - the W7 research spike's crate and run artifacts
+  (corpus, arms, verdict, rescore; the C5 validating run's saved
+  results), relocated out of this repo 2026-10-20 by user ruling:
+  experiment harnesses live in the experiments monorepo, not the
+  driver tree; repo `answerbook/ai-experiments` @
+  `git@github.com:answerbook/ai-experiments.git` (local checkout
+  `~/dev/ai-experiments`); path `jev-edge-spike/` (crate committed,
+  README provenance; `artifacts/` git-ignored, ~291 MB); the as-run
+  history preserved on this repo's pushed `card/w7` branch; visibility
+  pushed; verified 2026-10-20; owed nothing by this board - W16's
+  adoption ports copy from it (board owner).
 - Aura artifact reference graph - the published, frontier-reviewed
   design for artifact relationships and searchability in aura's
   orchestration mode (flat node store with mandatory pre-summaries,

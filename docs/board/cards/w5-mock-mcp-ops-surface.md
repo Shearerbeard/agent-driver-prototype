@@ -169,3 +169,11 @@ convention), PR there; the card closes when that PR merges.
   card in-review: 123 tests green with clippy and fmt clean.
   Frontmatter at Gate S: standing U(code-review) inserted per PROCESS.
   Gate A next, packet with `--repo` against the worktree. Board owner.
+- 2026-10-20 Parked at U(code-review) under the workflow-track hold
+  (user ruling, exit-state review): the ops surface stays on the
+  pushed `w5-ops-surface` branch in ai-experiments
+  (answerbook/ai-experiments) with the merge owed - Mike's PR
+  decision, carried by EXTERNAL-TRACES; the W6 demo ran against it
+  pre-merge as the logged override. Resume order and locations:
+  [notes/2026-10-20-workflow-track-handoff.md](../notes/2026-10-20-workflow-track-handoff.md).
+  Board owner.

@@ -94,6 +94,18 @@ The ruling lands at this card's pull; the diff implements it.
 
 ## Log
 
+- 2026-10-20 ROUTING RULING (user, exit-state review): the durable fix
+  belongs in the governance shape, not in another prototype-local
+  receiver - the gov-mirror (aura-sandbox, SB23's surface) gains the
+  path-suffix status route, OR the W4 wire is re-ruled query-keyed;
+  the either/or stands as the open decision because re-ruling touches
+  a ratified wire contract and the shim, not just the mirror. Work,
+  when pulled, routes to the aura-sandbox board and the aura CLI;
+  this board records the ruling and the dependency. The `w6-demo`
+  loopback receiver is retired with the parked workflow track - it
+  was gitignored working material, never committed. Id note: the JEV
+  delegation/evidence contract card that briefly shared this id on
+  card/w7 is renumbered W16; this card is the only W14. Board owner.
 - 2026-10-14 Minted backlog from W6's demo-prep Stage 1 (Gate A on the
   assembly ratified the loopback-receiver disposition for the demo
   itself; this card carries the product question). Evidence verbatim

@@ -92,6 +92,18 @@ Gate T.
 
 ## Log
 
+- 2026-10-20 TRACK PARKED (user ruling, exit-state review): the
+  workflow mechanism is a proven prototype and stays that way -
+  `integration/workflow` deliberately unmerged, the track prepared
+  for remote resume instead. Handoff note (locations, defects,
+  resume order):
+  [notes/2026-10-20-workflow-track-handoff.md](../notes/2026-10-20-workflow-track-handoff.md).
+  Stage 3 (post-demo card minting with cite spot-checks) remains the
+  named next action and takes next-free ids (W16 now belongs to the
+  JEV delegation/evidence contract card). The 2026-10-14 demo stack
+  is no longer running (pidfiles stale); `restart-world.sh` in the
+  integration worktree's `.review/w6/` rebuilds a fresh world. Board
+  owner.
 - 2026-10-14 STAGE 2 (GATE T) COMPLETE - GO. Mike drove three
   end-to-end runs live, approving each at the receiver; all three
   completed with the heal verified (replicas 6, image unchanged).
