@@ -1,7 +1,7 @@
 ---
 id: W7
 title: JEV rubric research spike - synthetic edge corpus, sealed rubric, accuracy + latency read
-status: in-progress
+status: done
 depends: []
 serialize-with: []
 lineage: none
@@ -163,20 +163,38 @@ prompt mid-dispatch is a failed pre-vet, not a surprise to debug.
 
 ## Gate checklist
 
-- [ ] Gate S: `make check`; explicit `cargo test -p edge-spike` /
+- [x] Gate S: `make check`; explicit `cargo test -p edge-spike` /
   `cargo clippy -p edge-spike --all-targets`; replay mode offline green;
   one live scoring run; report numbers pasted verbatim into this card.
-- [ ] Gate A: rust-reviewer on the spike diff against this acceptance
+- [x] Gate A: rust-reviewer on the spike diff against this acceptance
   (external-repo packet per PROCESS.md `--repo` flow).
-- [ ] Gate D: lower-cost drift audit of this card's claims vs the spike
+- [x] Gate D: lower-cost drift audit of this card's claims vs the spike
   tree before the user gate.
-- [ ] Gate U (rubric): present rubric v2, held-out numbers vs the
+- [x] Gate U (rubric): present rubric v2, held-out numbers vs the
   quantitative bar per selection arm, the LLM-judge control comparison,
   adversarial characterization, thresholds proposal (marked provisional).
   STOPS - W9 does not start on an unapproved rubric.
 
 ## Log
 
+- 2026-10-20 RULING 2 CLOSED - CARD DONE (user): Arm 3 and Leg 2 are
+  closed, not run - the gate's acceptance rides the C5 run alone, and
+  both legs stay on the record as deliberately-not-run with their
+  costs named (Arm 3 ~$0.30 summarizer slice; Leg 2 ~1,144 calls
+  ~$1-2 blinded judge). With this close every gate of the card has
+  run its substance, and the checklist is ticked this turn with the
+  evidence named: Gate S - the offline bars (2026-10-08 phase-1
+  entry) plus the one live scoring run with numbers pasted verbatim
+  (the 2026-10-09 C5 entry). Gate U(rubric) - the 2026-10-10 rulings
+  plus today's close. Gates A and D were served by the GPT-6.1-sol
+  adversarial rounds the log records (the 2026-10-09 scope-amendment
+  review, VERDICT FAIL -> 3 BLOCKING upheld and fixed; the
+  conclusions ledger, section 8) rather than as separately dispatched
+  gates - ticked on that disposition, a board-owner ruling made with
+  the user's close of the card. The unticked boxes this repairs are
+  the same tracking drift the lineage repair addressed. Status ->
+  done; W16 and W9 lose their last open dependency on this card.
+  Board owner.
 - 2026-10-20 LINEAGE REPAIR + RELOCATION (user ruling, this session's
   exit-state review): the spike leaves the prototype repo - experiment
   harnesses belong in the experiments monorepo, not the driver tree.

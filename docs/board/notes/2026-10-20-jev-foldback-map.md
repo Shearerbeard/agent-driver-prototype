@@ -54,17 +54,19 @@ judge has audited the gate's agreement (Leg 2 never ran); ~66% of
 clean-edge claims resolve not_found (extraction-precision floor on
 grounding telemetry).
 
-## Open decisions that gate further spend
+## Decisions that gated further spend - all closed
 
-Ruling 2 from the 2026-10-10 U(rubric) gate remains open, and the
-close-vs-extend call on the whole spike rests with the user after
-reading the conclusions doc:
+Ruling 2 from the 2026-10-10 U(rubric) gate was closed 2026-10-20
+(user): Arm 3 and Leg 2 are **closed, not run** - the gate's
+acceptance rides the C5 run alone. Named for the record with their
+costs, should anyone ever reopen either:
 
-- Arm 3 (flash summarization arm): needs user-supplied
+- Arm 3 (flash summarization arm): would have needed user-supplied
   `SUMMARIZER_*` env; ~$0.30 for a slice.
-- Leg 2 judge (blinded pairwise K3 audit): needs the judge.rs
-  fixture-summarizer fix and constrained-dims hardening; ~1,144
-  calls, ~$1-2.
+- Leg 2 judge (blinded pairwise K3 audit): would have needed the
+  judge.rs fixture-summarizer fix and constrained-dims hardening;
+  ~1,144 calls, ~$1-2.
 
-Either closes the spike cleanly (the contract stands on C5 alone) or
-spends a bounded dollar figure to answer a named question.
+With the close, the spike is complete and nothing in the jev lane
+gates on spend; the remaining movement is adoption work (W16, W9) or
+nothing.

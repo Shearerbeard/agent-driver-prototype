@@ -25,8 +25,9 @@ and who owes the follow-up.
   at `725c941` since 2026-10-07, fetchable from any machine); verified
   2026-10-14; owed the aura-sandbox board owner's close-outs of Gate M
   and the U(code-review)/T boxes on the card (substance passed; the
-  boxes stay open), plus W14's ruling deciding whether the mirror gains
-  the path-suffix route.
+  boxes stay open), plus W14's superset ruling (2026-10-20): the
+  prototype wire accepts both status forms and no mirror change is
+  required - the mirror's own route addition is its board's option.
 - Family registry - the aura family manifest that resolves `refs:`
   short-codes and `boardkit boards`; repo `mezmo/aura` @
   `https://github.com/mezmo/aura` (locate this machine's local

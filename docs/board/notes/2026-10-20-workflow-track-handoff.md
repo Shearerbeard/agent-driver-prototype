@@ -42,19 +42,27 @@ mid-flight.
 - **W14** - approval status-shape mismatch: W4's ratified wire polls a
   path-suffix status URL; the governance mirror (and per aura-sandbox
   probe, the real dev governance service) answers a query-keyed GET.
-  Ruled 2026-10-20: the durable fix routes to the governance shape
-  (mirror gains the route, or the wire is re-ruled) on the
-  aura-sandbox board and in the aura CLI - not another
-  prototype-local receiver. The `w6-demo` loopback receiver is
-  retired with this track (it was never committed).
+  Ruled 2026-10-20 (superset): minimal wire changes so the
+  prototype's approval protocol is a superset of what aura and the
+  gov-mirror already speak - the query-keyed status GET works
+  alongside the ratified path-suffix poll, and the additions on top
+  are mostly the workflow-specific pieces the governance protocol
+  lacks (chiefly the declared rollback blocks the executor's unwind
+  consumes). No mirror change required for interop. The `w6-demo`
+  loopback receiver is retired with this track (it was never
+  committed).
 - **W15** - the `propose_workflow` tool description says "nothing
   executes" while the ruled behavior is approve-gated apply; a
   one-line fix on `integration/workflow` whenever the track resumes.
 
 ## Resume path, in order
 
-1. Mike rules W14's direction and closes W5 at U(code-review); the
-   w5-ops-surface merge follows in ai-experiments.
+1. Close W5 at its U(code-review) user gate - Mike's own review on
+   this board (the machine review rounds passed 2026-10-05; the
+   artifact under review is the pushed `w5-ops-surface` branch, tip
+   `1d6be81`). The merge/PR decision in ai-experiments follows.
+   W14's direction is already ruled (superset, above); executing it
+   is a pull on that card when the track resumes.
 2. Decide the `integration/workflow` -> main merge (deliberately
    deferred, not forgotten).
 3. W6 stage 3: mint the post-demo cards with cite spot-checks

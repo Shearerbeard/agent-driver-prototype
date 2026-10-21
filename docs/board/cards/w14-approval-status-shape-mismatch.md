@@ -94,6 +94,20 @@ The ruling lands at this card's pull; the diff implements it.
 
 ## Log
 
+- 2026-10-20 SUPERSET RULING (user): not either/or - the prototype's
+  approval protocol becomes a SUPERSET of the protocol aura and the
+  gov-mirror already speak. Minimal wire changes: the query-keyed
+  status GET works alongside the ratified path-suffix poll, POST
+  authorize keyed by decision_id unchanged, so any existing receiver
+  interoperates without modification. The additions on top are mostly
+  the workflow-specific pieces the governance protocol does not
+  carry - chiefly the declared rollback blocks the executor's unwind
+  consumes. No mirror change is required for interop; whether the
+  mirror also grows the path-suffix route is that board's option, not
+  this card's dependency. Scope when pulled: the wire changes in this
+  repo's workflow mechanism, wire-proven both ways (mirror and
+  loopback shapes); this card's earlier either/or framing is
+  superseded by this ruling. Board owner.
 - 2026-10-20 ROUTING RULING (user, exit-state review): the durable fix
   belongs in the governance shape, not in another prototype-local
   receiver - the gov-mirror (aura-sandbox, SB23's surface) gains the
